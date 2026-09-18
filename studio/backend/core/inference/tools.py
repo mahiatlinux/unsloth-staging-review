@@ -16976,6 +16976,22 @@ def _check_signal_escape_patterns(code: str):
                 origins.add(id(value))
         return origins
 
+    def _method_receivers(expr: ast.AST) -> list:
+        receivers, seen = [], set()
+        pending = [expr]
+        while pending:
+            value = pending.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if isinstance(value, ast.Name):
+                pending.extend(_name_values(value) or [])
+            elif isinstance(value, ast.Attribute):
+                receivers.append(value.value)
+            elif isinstance(value, (ast.IfExp, ast.BoolOp)):
+                pending.extend(_alternatives(value))
+        return receivers
+
     def _proxy_mapping_mutated(expr: ast.AST, read: ast.AST) -> bool:
         origins = _receiver_origins(expr)
         for mapping, mutation, scope in _mapping_mutations:
@@ -17402,17 +17418,17 @@ def _check_signal_escape_patterns(code: str):
                     if any(kw.arg is None for kw in node.keywords or []):
                         targets.append((True, None, "url"))
                     # `s.proxies = {...}` before the call sends there just the same.
-                    receiver = (
-                        _dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None
-                    )
-                    if receiver is not None:
-                        scope = _node_scope.get(id(node), tree)
+                    for bound_receiver in _method_receivers(node.func):
+                        receiver = _dotted(bound_receiver)
+                        if receiver is None:
+                            continue
+                        scope = _node_scope.get(id(bound_receiver), tree)
                         path = (
                             _receiver_key(receiver, scope)
                             if _enclosing_class(scope) is not None
                             else receiver
                         )
-                        proxy_values = _proxy_values(node.func.value, node)
+                        proxy_values = _proxy_values(bound_receiver, node)
                         if proxy_values is None:
                             proxy_values = [
                                 value

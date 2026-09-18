@@ -961,6 +961,30 @@ class TestNetworkTargetResolution:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize("setup", ["fetch = s.get", "fetch = s.get\ns = requests.Session()"])
+    def test_bound_method_alias_retains_original_proxy(self, setup):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}\n"
+            f"{setup}\nfetch('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_bound_method_alias_sees_later_proxy_write(self):
+        _blocked(
+            "import requests\ns = requests.Session()\nfetch = s.get\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}\nfetch('https://pypi.org/')",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_bound_method_alias_ignores_rebound_session_proxy(self):
+        code = (
+            "import requests\ns = requests.Session()\nfetch = s.get\ns = requests.Session()\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}\nfetch('https://pypi.org/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
