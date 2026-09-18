@@ -871,6 +871,14 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("transport", ["HTTPTransport", "AsyncHTTPTransport"])
+    @pytest.mark.parametrize("proxy", ["'http://203.0.113.5:8080'", "input()"])
+    def test_httpx_transport_proxy_requires_approval(self, transport, proxy):
+        code = f"import httpx\ntransport = httpx.{transport}(proxy={proxy})"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+        if proxy != "input()":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

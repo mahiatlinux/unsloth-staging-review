@@ -15906,6 +15906,8 @@ def _check_signal_escape_patterns(code: str):
                 for client in ("httpx.Client", "httpx.AsyncClient")
             },
             "httpx.stream": (1, "url", "url"),
+            "httpx.HTTPTransport": (None, "proxy", "proxy"),
+            "httpx.AsyncHTTPTransport": (None, "proxy", "proxy"),
             # A client built on a base URL sends there even when the call passes a bare path.
             **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
             "aiohttp.ClientSession": (0, "base_url", "url"),
