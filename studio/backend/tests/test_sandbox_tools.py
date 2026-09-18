@@ -942,6 +942,18 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "s.proxies['no_proxy'] = 'http://203.0.113.5'",
+            "p = {}\ns.proxies = p\np['no_proxy'] = 'http://203.0.113.5'",
+        ],
+    )
+    def test_proxy_bypass_subscript_is_not_a_destination(self, setup):
+        code = f"import requests\ns = requests.Session()\n{setup}\ns.get('https://pypi.org/')"
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_proxy_bypass_list_does_not_hide_proxy_destination(self):
         _blocked(
             "import requests\nrequests.get('https://pypi.org/', "

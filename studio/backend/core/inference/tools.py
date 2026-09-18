@@ -16515,6 +16515,9 @@ def _check_signal_escape_patterns(code: str):
     def _first_splat(elts: list) -> int:
         return next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), len(elts))
 
+    def _is_proxy_bypass_key(expr: ast.AST) -> bool:
+        return isinstance(expr, ast.Constant) and expr.value == "no_proxy"
+
     def _record_store(
         target: ast.AST,
         value,
@@ -16561,6 +16564,8 @@ def _check_signal_escape_patterns(code: str):
                 position = position,
             )
         elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Attribute):
+            if target.value.attr in _PROXY_KEYWORDS and _is_proxy_bypass_key(target.slice):
+                return
             # `s.proxies['https'] = url` adds a destination without replacing the mapping.
             _record_store(target.value, value, scope, handled, certain = False, position = position)
         elif isinstance(target, ast.Attribute):
@@ -16734,7 +16739,11 @@ def _check_signal_escape_patterns(code: str):
             elif isinstance(node, ast.MatchMapping) and node.rest:
                 _add_name_store(scope, node.rest, None, node, certain = False)
             mutated_mapping = None
-            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and not _is_proxy_bypass_key(node.slice)
+            ):
                 mutated_mapping = node.value
             elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
                 mutated_mapping = node.target
