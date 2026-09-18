@@ -802,6 +802,17 @@ class TestNetworkTargetResolution:
         if proxy_url != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
+    def test_canonical_aiohttp_session_requires_approval(self, base_url):
+        code = (
+            "from aiohttp.client import ClientSession\n"
+            f"async def fetch():\n    async with ClientSession({base_url}) as client:\n"
+            "        await client.get('/')"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+        if base_url != "input()":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
