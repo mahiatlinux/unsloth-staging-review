@@ -15837,6 +15837,7 @@ def _check_signal_escape_patterns(code: str):
             for module in ("urllib3", defined_in)
         },
         "urllib3.ProxyManager": (0, "proxy_url", "url"),
+        "urllib3.poolmanager.ProxyManager": (0, "proxy_url", "url"),
         **{
             f"{module}.{pool}": (0, "host", "host")
             for module in ("urllib3", "urllib3.connectionpool")

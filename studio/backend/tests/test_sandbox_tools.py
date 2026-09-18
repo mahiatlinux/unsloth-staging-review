@@ -791,6 +791,17 @@ class TestNetworkTargetResolution:
         )
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize("proxy_url", ["'http://203.0.113.5:8080/'", "input()"])
+    def test_canonical_proxy_manager_requires_approval(self, proxy_url):
+        code = (
+            "import urllib3\n"
+            f"urllib3.poolmanager.ProxyManager({proxy_url})"
+            ".request('GET', 'https://pypi.org/')"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+        if proxy_url != "input()":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
