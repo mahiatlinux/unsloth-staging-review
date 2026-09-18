@@ -835,6 +835,42 @@ class TestNetworkTargetResolution:
         if proxies != "options":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "setup, receiver",
+        [
+            ("alias = s\nalias.proxies = {'https': 'http://203.0.113.5'}", "s"),
+            ("s.proxies = {'https': 'http://203.0.113.5'}\nalias = s", "alias"),
+        ],
+    )
+    def test_session_alias_preserves_proxy_state(self, setup, receiver):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            f"{setup}\n{receiver}.get('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "setup, receiver",
+        [
+            (
+                "alias = s\nalias.proxies = {'https': 'http://203.0.113.5'}\ns = requests.Session()",
+                "s",
+            ),
+            (
+                "alias = s\nalias = requests.Session()\nalias.proxies = {'https': 'http://203.0.113.5'}",
+                "s",
+            ),
+            ("alias = s\nalias.proxies = {'https': 'http://203.0.113.5'}\ns.proxies = {}", "alias"),
+        ],
+    )
+    def test_session_alias_proxy_replacement_stays_safe(self, setup, receiver):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            f"{setup}\n{receiver}.get('https://pypi.org/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

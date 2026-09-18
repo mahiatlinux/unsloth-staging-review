@@ -16429,6 +16429,7 @@ def _check_signal_escape_patterns(code: str):
     _raw_name_stores: list[tuple[ast.AST, str, object, tuple, object, bool]] = []
     _name_stores: dict[tuple[int, str], list] = {}
     _attr_stores: dict[tuple[int, str, str], list] = {}
+    _proxy_stores: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16562,14 +16563,15 @@ def _check_signal_escape_patterns(code: str):
                 # functions with a same-named local receiver stay apart.
                 owner = _enclosing_class(scope) or scope
                 receiver = _receiver_key(path, scope) if isinstance(owner, ast.ClassDef) else path
-                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(
-                    (
-                        value,
-                        position or _position(target),
-                        _node_block.get(id(target)),
-                        certain,
-                    )
+                entry = (
+                    value,
+                    position or _position(target),
+                    _node_block.get(id(target)),
+                    certain,
                 )
+                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(entry)
+                if target.attr in _PROXY_KEYWORDS:
+                    _proxy_stores.append((owner, target.value, target.attr, entry))
 
     def _evaluated_outside(node: ast.AST) -> list:
         """Return child expressions evaluated in the enclosing scope."""
@@ -16927,6 +16929,34 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.BoolOp):
             return [alt for value in expr.values for alt in _alternatives(value)]
         return [expr]
+
+    def _receiver_origins(expr: ast.AST) -> set:
+        origins, seen = set(), set()
+        pending = [expr]
+        while pending:
+            value = pending.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if isinstance(value, ast.Name):
+                pending.extend(_name_values(value) or [])
+            elif isinstance(value, ast.Attribute):
+                pending.extend(_attr_values(value) or [])
+            elif isinstance(value, ast.Call):
+                origins.add(id(value))
+        return origins
+
+    def _proxy_values(receiver: ast.AST, read: ast.AST) -> "list | None":
+        origins = _receiver_origins(receiver)
+        if not origins:
+            return None
+        groups: dict = {}
+        for owner, stored_receiver, attr, entry in _proxy_stores:
+            if origins & _receiver_origins(stored_receiver):
+                groups.setdefault((id(owner), attr), (owner, []))[1].append(entry)
+        return [
+            value for owner, stores in groups.values() for value in _reaching(stores, read, owner)
+        ]
 
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
@@ -17334,10 +17364,16 @@ def _check_signal_escape_patterns(code: str):
                             if _enclosing_class(scope) is not None
                             else receiver
                         )
+                        proxy_values = _proxy_values(node.func.value, node)
+                        if proxy_values is None:
+                            proxy_values = [
+                                value
+                                for attr in _PROXY_KEYWORDS
+                                for value in _attr_values_for(scope, path, attr, node) or []
+                            ]
                         targets += [
                             (True, value, "proxy")
-                            for attr in _PROXY_KEYWORDS
-                            for value in _attr_values_for(scope, path, attr, node) or []
+                            for value in proxy_values
                             if isinstance(value, ast.AST)
                         ]
                     self._check_target(node, targets, connects = True)
