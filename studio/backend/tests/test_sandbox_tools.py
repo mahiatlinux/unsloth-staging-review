@@ -929,6 +929,26 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "proxy_mapping",
+        [
+            "{'no_proxy': '203.0.113.5'}",
+            "{'no_proxy': 'http://203.0.113.5'}",
+            "{'no_proxy': '203.0.113.5', 'https': 'http://pypi.org/'}",
+        ],
+    )
+    def test_proxy_bypass_list_is_not_a_destination(self, proxy_mapping):
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={proxy_mapping})"
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_proxy_bypass_list_does_not_hide_proxy_destination(self):
+        _blocked(
+            "import requests\nrequests.get('https://pypi.org/', "
+            "proxies={'no_proxy': 'pypi.org', 'https': 'http://203.0.113.5'})",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

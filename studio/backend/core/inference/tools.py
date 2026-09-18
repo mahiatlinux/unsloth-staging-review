@@ -17220,7 +17220,12 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.Dict) and depth <= 8:
             if not expr.values:
                 return [(True, None)]
-            return [r for v in expr.values for r in _target_hosts(v, kind, depth + 1)]
+            return [
+                result
+                for key, value in zip(expr.keys, expr.values)
+                if kind != "proxy" or key is None or _static_prefix(key) != ("no_proxy", True)
+                for result in _target_hosts(value, kind, depth + 1)
+            ]
         if isinstance(expr, (ast.Tuple, ast.List)):
             if not expr.elts:
                 return [(True, None)]
