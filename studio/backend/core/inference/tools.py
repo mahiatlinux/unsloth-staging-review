@@ -17296,6 +17296,9 @@ def _check_signal_escape_patterns(code: str):
                         for kw in node.keywords or []
                         if kw.arg in _PROXY_KEYWORDS
                     ]
+                    # unpacked options can supply a proxy even when the url is explicit.
+                    if any(kw.arg is None for kw in node.keywords or []):
+                        targets.append((True, None, "url"))
                     # `s.proxies = {...}` before the call sends there just the same.
                     receiver = (
                         _dotted(node.func.value) if isinstance(node.func, ast.Attribute) else None

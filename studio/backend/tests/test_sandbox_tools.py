@@ -782,6 +782,15 @@ class TestNetworkTargetResolution:
         )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("callee", ["requests.get", "requests.Session().get"])
+    def test_unpacked_options_with_explicit_url_require_approval(self, callee):
+        code = (
+            "import requests\n"
+            "options = {'proxies': {'https': 'http://203.0.113.5'}}\n"
+            f"{callee}('https://pypi.org/', **options)"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
