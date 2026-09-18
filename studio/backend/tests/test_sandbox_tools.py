@@ -985,6 +985,25 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "update(no_proxy='http://203.0.113.5')",
+            "update({'no_proxy': 'http://203.0.113.5'})",
+            "setdefault('no_proxy', 'http://203.0.113.5')",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "setup, mapping", [("", "s.proxies"), ("p = {}\ns.proxies = p\n", "p")]
+    )
+    def test_proxy_bypass_mapping_methods_are_not_destinations(self, mutation, setup, mapping):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            f"{setup}{mapping}.{mutation}\ns.get('https://pypi.org/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

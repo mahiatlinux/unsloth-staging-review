@@ -16518,6 +16518,22 @@ def _check_signal_escape_patterns(code: str):
     def _is_proxy_bypass_key(expr: ast.AST) -> bool:
         return isinstance(expr, ast.Constant) and expr.value == "no_proxy"
 
+    def _proxy_method_values(node: ast.Call) -> list:
+        if node.func.attr == "setdefault":
+            if node.args and _is_proxy_bypass_key(node.args[0]):
+                return []
+            if any(isinstance(arg, ast.Starred) for arg in node.args):
+                return node.args
+            return node.args[1:2]
+        values = [*node.args, *(kw.value for kw in node.keywords if kw.arg != "no_proxy")]
+        return [
+            value
+            for value in values
+            if not (
+                isinstance(value, ast.Dict) and all(_is_proxy_bypass_key(key) for key in value.keys)
+            )
+        ]
+
     def _record_store(
         target: ast.AST,
         value,
@@ -16691,7 +16707,7 @@ def _check_signal_escape_patterns(code: str):
                 and (node.args or node.keywords)
             ):
                 # `s.proxies.update({...})` likewise adds to the mapping.
-                for value in [*node.args[-1:], *(kw.value for kw in node.keywords or [])]:
+                for value in _proxy_method_values(node):
                     _record_store(
                         node.func.value,
                         value,
@@ -16751,6 +16767,7 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ("update", "setdefault")
+                and _proxy_method_values(node)
             ):
                 mutated_mapping = node.func.value
             if mutated_mapping is not None:
