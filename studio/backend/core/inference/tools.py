@@ -16437,6 +16437,7 @@ def _check_signal_escape_patterns(code: str):
     _name_stores: dict[tuple[int, str], list] = {}
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _proxy_stores: list = []
+    _mapping_mutations: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16732,6 +16733,19 @@ def _check_signal_escape_patterns(code: str):
                 _add_name_store(scope, node.name, None, node, certain = False)
             elif isinstance(node, ast.MatchMapping) and node.rest:
                 _add_name_store(scope, node.rest, None, node, certain = False)
+            mutated_mapping = None
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                mutated_mapping = node.value
+            elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
+                mutated_mapping = node.target
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("update", "setdefault")
+            ):
+                mutated_mapping = node.func.value
+            if mutated_mapping is not None:
+                _mapping_mutations.append((mutated_mapping, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]
@@ -16949,9 +16963,18 @@ def _check_signal_escape_patterns(code: str):
                 pending.extend(_name_values(value) or [])
             elif isinstance(value, ast.Attribute):
                 pending.extend(_attr_values(value) or [])
-            elif isinstance(value, ast.Call):
+            elif isinstance(value, (ast.Call, ast.Dict)):
                 origins.add(id(value))
         return origins
+
+    def _proxy_mapping_mutated(expr: ast.AST, read: ast.AST) -> bool:
+        origins = _receiver_origins(expr)
+        for mapping, mutation, scope in _mapping_mutations:
+            if origins & _receiver_origins(mapping):
+                store = (None, _end_position(mutation), _node_block.get(id(mutation)), False)
+                if _reaching([store], read, scope):
+                    return True
+        return False
 
     def _proxy_values(receiver: ast.AST, read: ast.AST) -> "list | None":
         origins = _receiver_origins(receiver)
@@ -17387,6 +17410,13 @@ def _check_signal_escape_patterns(code: str):
                             for value in proxy_values
                             if isinstance(value, ast.AST)
                         ]
+                    if any(
+                        kind == "proxy"
+                        and isinstance(value, ast.AST)
+                        and _proxy_mapping_mutated(value, node)
+                        for _present, value, kind in targets
+                    ):
+                        targets.append((True, None, "proxy"))
                     self._check_target(node, targets, connects = True)
 
             is_open_call = (

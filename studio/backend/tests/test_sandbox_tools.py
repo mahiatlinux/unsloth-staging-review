@@ -897,6 +897,38 @@ class TestNetworkTargetResolution:
         if url == "'http://203.0.113.5/'":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "p['https'] = 'http://203.0.113.5'",
+            "p.update({'https': 'http://203.0.113.5'})",
+            "p |= {'https': 'http://203.0.113.5'}",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "target", ["s.get('https://pypi.org/')", "requests.get('https://pypi.org/', proxies=p)"]
+    )
+    def test_proxy_mapping_alias_mutation_requires_approval(self, mutation, target):
+        code = (
+            "import requests\ns = requests.Session()\np = {}\ns.proxies = p\n"
+            f"{mutation}\n{target}"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "p = {}\np['https'] = 'http://203.0.113.5'",
+            "s.get('https://pypi.org/')\np['https'] = 'http://203.0.113.5'",
+        ],
+    )
+    def test_unrelated_proxy_mapping_mutation_stays_safe(self, setup):
+        code = "import requests\ns = requests.Session()\np = {}\ns.proxies = p\n" + setup
+        if not setup.startswith("s.get"):
+            code += "\ns.get('https://pypi.org/')"
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
