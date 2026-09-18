@@ -16640,6 +16640,20 @@ def _check_signal_escape_patterns(code: str):
                     _record_store(target, node.value, scope, handled, position = _end_position(node))
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 _record_store(node.target, node.value, scope, handled, position = _end_position(node))
+            elif (
+                isinstance(node, ast.AugAssign)
+                and isinstance(node.op, ast.BitOr)
+                and isinstance(node.target, ast.Attribute)
+                and node.target.attr in _PROXY_KEYWORDS
+            ):
+                _record_store(
+                    node.target,
+                    node.value,
+                    scope,
+                    handled,
+                    certain = False,
+                    position = _end_position(node),
+                )
             elif isinstance(node, ast.NamedExpr):
                 # A walrus inside a comprehension binds in the scope around it.
                 while isinstance(scope, _COMPREHENSION_NODES):

@@ -822,10 +822,18 @@ class TestNetworkTargetResolution:
 
     @pytest.mark.parametrize("proxy", ["203.0.113.5:8080", "//203.0.113.5:8080"])
     def test_schemeless_proxy_is_checked(self, proxy):
-        code = (
-            f"import requests\nrequests.get('https://pypi.org/', proxies={{'https': {proxy!r}}})"
-        )
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={{'https': {proxy!r}}})"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize("proxies", ["{'https': 'http://203.0.113.5'}", "options"])
+    def test_augmented_proxy_mapping_requires_approval(self, proxies):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            f"s.proxies |= {proxies}\ns.get('https://pypi.org/')"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+        if proxies != "options":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
