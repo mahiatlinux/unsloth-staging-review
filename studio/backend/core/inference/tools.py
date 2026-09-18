@@ -17157,6 +17157,10 @@ def _check_signal_escape_patterns(code: str):
         # urlsplit drops tab and newline anywhere and ignores leading control characters, so
         # `requests.get(" http://host/")` reaches the host. Parse what the client will send.
         text = re.sub(r"[\t\r\n]", "", text).lstrip("\x00-\x20 ")
+        if kind == "proxy":
+            if not re.match(r"^\w+://", text):
+                text = ("http:" if text.startswith("//") else "http://") + text
+            kind = "url"
         if kind == "url":
             # A partial URL resolves only once its authority is closed off by a path, query or fragment.
             m = re.match(r"^\w+://([^/?#]+)" if complete else r"^\w+://([^/?#]+)[/?#]", text)
@@ -17298,7 +17302,7 @@ def _check_signal_escape_patterns(code: str):
                 if specs:
                     targets = [(*_call_target(node, pos, kw), kind) for pos, kw, kind in specs]
                     targets += [
-                        (True, kw.value, "url")
+                        (True, kw.value, "proxy")
                         for kw in node.keywords or []
                         if kw.arg in _PROXY_KEYWORDS
                     ]
@@ -17317,7 +17321,7 @@ def _check_signal_escape_patterns(code: str):
                             else receiver
                         )
                         targets += [
-                            (True, value, "url")
+                            (True, value, "proxy")
                             for attr in _PROXY_KEYWORDS
                             for value in _attr_values_for(scope, path, attr, node) or []
                             if isinstance(value, ast.AST)

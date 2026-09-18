@@ -820,6 +820,13 @@ class TestNetworkTargetResolution:
         if url != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("proxy", ["203.0.113.5:8080", "//203.0.113.5:8080"])
+    def test_schemeless_proxy_is_checked(self, proxy):
+        code = (
+            f"import requests\nrequests.get('https://pypi.org/', proxies={{'https': {proxy!r}}})"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
