@@ -767,6 +767,21 @@ class TestNetworkTargetResolution:
     def test_known_untrusted_host_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "reassignment",
+        [
+            "if False:\n    s = requests.Session()",
+            "for unused in []:\n    s = requests.Session()",
+        ],
+    )
+    def test_skipped_receiver_reassignment_preserves_proxy(self, reassignment):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            "s.proxies = {'https': 'http://203.0.113.5'}\n"
+            f"{reassignment}\ns.get('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

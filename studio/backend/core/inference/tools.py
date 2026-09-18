@@ -16852,11 +16852,16 @@ def _check_signal_escape_patterns(code: str):
     def _latest_binding(name: str, scope: ast.AST, read: ast.AST):
         """Position of the certain binding of `name` in effect at this read, if there is one."""
         read_at = _position(read)
+        around = _blocks_around(read)
         current: ast.AST | None = scope
         while current is not None:
             stores = _name_stores.get((id(current), name))
             if stores is not None:
-                positions = [p for _v, p, _b, certain in stores if certain and p < read_at]
+                positions = [
+                    p
+                    for _v, p, block, certain in stores
+                    if certain and block in around and p < read_at
+                ]
                 return max(positions, default = None)
             current = _scope_parent.get(id(current))
         return None
