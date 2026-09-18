@@ -16954,8 +16954,12 @@ def _check_signal_escape_patterns(code: str):
             return None
         groups: dict = {}
         for owner, stored_receiver, attr, entry in _proxy_stores:
-            if origins & _receiver_origins(stored_receiver):
-                groups.setdefault((id(owner), attr), (owner, []))[1].append(entry)
+            stored_origins = _receiver_origins(stored_receiver)
+            value, position, block, certain = entry
+            for origin in origins & stored_origins:
+                groups.setdefault((id(owner), attr, origin), (owner, []))[1].append(
+                    (value, position, block, certain and len(stored_origins) == 1)
+                )
         return [
             value for owner, stores in groups.values() for value in _reaching(stores, read, owner)
         ]

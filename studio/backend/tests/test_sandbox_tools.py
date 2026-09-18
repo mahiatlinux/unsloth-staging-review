@@ -840,6 +840,11 @@ class TestNetworkTargetResolution:
         [
             ("alias = s\nalias.proxies = {'https': 'http://203.0.113.5'}", "s"),
             ("s.proxies = {'https': 'http://203.0.113.5'}\nalias = s", "alias"),
+            (
+                "s.proxies = {'https': 'http://203.0.113.5'}\nalias = s\n"
+                "if True:\n    s = requests.Session()\ns.proxies = {}",
+                "alias",
+            ),
         ],
     )
     def test_session_alias_preserves_proxy_state(self, setup, receiver):
