@@ -813,6 +813,13 @@ class TestNetworkTargetResolution:
         if base_url != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("url", ["'http://203.0.113.5/'", "input()"])
+    def test_inherited_session_method_requires_approval(self, url):
+        code = f"import requests\nclass Client(requests.Session):\n    pass\nClient().get({url})"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+        if url != "input()":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

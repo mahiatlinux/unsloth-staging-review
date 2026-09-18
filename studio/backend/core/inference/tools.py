@@ -17005,6 +17005,10 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(value, tuple):
                     bases.append(value[1])
                     continue
+                if isinstance(value, ast.ClassDef):
+                    for base in value.bases:
+                        bases.extend(_resolved_fqs(base, depth + 1))
+                    continue
                 for alt in _alternatives(value) if isinstance(value, ast.AST) else [value]:
                     # Follow assigned module and function aliases.
                     if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp, ast.Call)):
