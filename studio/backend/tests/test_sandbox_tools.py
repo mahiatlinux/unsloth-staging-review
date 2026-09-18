@@ -1004,6 +1004,31 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "pairs",
+        [
+            "[('https', 'https://pypi.org')]",
+            "(('https', 'https://pypi.org'),)",
+            "[['https', 'https://pypi.org']]",
+            "[('no_proxy', 'http://203.0.113.5')]",
+        ],
+    )
+    def test_proxy_update_pairs_check_values(self, pairs):
+        code = f"import requests\ns = requests.Session()\ns.proxies.update({pairs})\ns.get('https://pypi.org/')"
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_proxy_update_pairs_unknown_value_requires_approval(self):
+        code = "import requests\ns = requests.Session()\ns.proxies.update([('https', input())])\ns.get('https://pypi.org/')"
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_proxy_update_pairs_untrusted_value_is_blocked(self):
+        _blocked(
+            "import requests\ns = requests.Session()\ns.proxies.update([('https', 'http://203.0.113.5')])\ns.get('https://pypi.org/')",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

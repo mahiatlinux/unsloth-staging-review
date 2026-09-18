@@ -16525,7 +16525,17 @@ def _check_signal_escape_patterns(code: str):
             if any(isinstance(arg, ast.Starred) for arg in node.args):
                 return node.args
             return node.args[1:2]
-        values = [*node.args, *(kw.value for kw in node.keywords if kw.arg != "no_proxy")]
+        values = [kw.value for kw in node.keywords if kw.arg != "no_proxy"]
+        for argument in node.args:
+            if isinstance(argument, (ast.List, ast.Tuple)):
+                for pair in argument.elts:
+                    if isinstance(pair, (ast.List, ast.Tuple)) and len(pair.elts) == 2:
+                        if not _is_proxy_bypass_key(pair.elts[0]):
+                            values.append(pair.elts[1])
+                    else:
+                        values.append(pair)
+            else:
+                values.append(argument)
         return [
             value
             for value in values
