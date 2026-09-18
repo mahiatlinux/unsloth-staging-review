@@ -884,6 +884,19 @@ class TestNetworkTargetResolution:
         if proxy != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "factory", ["requests.session", "requests.sessions.session", "requests.api.session"]
+    )
+    @pytest.mark.parametrize("url", ["'http://203.0.113.5/'", "input()", "'https://pypi.org/'"])
+    def test_lowercase_session_send_checks_prepared_url(self, factory, url):
+        code = (
+            f"import requests\ns = {factory}()\n"
+            f"s.send(s.prepare_request(requests.Request('GET', {url})))"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is (url != "'https://pypi.org/'")
+        if url == "'http://203.0.113.5/'":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

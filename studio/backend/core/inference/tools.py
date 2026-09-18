@@ -15886,7 +15886,11 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Request": (1, "url"),
         "httpx.Client.build_request": (1, "url"),
         "httpx.AsyncClient.build_request": (1, "url"),
-        "requests.Session.prepare_request": (0, "request"),
+        **{
+            f"{client}.prepare_request": (0, "request")
+            for client in _VERB_CLIENTS
+            if client.startswith("requests.")
+        },
     }
     # An explicit proxy is the socket destination, whatever the request URL says.
     _PROXY_KEYWORDS = ("proxy", "proxies")
@@ -15925,7 +15929,8 @@ def _check_signal_escape_patterns(code: str):
             **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
             **{
                 f"{client}.send": (0, "request", "url")
-                for client in ("requests.Session", "requests.sessions.Session")
+                for client in _VERB_CLIENTS
+                if client.startswith("requests.")
             },
         }
     )
