@@ -1014,6 +1014,32 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\nrequests.Session.request(s, method, 'https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("value", ["None", "'https://pypi.org/'"])
+    def test_overwritten_proxy_key_drops_old_destination(self, value):
+        code = (
+            "import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {'https': 'http://203.0.113.5/'}\n"
+            + f"s.proxies['https'] = {value}\ns.get('https://pypi.org/')"
+        )
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            "if False:\n    s.proxies['https'] = None",
+            "s.proxies['http'] = None",
+            "s.proxies['https'] = s.get('https://pypi.org/')",
+            "s.proxies['https']: str",
+        ],
+    )
+    def test_proxy_key_overwrite_preserves_reaching_destination(self, assignment):
+        code = (
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\n"
+            + assignment
+            + "\ns.get('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (

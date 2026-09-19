@@ -16813,6 +16813,10 @@ def _check_signal_escape_patterns(code: str):
                     _mapping_removals.append((call.func.value, call, key))
             elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Del):
                 _mapping_removals.append((node.value, node, node.slice))
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    if isinstance(target, ast.Subscript):
+                        _mapping_removals.append((target.value, node, target.slice))
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == "url"
@@ -17183,6 +17187,13 @@ def _check_signal_escape_patterns(code: str):
                     return True
         return False
 
+    def _untracked_proxy_mutations() -> list:
+        return [
+            mutation
+            for mutation in _mapping_mutations
+            if not (isinstance(mutation[0], ast.Attribute) and mutation[0].attr in _PROXY_KEYWORDS)
+        ]
+
     def _proxy_values(receiver: ast.AST, read: ast.AST) -> "list | None":
         origins = _receiver_origins(receiver)
         if not origins:
@@ -17209,12 +17220,7 @@ def _check_signal_escape_patterns(code: str):
             for attr in _PROXY_KEYWORDS
             if (origin, attr) not in replaced
         }
-        alias_mutations = [
-            mutation
-            for mutation in _mapping_mutations
-            if not (isinstance(mutation[0], ast.Attribute) and mutation[0].attr in _PROXY_KEYWORDS)
-        ]
-        if _mutations_reach(initial_mappings, read, alias_mutations):
+        if _mutations_reach(initial_mappings, read, _untracked_proxy_mutations()):
             values.append(None)
         return values
 
@@ -17757,7 +17763,9 @@ def _check_signal_escape_patterns(code: str):
                     if any(
                         kind == "proxy"
                         and isinstance(value, ast.AST)
-                        and _mutations_reach(_receiver_origins(value), node, _mapping_mutations)
+                        and _mutations_reach(
+                            _receiver_origins(value), node, _untracked_proxy_mutations()
+                        )
                         for _present, value, kind in targets
                     ):
                         targets.append((True, None, "proxy"))
