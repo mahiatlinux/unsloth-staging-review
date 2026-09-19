@@ -16896,6 +16896,7 @@ def _check_signal_escape_patterns(code: str):
                 _build_scope_model()
             _model_state["built"] = wanted
             if wanted:
+                _collect_aliased_mutations()
                 _discard_unused_proxy_defaults()
         return _model_state["built"]
 
@@ -17147,8 +17148,8 @@ def _check_signal_escape_patterns(code: str):
                     return values[0]
         return None
 
-    def _method_receivers(expr: ast.AST) -> list:
-        receivers, seen = [], set()
+    def _method_bindings(expr: ast.AST) -> list:
+        bindings, seen = [], set()
         pending = [expr]
         while pending:
             value = pending.pop()
@@ -17158,16 +17159,33 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(value, ast.Name):
                 pending.extend(_name_values(value) or [])
             elif isinstance(value, ast.Attribute):
-                receivers.append(value.value)
+                bindings.append((value.value, value.attr))
             elif (
                 isinstance(value, ast.Call)
                 and value.args
                 and "getattr" in _resolved_fqs(value.func)
             ):
-                receivers.append(value.args[0])
+                name = value.args[1] if len(value.args) > 1 else None
+                bindings.append(
+                    (value.args[0], name.value if isinstance(name, ast.Constant) else None)
+                )
             elif isinstance(value, (ast.IfExp, ast.BoolOp)):
                 pending.extend(_alternatives(value))
-        return receivers
+        return bindings
+
+    def _method_receivers(expr: ast.AST) -> list:
+        return [receiver for receiver, _name in _method_bindings(expr)]
+
+    def _collect_aliased_mutations() -> None:
+        for node in _tree_nodes(tree):
+            if not isinstance(node, ast.Call) or isinstance(node.func, ast.Attribute):
+                continue
+            scope = _node_scope.get(id(node), tree)
+            for receiver, method in _method_bindings(node.func):
+                if method in ("prepare_url", "prepare", "set_proxy"):
+                    _request_url_mutations.append((receiver, node, scope))
+                elif method in ("update", "setdefault"):
+                    _mapping_mutations.append((receiver, node, scope))
 
     def _is_client_class(expr: ast.AST) -> bool:
         return not _receiver_origins(expr) and any(
@@ -17252,7 +17270,14 @@ def _check_signal_escape_patterns(code: str):
         return [
             mutation
             for mutation in _mapping_mutations
-            if not (isinstance(mutation[0], ast.Attribute) and mutation[0].attr in _PROXY_KEYWORDS)
+            if not (
+                isinstance(mutation[0], ast.Attribute)
+                and mutation[0].attr in _PROXY_KEYWORDS
+                and (
+                    not isinstance(mutation[1], ast.Call)
+                    or isinstance(mutation[1].func, ast.Attribute)
+                )
+            )
         ]
 
     def _proxy_values(receiver: ast.AST, read: ast.AST) -> "list | None":

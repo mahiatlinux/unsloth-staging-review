@@ -891,6 +891,39 @@ class TestNetworkTargetResolution:
         code = f"import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.{attribute} = 'http://203.0.113.5/'\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "lookup", ["s.proxies.update", "getattr(s.proxies, 'update')", "s.proxies.setdefault"]
+    )
+    def test_bound_proxy_mutator_requires_approval(self, lookup):
+        arguments = (
+            "'https', 'http://203.0.113.5/'"
+            if lookup.endswith("setdefault")
+            else "{'https': 'http://203.0.113.5/'}"
+        )
+        code = f"import requests\ns = requests.Session()\nconfigure = {lookup}\nalias = configure\nalias({arguments})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize("lookup", ["r.prepare_url", "getattr(r, 'prepare_url')", "r.prepare"])
+    def test_bound_request_mutator_requires_approval(self, lookup):
+        arguments = (
+            "method='GET', url='http://203.0.113.5/'"
+            if lookup.endswith(".prepare")
+            else "'http://203.0.113.5/', None"
+        )
+        code = f"import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nretarget = {lookup}\nalias = retarget\nalias({arguments})\ns.send(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_bound_urllib_proxy_mutator_requires_approval(self):
+        code = "import urllib.request\nr = urllib.request.Request('http://pypi.org/')\nretarget = r.set_proxy\nretarget('203.0.113.5:8080', 'http')\nurllib.request.urlopen(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "replacement", ["configure = lambda mapping: None", "s = requests.Session()"]
+    )
+    def test_unused_bound_proxy_mutator_does_not_prompt(self, replacement):
+        code = f"import requests\ns = requests.Session()\nconfigure = s.proxies.update\n{replacement}\nconfigure({{'https': 'http://203.0.113.5/'}})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
