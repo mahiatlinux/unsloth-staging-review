@@ -15900,6 +15900,9 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession": (0, "base_url"),
         "aiohttp.client.ClientSession": (0, "base_url"),
     }
+    _PROXY_CONFIG_CLIENTS = frozenset(
+        (*_BASE_URL_CLIENTS, "httpx.HTTPTransport", "httpx.AsyncHTTPTransport")
+    )
     _NETWORK_TARGET_ARGS.update(
         {
             **{
@@ -15918,6 +15921,8 @@ def _check_signal_escape_patterns(code: str):
             "httpx.stream": (1, "url", "url"),
             "httpx.HTTPTransport": (None, "proxy", "proxy"),
             "httpx.AsyncHTTPTransport": (None, "proxy", "proxy"),
+            "httpx.HTTPTransport.handle_request": (0, "request", "url"),
+            "httpx.AsyncHTTPTransport.handle_async_request": (0, "request", "url"),
             **{client: (None, "proxy", "proxy") for client in _BASE_URL_CLIENTS},
             **{
                 f"{c}.ws_connect": (0, "url", "url")
@@ -17373,6 +17378,32 @@ def _check_signal_escape_patterns(code: str):
             return text, True
         return None
 
+    def _configured_proxy_hosts(call: ast.Call) -> list:
+        pending = [(receiver, call) for receiver in _method_receivers(call.func)]
+        nodes = {id(node): node for node in _tree_nodes(tree)}
+        seen, hosts = set(), []
+        while pending:
+            value, read = pending.pop()
+            origins = _receiver_origins(value)
+            if _mutations_reach(origins, read, _mapping_mutations):
+                hosts.append((False, None))
+            for origin in origins - seen:
+                seen.add(origin)
+                constructor = nodes.get(origin)
+                if isinstance(constructor, ast.Dict):
+                    pending.extend((value, read) for value in constructor.values)
+                elif isinstance(constructor, ast.Call) and any(
+                    fq in _PROXY_CONFIG_CLIENTS for fq in _resolved_fqs(constructor.func)
+                ):
+                    for kw in constructor.keywords:
+                        if kw.arg is None:
+                            hosts.append((False, None))
+                        elif kw.arg in _PROXY_KEYWORDS:
+                            hosts.extend(_target_hosts(kw.value, "proxy", read = constructor))
+                        elif kw.arg in ("transport", "mounts"):
+                            pending.append((kw.value, constructor))
+        return hosts
+
     def _base_url_hosts(call: ast.Call, results: list) -> list:
         if all(resolved and host for resolved, host in results):
             return []
@@ -17551,6 +17582,8 @@ def _check_signal_escape_patterns(code: str):
                 results.extend(
                     [(False, None)] if expr is None else _target_hosts(expr, kind, read = node)
                 )
+            if connects:
+                results += _configured_proxy_hosts(node)
             if connects and any(
                 fq.rsplit(".", 1)[0] in _BASE_URL_CLIENTS
                 and fq.rsplit(".", 1)[1] in (*_HTTP_VERBS, "request", "stream", "ws_connect")
@@ -17639,7 +17672,9 @@ def _check_signal_escape_patterns(code: str):
                 # 2) Resolve the call's URL or host argument under every candidate signature.
                 specs = list(
                     dict.fromkeys(
-                        _NETWORK_TARGET_ARGS[fq] for fq in net_fqs if fq in _NETWORK_TARGET_ARGS
+                        _NETWORK_TARGET_ARGS[fq]
+                        for fq in net_fqs
+                        if fq in _NETWORK_TARGET_ARGS and fq not in _PROXY_CONFIG_CLIENTS
                     )
                 )
                 if specs:

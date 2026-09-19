@@ -938,6 +938,42 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ns.proxies = {}\nmapping = s.proxies\ns.proxies.clear()\nmapping['https'] = 'http://203.0.113.5/'\ns.get('https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize(
+        "constructor",
+        [
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "httpx.HTTPTransport",
+            "httpx.AsyncHTTPTransport",
+            "aiohttp.ClientSession",
+            "aiohttp.client.ClientSession",
+        ],
+    )
+    def test_unused_proxy_constructor_does_not_prompt(self, constructor):
+        code = f"import httpx, aiohttp\nclient = {constructor}(proxy='http://203.0.113.5/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "httpx.Client(transport=t).get('https://pypi.org/')",
+            "httpx.Client(mounts={'https://': t}).get('https://pypi.org/')",
+            "t.handle_request(httpx.Request('GET', 'https://pypi.org/'))",
+        ],
+    )
+    def test_configured_transport_proxy_is_checked_when_consumed(self, call):
+        code = "import httpx\nt = httpx.HTTPTransport(proxy='http://203.0.113.5/')\n" + call
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_changed_transport_mounts_require_approval(self):
+        code = "import httpx\nmounts = {'http://': None}\nmounts['http://'] = httpx.HTTPTransport(proxy='http://203.0.113.5/')\nhttpx.Client(mounts=mounts).get('http://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_saved_client_method_preserves_constructor_proxy(self):
+        code = "import httpx\nc = httpx.Client(proxy='http://203.0.113.5/')\nfetch = c.get\nfetch('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (
@@ -1015,7 +1051,12 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("transport", ["HTTPTransport", "AsyncHTTPTransport"])
     @pytest.mark.parametrize("proxy", ["'http://203.0.113.5:8080'", "input()"])
     def test_httpx_transport_proxy_requires_approval(self, transport, proxy):
-        code = f"import httpx\ntransport = httpx.{transport}(proxy={proxy})"
+        method = "handle_async_request" if transport.startswith("Async") else "handle_request"
+        code = (
+            f"import httpx\ntransport = httpx.{transport}(proxy={proxy})\n"
+            f"async def fetch():\n    {'await ' if transport.startswith('Async') else ''}"
+            f"transport.{method}(httpx.Request('GET', 'https://pypi.org/'))"
+        )
         assert is_high_risk_tool_call("python", {"code": code}) is True
         if proxy != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
