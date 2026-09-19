@@ -924,6 +924,44 @@ class TestNetworkTargetResolution:
         code = f"import requests\ns = requests.Session()\nconfigure = s.proxies.update\n{replacement}\nconfigure({{'https': 'http://203.0.113.5/'}})\ns.get('https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    def test_attribute_stored_request_method_retains_proxy(self):
+        code = "import requests\nclass Holder: pass\no = Holder()\ns = requests.Session()\no.fetch = s.get\ns.proxies = {'https': 'http://203.0.113.5/'}\no.fetch('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_attribute_stored_request_method_retains_base_url(self):
+        code = "import httpx\nclass Holder: pass\no = Holder()\nc = httpx.Client(base_url='http://203.0.113.5/')\no.fetch = c.get\no.fetch('/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "method, arguments",
+        [
+            ("update", "{'https': 'http://203.0.113.5/'}"),
+            ("setdefault", "'https', 'http://203.0.113.5/'"),
+        ],
+    )
+    def test_attribute_stored_proxy_mutator_requires_approval(self, method, arguments):
+        code = f"import requests\nclass Holder: pass\no = Holder()\ns = requests.Session()\no.configure = s.proxies.{method}\no.configure({arguments})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "method, arguments",
+        [
+            ("prepare_url", "'http://203.0.113.5/', None"),
+            ("prepare", "method='GET', url='http://203.0.113.5/'"),
+        ],
+    )
+    def test_attribute_stored_request_mutator_requires_approval(self, method, arguments):
+        code = f"import requests\nclass Holder: pass\no = Holder()\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\no.retarget = r.{method}\no.retarget({arguments})\ns.send(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_attribute_stored_urllib_mutator_requires_approval(self):
+        code = "import urllib.request\nclass Holder: pass\no = Holder()\nr = urllib.request.Request('http://pypi.org/')\no.retarget = r.set_proxy\no.retarget('203.0.113.5:8080', 'http')\nurllib.request.urlopen(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_replaced_attribute_stored_mutator_does_not_prompt(self):
+        code = "import requests\nclass Holder: pass\no = Holder()\ns = requests.Session()\no.configure = s.proxies.update\no.configure = lambda mapping: None\no.configure({'https': 'http://203.0.113.5/'})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

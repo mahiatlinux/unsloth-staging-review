@@ -17179,7 +17179,11 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(value, ast.Name):
                 pending.extend(_name_values(value) or [])
             elif isinstance(value, ast.Attribute):
-                bindings.append((value.value, value.attr))
+                stored = _attr_values(value)
+                if stored:
+                    pending.extend(stored)
+                else:
+                    bindings.append((value.value, value.attr))
             elif (
                 isinstance(value, ast.Call)
                 and value.args
@@ -17198,10 +17202,12 @@ def _check_signal_escape_patterns(code: str):
 
     def _collect_aliased_mutations() -> None:
         for node in _tree_nodes(tree):
-            if not isinstance(node, ast.Call) or isinstance(node.func, ast.Attribute):
+            if not isinstance(node, ast.Call):
                 continue
             scope = _node_scope.get(id(node), tree)
             for receiver, method in _method_bindings(node.func):
+                if isinstance(node.func, ast.Attribute) and receiver is node.func.value:
+                    continue
                 if method in ("prepare_url", "prepare", "set_proxy"):
                     _request_url_mutations.append((receiver, node, scope))
                 elif method in ("update", "setdefault"):
@@ -17303,6 +17309,7 @@ def _check_signal_escape_patterns(code: str):
                 and (
                     not isinstance(mutation[1], ast.Call)
                     or isinstance(mutation[1].func, ast.Attribute)
+                    and mutation[1].func.value is mutation[0]
                 )
             )
         ]
