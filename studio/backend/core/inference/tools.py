@@ -16482,6 +16482,7 @@ def _check_signal_escape_patterns(code: str):
     _model_state: dict[str, bool] = {}
     _initializer_instances: dict = {}
     _inactive_functions: set = set()
+    _function_activations: dict = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
         """`self.session` for a plain name or attribute chain, else None."""
@@ -16958,12 +16959,20 @@ def _check_signal_escape_patterns(code: str):
                 scope, (ast.FunctionDef, ast.AsyncFunctionDef)
             ):
                 scope = _scope_parent.get(id(scope)) or tree
-            references.setdefault(id(scope), set()).update(functions[name])
-        pending = list(active)
+            references.setdefault(id(scope), []).extend(
+                (function, node) for function in functions[name]
+            )
+        _function_activations.update({scope: {None} for scope in active})
+        pending = [(scope, None) for scope in active]
         while pending:
-            called = references.get(pending.pop(), set()) - active
-            active.update(called)
-            pending.extend(called)
+            scope, activation = pending.pop()
+            for function, reference in references.get(scope, []):
+                reached = reference if scope == id(tree) else activation
+                entries = _function_activations.setdefault(function, set())
+                if reached not in entries:
+                    entries.add(reached)
+                    pending.append((function, reached))
+        active = set(_function_activations)
         _inactive_functions.update(
             function
             for values in functions.values()
@@ -17005,6 +17014,11 @@ def _check_signal_escape_patterns(code: str):
             while enclosing is not None and enclosing is not owner:
                 enclosing = _scope_parent.get(id(enclosing))
             if enclosing is None:
+                return []
+        activations = _function_activations.get(id(owner))
+        if execution is None and activations and None not in activations:
+            cutoff = _end_position(read) if isinstance(read, ast.Call) else read_at
+            if all(_position(reference) >= cutoff for reference in activations):
                 return []
         deferred = execution is not None and owner is not execution
         reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
