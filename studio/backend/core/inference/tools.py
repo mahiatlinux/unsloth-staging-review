@@ -17961,6 +17961,40 @@ def _check_signal_escape_patterns(code: str):
             return None
         return (f"{url.scheme}://{url.hostname}", url.scheme, f"all://{url.hostname}", "all")
 
+    def _uses_requests_proxy_merge(read: ast.AST) -> bool:
+        if not isinstance(read, ast.Call):
+            return False
+        fqs = _resolved_fqs(read.func)
+        return bool(fqs) and all(
+            fq.startswith("requests.")
+            and fq in _NETWORK_TARGET_ARGS
+            and fq.rsplit(".", 1)[-1] in (*_HTTP_VERBS, "request")
+            for fq in fqs
+        )
+
+    def _request_proxy_items(read: ast.Call) -> list | None:
+        override = next((kw.value for kw in read.keywords if kw.arg == "proxies"), None)
+        if override is None:
+            return []
+        value, _seen = _bound_value(override, frozenset())
+        if isinstance(value, ast.Constant) and value.value is None:
+            return []
+        removals = [
+            (mapping, mutation, _node_scope.get(id(mutation), tree))
+            for mapping, mutation, _key in _mapping_removals
+        ]
+        if not isinstance(value, ast.Dict) or _mutations_reach(
+            _receiver_origins(override), read, [*_mapping_mutations, *removals]
+        ):
+            return None
+        items = _proxy_mapping_items(value)
+        if any(
+            key is None or (literal := _static_prefix(key)) is None or not literal[1]
+            for key, _value in items
+        ):
+            return None
+        return items
+
     def _proxy_mapping_items(expr: ast.Dict, depth: int = 0) -> list:
         items = []
         for key, value in zip(expr.keys, expr.values):
@@ -18072,10 +18106,17 @@ def _check_signal_escape_patterns(code: str):
         read: ast.AST | None = None,
     ) -> list:
         """Resolve a URL, host string, or (host, port) target to [(resolved, host)]."""
+        session_proxy = kind == "session_proxy"
+        if session_proxy:
+            kind = "proxy"
         expr, _seen = _bound_value(expr, frozenset())
         if isinstance(expr, (ast.IfExp, ast.BoolOp)) and depth <= 8:
             return [
-                r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1, read)
+                r
+                for alt in _alternatives(expr)
+                for r in _target_hosts(
+                    alt, "session_proxy" if session_proxy else kind, depth + 1, read
+                )
             ]
         if kind == "url" and isinstance(expr, ast.Call):
             # urlopen(Request(url, ...)) and client.send(build_request(m, url)) connect to the
@@ -18125,6 +18166,25 @@ def _check_signal_escape_patterns(code: str):
                     key = _static_prefix(removed_key)
                     if key is not None and key[1]:
                         removed_keys.add(key)
+            if kind == "proxy" and _uses_requests_proxy_merge(read):
+                if session_proxy:
+                    overrides = _request_proxy_items(read)
+                    if overrides is not None:
+                        overridden = {_static_prefix(key) for key, _value in overrides}
+                        items = [
+                            (key, value)
+                            for key, value in items
+                            if _static_prefix(key) not in removed_keys | overridden
+                        ] + overrides
+                        removed_keys = {("no_proxy", True)}
+                items = [
+                    (key, value)
+                    for key, value in items
+                    if not (
+                        isinstance(bound := _bound_value(value, frozenset())[0], ast.Constant)
+                        and bound.value is None
+                    )
+                ]
             order = _request_proxy_order(read) if kind == "proxy" else None
             keys = [_static_prefix(key) if key is not None else None for key, _value in items]
             if order is not None and all(key is not None and key[1] for key in keys):
@@ -18497,12 +18557,12 @@ def _check_signal_escape_patterns(code: str):
                                 for value in _attr_values_for(scope, path, attr, node) or []
                             ]
                         targets += [
-                            (True, value, "proxy")
+                            (True, value, "session_proxy")
                             for value in proxy_values
                             if isinstance(value, ast.AST) or value is None
                         ]
                     if any(
-                        kind == "proxy"
+                        kind in ("proxy", "session_proxy")
                         and isinstance(value, ast.AST)
                         and _mutations_reach(
                             _receiver_origins(value), node, _untracked_proxy_mutations()

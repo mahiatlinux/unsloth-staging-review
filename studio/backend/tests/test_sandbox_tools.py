@@ -1026,7 +1026,6 @@ class TestNetworkTargetResolution:
         [
             "{'http': 'http://203.0.113.5/'}",
             "{'https://example.com': 'http://203.0.113.5/'}",
-            "{'https://pypi.org': None, 'https': 'http://203.0.113.5/'}",
         ],
     )
     def test_disabled_redirects_ignore_unselected_proxy(self, proxies):
@@ -1040,6 +1039,7 @@ class TestNetworkTargetResolution:
             "{'https': 'http://203.0.113.5/'}",
             "{'https://pypi.org': 'http://203.0.113.5/'}",
             "{'all': 'http://203.0.113.5/'}",
+            "{'https://pypi.org': None, 'https': 'http://203.0.113.5/'}",
         ],
     )
     def test_disabled_redirects_still_check_selected_proxy(self, proxies):
@@ -1379,6 +1379,48 @@ class TestNetworkTargetResolution:
     def test_returned_container_of_lazy_clients_requires_approval(self):
         code = "import http.client\ndef make():\n    return [http.client.HTTPConnection('203.0.113.5')]\nmake()[0].request('GET', '/')"
         assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize("override", ["{'https': None}", "{'https': 'https://pypi.org/'}"])
+    @pytest.mark.parametrize("redirects", ["False", "True"])
+    def test_request_proxy_override_replaces_session_value(self, override, redirects):
+        code = f"import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {{'https': 'http://203.0.113.5/'}}\ns.get('https://pypi.org/', proxies={override}, allow_redirects={redirects})"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "session, override",
+        [
+            ("{'all': 'http://203.0.113.5/'}", "{'https': 'https://pypi.org/'}"),
+            ("{'https': 'http://203.0.113.5/', 'http': 'http://203.0.113.6/'}", "{'https': None}"),
+        ],
+    )
+    def test_request_override_precedes_unused_session_proxy(self, session, override):
+        code = f"import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {session}\ns.get('https://pypi.org/', proxies={override}, allow_redirects=False)"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "session, override",
+        [
+            ("{'https': 'http://203.0.113.5/'}", "{'http': None}"),
+            ("{'all': 'http://203.0.113.5/'}", "{'https': None}"),
+            ("{'https': 'http://203.0.113.5/'}", "{'https://pypi.org': None}"),
+        ],
+    )
+    def test_request_proxy_override_preserves_remaining_fallback(self, session, override):
+        code = f"import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {session}\ns.get('https://pypi.org/', proxies={override}, allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_request_proxy_none_key_does_not_disable_fallback(self):
+        code = "import requests\nrequests.get('https://pypi.org/', proxies={'https': None, 'all': 'http://203.0.113.5/'}, allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_mutated_request_override_does_not_hide_session_proxy(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\noverrides = {'https': None}\noverrides.clear()\ns.get('https://pypi.org/', proxies=overrides, allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_session_none_proxy_key_keeps_remaining_fallback(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': None, 'all': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
