@@ -346,7 +346,7 @@ class TestNetworkTargetResolution:
                 id = "urllib3_connection_from_url",
             ),
             pytest.param(
-                f"import urllib3\nurllib3.HTTPSConnectionPool(host='{_H}')",
+                f"import urllib3\nurllib3.HTTPSConnectionPool(host='{_H}').request('GET', '/')",
                 id = "urllib3_connection_pool_host_keyword",
             ),
             # Unpacking carries the value to the matching target.
@@ -618,7 +618,7 @@ class TestNetworkTargetResolution:
             ),
             pytest.param(
                 "from urllib3.connectionpool import HTTPSConnectionPool\n"
-                f"HTTPSConnectionPool(host='{_H}')",
+                f"HTTPSConnectionPool(host='{_H}').request('GET', '/')",
                 id = "canonical_connection_pool",
             ),
             pytest.param(
@@ -1053,6 +1053,35 @@ class TestNetworkTargetResolution:
 
     def test_conditional_proxy_update_keeps_old_destination(self):
         code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\nif False:\n    s.proxies.update({'https': None})\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "pool",
+        [
+            "urllib3.HTTPConnectionPool",
+            "urllib3.HTTPSConnectionPool",
+            "urllib3.connectionpool.HTTPConnectionPool",
+            "urllib3.connectionpool.HTTPSConnectionPool",
+        ],
+    )
+    def test_unused_connection_pool_does_not_prompt(self, pool):
+        code = f"import urllib3\npool = {pool}('203.0.113.5')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "method", ["request", "urlopen", "request_encode_url", "request_encode_body"]
+    )
+    def test_connection_pool_request_checks_host(self, method):
+        code = f"import urllib3\npool = urllib3.HTTPConnectionPool('203.0.113.5')\npool.{method}('GET', '/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_changed_connection_pool_host_requires_approval(self):
+        code = "import urllib3\npool = urllib3.HTTPConnectionPool('pypi.org')\npool.host = '203.0.113.5'\npool.request('GET', '/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_unbound_connection_pool_request_checks_host(self):
+        code = "import urllib3\npool = urllib3.HTTPConnectionPool('203.0.113.5')\nurllib3.HTTPConnectionPool.request(pool, 'GET', '/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])

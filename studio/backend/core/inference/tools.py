@@ -15810,6 +15810,11 @@ def _check_signal_escape_patterns(code: str):
     )
     # Network target location: (positional index, keyword, target kind).
     _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
+    _HOST_POOL_CLIENTS = tuple(
+        f"{module}.{pool}"
+        for module in ("urllib3", "urllib3.connectionpool")
+        for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+    )
     _NETWORK_TARGET_ARGS = {
         "socket.create_connection": (0, "address", "host"),
         "socket.getaddrinfo": (0, "host", "host"),
@@ -15838,11 +15843,7 @@ def _check_signal_escape_patterns(code: str):
         },
         "urllib3.ProxyManager": (0, "proxy_url", "url"),
         "urllib3.poolmanager.ProxyManager": (0, "proxy_url", "url"),
-        **{
-            f"{module}.{pool}": (0, "host", "host")
-            for module in ("urllib3", "urllib3.connectionpool")
-            for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
-        },
+        **{pool: (0, "host", "host") for pool in _HOST_POOL_CLIENTS},
         # The raw connection classes take the host the same way the pools do.
         **{
             f"urllib3.connection.{conn}": (0, "host", "host")
@@ -15873,6 +15874,7 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.client.ClientSession",
     )
     _POOL_CLIENTS = (
+        *_HOST_POOL_CLIENTS,
         "urllib3.PoolManager",
         "urllib3.ProxyManager",
         "urllib3.poolmanager.PoolManager",
@@ -16457,6 +16459,7 @@ def _check_signal_escape_patterns(code: str):
     _mapping_removals: list = []
     _request_url_mutations: list = []
     _base_url_mutations: list = []
+    _pool_host_mutations: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16835,6 +16838,12 @@ def _check_signal_escape_patterns(code: str):
                 and isinstance(node.ctx, (ast.Store, ast.Del))
             ):
                 _base_url_mutations.append((node.value, node, scope))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "host"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                _pool_host_mutations.append((node.value, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]
@@ -17413,7 +17422,7 @@ def _check_signal_escape_patterns(code: str):
             return text, True
         return None
 
-    def _configured_proxy_hosts(call: ast.Call) -> list:
+    def _configured_client_hosts(call: ast.Call) -> list:
         pending = [(receiver, call) for receiver in _network_receivers(call)]
         nodes = {id(node): node for node in _tree_nodes(tree)}
         seen, hosts = set(), []
@@ -17428,8 +17437,15 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(constructor, ast.Dict):
                     pending.extend((value, read) for value in constructor.values)
                 elif isinstance(constructor, ast.Call) and any(
-                    fq in _PROXY_CONFIG_CLIENTS for fq in _resolved_fqs(constructor.func)
+                    fq in (*_PROXY_CONFIG_CLIENTS, *_HOST_POOL_CLIENTS)
+                    for fq in _resolved_fqs(constructor.func)
                 ):
+                    if any(fq in _HOST_POOL_CLIENTS for fq in _resolved_fqs(constructor.func)):
+                        present, host = _call_target(constructor, 0, "host")
+                        if _mutations_reach({origin}, call, _pool_host_mutations) or host is None:
+                            hosts.append((False, None))
+                        elif present:
+                            hosts.extend(_target_hosts(host, "host", read = constructor))
                     for kw in constructor.keywords:
                         if kw.arg is None:
                             hosts.append((False, None))
@@ -17648,7 +17664,7 @@ def _check_signal_escape_patterns(code: str):
                     [(False, None)] if expr is None else _target_hosts(expr, kind, read = node)
                 )
             if connects:
-                results += _configured_proxy_hosts(node)
+                results += _configured_client_hosts(node)
             if connects and any(
                 fq.rsplit(".", 1)[0] in _BASE_URL_CLIENTS
                 and fq.rsplit(".", 1)[1] in (*_HTTP_VERBS, "request", "stream", "ws_connect")
@@ -17739,7 +17755,9 @@ def _check_signal_escape_patterns(code: str):
                     dict.fromkeys(
                         _NETWORK_TARGET_ARGS[fq]
                         for fq in net_fqs
-                        if fq in _NETWORK_TARGET_ARGS and fq not in _PROXY_CONFIG_CLIENTS
+                        if fq in _NETWORK_TARGET_ARGS
+                        and fq not in _PROXY_CONFIG_CLIENTS
+                        and fq not in _HOST_POOL_CLIENTS
                     )
                 )
                 if specs:
