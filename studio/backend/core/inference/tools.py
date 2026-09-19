@@ -17927,6 +17927,37 @@ def _check_signal_escape_patterns(code: str):
             return None
         return (f"{url.scheme}://{url.hostname}", url.scheme, f"all://{url.hostname}", "all")
 
+    def _proxy_mapping_items(expr: ast.Dict, depth: int = 0) -> list:
+        items = []
+        for key, value in zip(expr.keys, expr.values):
+            if key is not None:
+                items.append((key, value))
+                continue
+            expanded, _seen = _bound_value(value, frozenset())
+            removals = [
+                (mapping, mutation, _node_scope.get(id(mutation), tree))
+                for mapping, mutation, _key in _mapping_removals
+            ]
+            if (
+                depth < 8
+                and isinstance(expanded, ast.Dict)
+                and not _mutations_reach(
+                    _receiver_origins(value), expr, [*_mapping_mutations, *removals]
+                )
+            ):
+                items.extend(_proxy_mapping_items(expanded, depth + 1))
+            else:
+                items.append((None, None))
+        retained, seen = [], set()
+        for key, value in reversed(items):
+            literal = _static_prefix(key) if key is not None else None
+            if literal is not None and literal[1]:
+                if literal in seen:
+                    continue
+                seen.add(literal)
+            retained.append((key, value))
+        return list(reversed(retained))
+
     def _target_hosts(
         expr: ast.AST,
         kind: str,
@@ -17999,6 +18030,9 @@ def _check_signal_escape_patterns(code: str):
                     results += _base_url_hosts(expr, results)
                 return results
         if isinstance(expr, ast.Dict) and depth <= 8:
+            items = (
+                _proxy_mapping_items(expr) if kind == "proxy" else list(zip(expr.keys, expr.values))
+            )
             removed_keys = {("no_proxy", True)}
             if kind == "proxy" and read is not None:
                 for mapping, removal, removed_key in _mapping_removals:
@@ -18017,7 +18051,7 @@ def _check_signal_escape_patterns(code: str):
                         )
                         continue
                     if isinstance(removal, ast.Call) and removal.func.attr == "popitem":
-                        if len(expr.keys) != 1 or expr.keys[0] is None:
+                        if len(items) != 1 or items[0][0] is None:
                             continue
                     if removed_key is None:
                         return [(True, None)]
@@ -18025,7 +18059,7 @@ def _check_signal_escape_patterns(code: str):
                     if key is not None and key[1]:
                         removed_keys.add(key)
             order = _request_proxy_order(read) if kind == "proxy" else None
-            keys = [_static_prefix(key) if key is not None else None for key in expr.keys]
+            keys = [_static_prefix(key) if key is not None else None for key, _value in items]
             if order is not None and all(key is not None and key[1] for key in keys):
                 selected = next(
                     (
@@ -18035,13 +18069,13 @@ def _check_signal_escape_patterns(code: str):
                     ),
                     None,
                 )
-                for key, value in reversed(list(zip(keys, expr.values))):
+                for key, (_expr_key, value) in reversed(list(zip(keys, items))):
                     if key == (selected, True):
                         return _target_hosts(value, kind, depth + 1, read)
                 return [(True, None)]
             return [
                 result
-                for key, value in zip(expr.keys, expr.values)
+                for key, value in items
                 if kind != "proxy" or key is None or _static_prefix(key) not in removed_keys
                 for result in _target_hosts(value, kind, depth + 1, read)
             ] or [(True, None)]

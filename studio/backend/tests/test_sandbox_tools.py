@@ -1193,6 +1193,38 @@ class TestNetworkTargetResolution:
         code = f"import requests\nrequests.head('https://pypi.org/', proxies={{'http': 'http://203.0.113.5/'}}, {options})"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "mapping",
+        [
+            "{'https': 'http://203.0.113.5/', **{'https': None}}",
+            "{**{'https': 'http://203.0.113.5/'}, 'https': None}",
+            "{'https': 'http://203.0.113.5/', **{'https': 'http://203.0.113.6/', **{'https': None}}}",
+            "{'https': 'http://203.0.113.5/', **disabled}",
+        ],
+    )
+    def test_proxy_unpacking_keeps_last_value(self, mapping):
+        code = f"import requests\ndisabled = {{'https': None}}\nrequests.get('https://pypi.org/', proxies={mapping}, allow_redirects=False)"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "mapping",
+        [
+            "{'https': None, **{'https': 'http://203.0.113.5/'}}",
+            "{**{'https': None}, 'https': 'http://203.0.113.5/'}",
+        ],
+    )
+    def test_proxy_unpacking_retains_selected_blocked_value(self, mapping):
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={mapping}, allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "mutation", ["disabled['https'] = 'http://203.0.113.5/'", "disabled.clear()"]
+    )
+    def test_mutated_proxy_unpacking_requires_approval(self, mutation):
+        code = f"import requests\ndisabled = {{'https': None}}\n{mutation}\nrequests.get('https://pypi.org/', proxies={{'https': 'http://203.0.113.6/', **disabled}}, allow_redirects=False)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
