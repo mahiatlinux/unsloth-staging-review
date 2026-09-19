@@ -16438,6 +16438,7 @@ def _check_signal_escape_patterns(code: str):
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _proxy_stores: list = []
     _mapping_mutations: list = []
+    _request_url_mutations: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16782,6 +16783,12 @@ def _check_signal_escape_patterns(code: str):
                 mutated_mapping = node.func.value
             if mutated_mapping is not None:
                 _mapping_mutations.append((mutated_mapping, node, scope))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "url"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                _request_url_mutations.append((node.value, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]
@@ -17096,9 +17103,10 @@ def _check_signal_escape_patterns(code: str):
                 pending.extend(_alternatives(value))
         return receivers
 
-    def _proxy_mapping_mutated(expr: ast.AST, read: ast.AST) -> bool:
-        origins = _receiver_origins(expr)
-        for mapping, mutation, scope in _mapping_mutations:
+    def _mutations_reach(origins: set, read: ast.AST, mutations: list) -> bool:
+        if not origins:
+            return False
+        for mapping, mutation, scope in mutations:
             if origins & _receiver_origins(mapping):
                 store = (None, _end_position(mutation), _node_block.get(id(mutation)), False)
                 if _reaching([store], read, scope):
@@ -17314,8 +17322,16 @@ def _check_signal_escape_patterns(code: str):
         expr: ast.AST,
         kind: str,
         depth: int = 0,
+        read: ast.AST | None = None,
     ) -> list:
         """Resolve a target to one (resolved, host) per store it may hold."""
+        if (
+            kind == "url"
+            and read is not None
+            and _request_url_mutations
+            and _mutations_reach(_receiver_origins(expr), read, _request_url_mutations)
+        ):
+            return [(False, None)]
         if isinstance(expr, ast.Name) and depth <= 8:
             values = _name_values(expr)
             if values and len(values) > 1:
@@ -17325,22 +17341,25 @@ def _check_signal_escape_patterns(code: str):
                     result
                     for value in values
                     for result in (
-                        _target_hosts(value, kind, depth + 1)
+                        _target_hosts(value, kind, depth + 1, read)
                         if isinstance(value, ast.AST)
                         else [(False, None)]
                     )
                 ]
-        return _target_host(expr, kind, depth)
+        return _target_host(expr, kind, depth, read)
 
     def _target_host(
         expr: ast.AST,
         kind: str,
         depth: int = 0,
+        read: ast.AST | None = None,
     ) -> list:
         """Resolve a URL, host string, or (host, port) target to [(resolved, host)]."""
         expr, _seen = _bound_value(expr, frozenset())
         if isinstance(expr, (ast.IfExp, ast.BoolOp)) and depth <= 8:
-            return [r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1)]
+            return [
+                r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1, read)
+            ]
         if kind == "url" and isinstance(expr, ast.Call):
             # urlopen(Request(url, ...)) and client.send(build_request(m, url)) connect to the
             # URL the request was built with.
@@ -17356,7 +17375,7 @@ def _check_signal_escape_patterns(code: str):
                 present, inner = _call_target(expr, *builder)
                 if not present or inner is None:
                     return [(False, None)]
-                return _target_hosts(inner, "url", depth + 1)
+                return _target_hosts(inner, "url", depth + 1, read)
         if isinstance(expr, ast.Dict) and depth <= 8:
             if not expr.values:
                 return [(True, None)]
@@ -17364,12 +17383,12 @@ def _check_signal_escape_patterns(code: str):
                 result
                 for key, value in zip(expr.keys, expr.values)
                 if kind != "proxy" or key is None or _static_prefix(key) != ("no_proxy", True)
-                for result in _target_hosts(value, kind, depth + 1)
+                for result in _target_hosts(value, kind, depth + 1, read)
             ]
         if isinstance(expr, (ast.Tuple, ast.List)):
             if not expr.elts:
                 return [(True, None)]
-            return _target_hosts(expr.elts[0], "host", depth + 1)
+            return _target_hosts(expr.elts[0], "host", depth + 1, read)
         if isinstance(expr, ast.Constant) and expr.value is None:
             # An explicit None is a disabled proxy or an absent target, not an unknown host.
             return [(True, None)]
@@ -17436,7 +17455,9 @@ def _check_signal_escape_patterns(code: str):
             for present, expr, kind in targets:
                 if not present:
                     continue
-                results.extend([(False, None)] if expr is None else _target_hosts(expr, kind))
+                results.extend(
+                    [(False, None)] if expr is None else _target_hosts(expr, kind, read = node)
+                )
             if not results:
                 return
             # Competing signatures and stores may only add a prompt, never drop a refusal, so a
@@ -17564,7 +17585,7 @@ def _check_signal_escape_patterns(code: str):
                     if any(
                         kind == "proxy"
                         and isinstance(value, ast.AST)
-                        and _proxy_mapping_mutated(value, node)
+                        and _mutations_reach(_receiver_origins(value), node, _mapping_mutations)
                         for _present, value, kind in targets
                     ):
                         targets.append((True, None, "proxy"))

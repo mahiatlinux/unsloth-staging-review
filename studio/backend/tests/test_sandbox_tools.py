@@ -1159,6 +1159,39 @@ class TestNetworkTargetResolution:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize(
+        "mutation", ["r.url = 'http://203.0.113.5/'", "alias = r\nalias.url = input()"]
+    )
+    def test_prepared_request_url_mutation_requires_approval(self, mutation):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            "r = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\n"
+            f"{mutation}\ns.send(r)"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_request_url_mutation_before_prepare_requires_approval(self):
+        code = (
+            "import requests\ns = requests.Session()\nr = requests.Request('GET', 'https://pypi.org/')\n"
+            "r.url = 'http://203.0.113.5/'\ns.send(s.prepare_request(r))"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "s.send(r)\nr.url = 'http://203.0.113.5/'",
+            "r.url = 'http://203.0.113.5/'\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\ns.send(r)",
+        ],
+    )
+    def test_unrelated_request_url_mutation_stays_safe(self, tail):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            "r = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\n" + tail
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
