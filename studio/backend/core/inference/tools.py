@@ -16924,6 +16924,58 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(value, ast.ClassDef)
         ]
 
+    def _class_overrides_method(cls: ast.ClassDef, name: str) -> bool:
+        seen = set()
+        while id(cls) not in seen:
+            seen.add(id(cls))
+            for member in cls.body:
+                if (
+                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name == name
+                ):
+                    if all(
+                        isinstance(decorator, ast.Name)
+                        and decorator.id in ("staticmethod", "classmethod")
+                        and _name_values(decorator) is None
+                        for decorator in member.decorator_list
+                    ):
+                        return True
+                if isinstance(member, ast.Assign) and isinstance(member.value, ast.Lambda):
+                    if any(
+                        isinstance(target, ast.Name) and target.id == name
+                        for target in member.targets
+                    ):
+                        return True
+            if len(cls.bases) != 1 or not isinstance(cls.bases[0], ast.Name):
+                return False
+            bases = _name_values(cls.bases[0]) or []
+            if len(bases) != 1 or not isinstance(bases[0], ast.ClassDef):
+                return False
+            cls = bases[0]
+        return False
+
+    def _has_local_method(expr: ast.AST, name: str) -> bool:
+        pending, seen, classes = [expr], set(), []
+        while pending:
+            value = pending.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if isinstance(value, ast.ClassDef):
+                classes.append(value)
+            elif isinstance(value, ast.Call):
+                pending.append(value.func)
+            elif isinstance(value, (ast.Name, ast.Attribute)):
+                stores = _name_values(value) if isinstance(value, ast.Name) else _attr_values(value)
+                if not stores:
+                    return False
+                pending.extend(stores)
+            elif isinstance(value, (ast.IfExp, ast.BoolOp)):
+                pending.extend(_alternatives(value))
+            else:
+                return False
+        return bool(classes) and all(_class_overrides_method(cls, name) for cls in classes)
+
     def _latest_binding(name: str, scope: ast.AST, read: ast.AST):
         """Position of the certain binding of `name` in effect at this read, if there is one."""
         read_at = _position(read)
@@ -17106,7 +17158,7 @@ def _check_signal_escape_patterns(code: str):
             attr_fqs = [
                 fq
                 for value in stores or []
-                if isinstance(value, ast.AST)
+                if isinstance(value, ast.AST) and not (parts and _has_local_method(value, parts[0]))
                 for fq in _resolved_fqs(value, depth + 1)
             ]
             network = [
@@ -17135,11 +17187,12 @@ def _check_signal_escape_patterns(code: str):
                 return [_UNRESOLVED_FQ]
         if isinstance(cur, ast.Call):
             cls = _super_class(cur)
-            receiver_fqs = (
-                [fq for base in cls.bases for fq in _resolved_fqs(base, depth + 1)]
-                if cls is not None
-                else _resolved_fqs(cur.func, depth + 1)
-            )
+            receiver_fqs = [
+                fq
+                for base in (cls.bases if cls is not None else [cur.func])
+                if not (parts and _has_local_method(base, parts[0]))
+                for fq in _resolved_fqs(base, depth + 1)
+            ]
             # An instance stands for the constructor that made it, but only when that lands on a
             # known client: an opaque helper's name says nothing about what it returned.
             instances = [
@@ -17149,6 +17202,8 @@ def _check_signal_escape_patterns(code: str):
             ]
             return list(dict.fromkeys(instances)) or [""]
         if isinstance(cur, ast.Name):
+            if parts and _has_local_method(cur, parts[0]):
+                return [""]
             bases: list[str] = []
             gave_up = False
             for value in _name_values(cur) or []:
@@ -17156,6 +17211,8 @@ def _check_signal_escape_patterns(code: str):
                     bases.append(value[1])
                     continue
                 if isinstance(value, ast.ClassDef):
+                    if parts and _class_overrides_method(value, parts[0]):
+                        continue
                     for base in value.bases:
                         bases.extend(_resolved_fqs(base, depth + 1))
                     continue

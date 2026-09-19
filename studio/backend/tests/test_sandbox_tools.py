@@ -1072,6 +1072,55 @@ class TestNetworkTargetResolution:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize(
+        "implementation",
+        [
+            "def get(self, url):\n        return url",
+            "@staticmethod\n    def get(url):\n        return url",
+            "@classmethod\n    def get(cls, url):\n        return url",
+            "get = lambda self, url: url",
+        ],
+    )
+    @pytest.mark.parametrize("client", ["Local()", "Child()", "session"])
+    def test_local_network_method_override_stays_safe(self, implementation, client):
+        code = (
+            f"import requests\nclass Local(requests.Session):\n    {implementation}\n"
+            f"class Child(Local):\n    pass\nsession = Child()\n{client}.get('http://203.0.113.5/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "session = Local()\nfetch = session.get\nfetch('http://203.0.113.5/')",
+            "class Holder:\n    def __init__(self):\n        self.client = Local()\n    def fetch(self):\n        return self.client.get('http://203.0.113.5/')\nHolder().fetch()",
+        ],
+    )
+    def test_local_override_through_alias_or_attribute_stays_safe(self, call):
+        code = (
+            "import requests\nclass Local(requests.Session):\n    def get(self, url):\n        return url\n"
+            + call
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_network_override_body_still_requires_approval(self):
+        code = (
+            "import requests\nclass Client(requests.Session):\n"
+            "    def get(self, url):\n        return requests.get(url)\n"
+            "Client().get('http://203.0.113.5/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_later_mixin_override_does_not_hide_network_method(self):
+        _blocked(
+            "import requests\nclass Local:\n    def get(self, url):\n        return url\n"
+            "class Client(requests.Session, Local):\n    pass\nClient().get('http://203.0.113.5/')",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
