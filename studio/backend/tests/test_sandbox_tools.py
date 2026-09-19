@@ -853,6 +853,24 @@ class TestNetworkTargetResolution:
         )
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize("receiver", ["r", "alias"])
+    @pytest.mark.parametrize("proxy", ["'203.0.113.5:8080'", "input()"])
+    def test_urllib_request_proxy_mutation_requires_approval(self, receiver, proxy):
+        code = f"import urllib.request\nr = urllib.request.Request('https://pypi.org/')\nalias = r\n{receiver}.set_proxy({proxy}, 'http')\nurllib.request.urlopen(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "urllib.request.urlopen(r)\nr.set_proxy('203.0.113.5:8080', 'http')",
+            "r.set_proxy('203.0.113.5:8080', 'http')\nr = urllib.request.Request('https://pypi.org/')\nurllib.request.urlopen(r)",
+            "other = urllib.request.Request('https://pypi.org/')\nother.set_proxy('203.0.113.5:8080', 'http')\nurllib.request.urlopen(r)",
+        ],
+    )
+    def test_unused_urllib_request_proxy_mutation_does_not_prompt(self, tail):
+        code = "import urllib.request\nr = urllib.request.Request('https://pypi.org/')\n" + tail
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
