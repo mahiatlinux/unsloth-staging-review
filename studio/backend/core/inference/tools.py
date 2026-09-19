@@ -17768,6 +17768,38 @@ def _check_signal_escape_patterns(code: str):
                 )
         return keys
 
+    def _request_proxy_order(read: ast.AST) -> tuple | None:
+        if not isinstance(read, ast.Call):
+            return None
+        redirect = next((kw.value for kw in read.keywords if kw.arg == "allow_redirects"), None)
+        if redirect is None:
+            return None
+        redirect, _seen = _bound_value(redirect, frozenset())
+        if not isinstance(redirect, ast.Constant) or redirect.value is not False:
+            return None
+        fqs = _resolved_fqs(read.func)
+        if not fqs or any(
+            not fq.startswith("requests.") or fq not in _NETWORK_TARGET_ARGS for fq in fqs
+        ):
+            return None
+        specs = {_NETWORK_TARGET_ARGS[fq] for fq in fqs}
+        if len(specs) != 1:
+            return None
+        position, keyword, kind = specs.pop()
+        present, target = _call_target(read, position, keyword)
+        prefix = (
+            _static_prefix(target) if present and target is not None and kind == "url" else None
+        )
+        if prefix is None or not prefix[1] or not prefix[0].isascii():
+            return None
+        try:
+            url = urllib.parse.urlsplit(prefix[0])
+        except ValueError:
+            return None
+        if url.scheme not in ("http", "https") or not url.hostname or "%" in url.hostname:
+            return None
+        return (f"{url.scheme}://{url.hostname}", url.scheme, f"all://{url.hostname}", "all")
+
     def _target_hosts(
         expr: ast.AST,
         kind: str,
@@ -17865,6 +17897,21 @@ def _check_signal_escape_patterns(code: str):
                     key = _static_prefix(removed_key)
                     if key is not None and key[1]:
                         removed_keys.add(key)
+            order = _request_proxy_order(read) if kind == "proxy" else None
+            keys = [_static_prefix(key) if key is not None else None for key in expr.keys]
+            if order is not None and all(key is not None and key[1] for key in keys):
+                selected = next(
+                    (
+                        key
+                        for key in order
+                        if (key, True) in keys and (key, True) not in removed_keys
+                    ),
+                    None,
+                )
+                for key, value in reversed(list(zip(keys, expr.values))):
+                    if key == (selected, True):
+                        return _target_hosts(value, kind, depth + 1, read)
+                return [(True, None)]
             return [
                 result
                 for key, value in zip(expr.keys, expr.values)

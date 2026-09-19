@@ -1021,6 +1021,36 @@ class TestNetworkTargetResolution:
         )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "proxies",
+        [
+            "{'http': 'http://203.0.113.5/'}",
+            "{'https://example.com': 'http://203.0.113.5/'}",
+            "{'https://pypi.org': None, 'https': 'http://203.0.113.5/'}",
+        ],
+    )
+    def test_disabled_redirects_ignore_unselected_proxy(self, proxies):
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={proxies}, allow_redirects=False)"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "proxies",
+        [
+            "{'https': 'http://203.0.113.5/'}",
+            "{'https://pypi.org': 'http://203.0.113.5/'}",
+            "{'all': 'http://203.0.113.5/'}",
+        ],
+    )
+    def test_disabled_redirects_still_check_selected_proxy(self, proxies):
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={proxies}, allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize("redirects", ["True", "input()"])
+    def test_possible_redirect_retains_other_proxy_entries(self, redirects):
+        code = f"import requests\nrequests.get('https://pypi.org/', proxies={{'http': 'http://203.0.113.5/'}}, allow_redirects={redirects})"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
