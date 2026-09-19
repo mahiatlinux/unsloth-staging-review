@@ -17551,7 +17551,17 @@ def _check_signal_escape_patterns(code: str):
             kind == "url"
             and read is not None
             and _request_url_mutations
-            and _mutations_reach(_receiver_origins(expr), read, _request_url_mutations)
+            and _mutations_reach(
+                _receiver_origins(expr),
+                read,
+                [
+                    (receiver, mutation, scope)
+                    for receiver, mutation, scope in _request_url_mutations
+                    if not isinstance(mutation, ast.Attribute)
+                    or mutation.attr == "url"
+                    or "urllib.request.Request" in _resolved_fqs(receiver)
+                ],
+            )
         ):
             return [(False, None)]
         if isinstance(expr, ast.Name) and depth <= 8:

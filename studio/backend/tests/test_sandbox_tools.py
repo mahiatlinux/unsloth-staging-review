@@ -886,6 +886,11 @@ class TestNetworkTargetResolution:
         code = f"import urllib.request\nr = urllib.request.Request('http://pypi.org/')\nother = urllib.request.Request('http://pypi.org/')\nother.{attribute} = 'http://203.0.113.5/'\nurllib.request.urlopen(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("attribute", ["full_url", "host"])
+    def test_unrelated_prepared_request_attributes_preserve_url(self, attribute):
+        code = f"import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.{attribute} = 'http://203.0.113.5/'\ns.send(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
