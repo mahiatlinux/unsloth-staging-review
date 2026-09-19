@@ -1440,6 +1440,35 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ns.proxies = {'https': None, 'all': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', allow_redirects=False)"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "other",
+        [
+            "class Other:\n    def configure(self): pass\nOther().configure()",
+            "def run():\n    def configure(): pass\n    configure()\nrun()",
+        ],
+    )
+    def test_unrelated_same_named_function_does_not_activate_proxy_store(self, other):
+        code = f"import requests\ns=requests.Session()\ndef configure():\n    s.proxies={{'https':'http://203.0.113.5/'}}\n{other}\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_unrelated_method_does_not_activate_unused_class(self):
+        code = "import requests\ns=requests.Session()\nclass Unused:\n    def configure(self):\n        s.proxies={'https':'http://203.0.113.5/'}\nclass Other:\n    def configure(self): pass\nOther().configure()\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "invoke",
+        [
+            "configure()",
+            "alias=configure\nalias()",
+            "class Other: pass\nother=Other()\nother.configure=configure\nother.configure()",
+        ],
+    )
+    def test_bound_function_reference_retains_proxy_store(self, invoke):
+        code = f"import requests\ns=requests.Session()\ndef configure():\n    s.proxies={{'https':'http://203.0.113.5/'}}\n{invoke}\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_unused_class_method_does_not_change_module_proxy(self):
         code = "import requests\ns=requests.Session()\nclass Unused:\n    def configure(self):\n        s.proxies={'https':'http://203.0.113.5/'}\ns.get('https://pypi.org/')"
         assert _check_code_safety(code) is None

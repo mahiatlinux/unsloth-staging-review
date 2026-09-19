@@ -17002,23 +17002,17 @@ def _check_signal_escape_patterns(code: str):
                 ):
                     active.add(id(node))
         for node in _tree_nodes(tree):
-            name = (
-                node.id
-                if isinstance(node, ast.Name)
-                else node.attr
-                if isinstance(node, ast.Attribute)
-                else None
-            )
-            if name not in functions or not isinstance(node.ctx, ast.Load):
+            if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
                 continue
+            if node.id not in functions:
+                continue
+            candidates = {id(value) for value in _name_values(node) or []} & functions[node.id]
             scope = _node_scope.get(id(node), tree)
             while scope is not tree and not isinstance(
                 scope, (ast.FunctionDef, ast.AsyncFunctionDef)
             ):
                 scope = _scope_parent.get(id(scope)) or tree
-            references.setdefault(id(scope), []).extend(
-                (function, node) for function in functions[name]
-            )
+            references.setdefault(id(scope), []).extend((function, node) for function in candidates)
         _function_activations.update({scope: {None} for scope in active})
         pending = [(scope, None) for scope in active]
         while pending:
