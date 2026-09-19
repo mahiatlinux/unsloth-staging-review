@@ -17399,7 +17399,7 @@ def _check_signal_escape_patterns(code: str):
                 present, inner = _call_target(expr, *builder)
                 if not present or inner is None:
                     return [(False, None)]
-                return _target_hosts(inner, "url", depth + 1, read)
+                return _target_hosts(inner, "url", depth + 1, expr)
         if isinstance(expr, ast.Dict) and depth <= 8:
             if not expr.values:
                 return [(True, None)]

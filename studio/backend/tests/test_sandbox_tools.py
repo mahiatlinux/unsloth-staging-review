@@ -1217,6 +1217,14 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    def test_original_request_mutation_after_prepare_stays_safe(self):
+        code = (
+            "import requests\ns = requests.Session()\nr = requests.Request('GET', 'https://pypi.org/')\n"
+            "prepared = s.prepare_request(r)\nr.url = 'http://203.0.113.5/'\ns.send(prepared)"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
