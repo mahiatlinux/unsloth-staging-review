@@ -16926,6 +16926,7 @@ def _check_signal_escape_patterns(code: str):
 
     def _class_overrides_method(cls: ast.ClassDef, name: str) -> bool:
         seen = set()
+        direct_only = False
         while id(cls) not in seen:
             seen.add(id(cls))
             for member in cls.body:
@@ -16946,8 +16947,10 @@ def _check_signal_escape_patterns(code: str):
                         for target in member.targets
                     ):
                         return True
-            if len(cls.bases) != 1 or not isinstance(cls.bases[0], ast.Name):
+            if direct_only or not cls.bases or not isinstance(cls.bases[0], ast.Name):
                 return False
+            # later bases can precede an ancestor of the first base under c3.
+            direct_only = len(cls.bases) > 1
             bases = _name_values(cls.bases[0]) or []
             if len(bases) != 1 or not isinstance(bases[0], ast.ClassDef):
                 return False

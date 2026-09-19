@@ -1143,6 +1143,22 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    def test_first_mixin_override_stays_safe(self):
+        code = (
+            "import requests\nclass Local:\n    def get(self, url):\n        return url\n"
+            "class Client(Local, requests.Session):\n    pass\nClient().get('http://203.0.113.5/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_mixin_ancestor_does_not_hide_network_method(self):
+        _blocked(
+            "import requests\nclass Local:\n    def get(self, url):\n        return url\n"
+            "class First(Local):\n    pass\nclass Second(requests.Session, Local):\n    pass\n"
+            "class Client(First, Second):\n    pass\nClient().get('http://203.0.113.5/')",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
