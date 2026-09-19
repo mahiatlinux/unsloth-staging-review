@@ -16792,6 +16792,12 @@ def _check_signal_escape_patterns(code: str):
                 and isinstance(node.ctx, (ast.Store, ast.Del))
             ):
                 _request_url_mutations.append((node.value, node, scope))
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("prepare_url", "prepare")
+            ):
+                _request_url_mutations.append((node.func.value, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]

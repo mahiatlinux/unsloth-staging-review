@@ -839,6 +839,24 @@ class TestNetworkTargetResolution:
         code = f"import httpx\nclient = {client}(base_url='http://203.0.113.5/')\nrequest = client.build_request('GET', '/')\nother = {client}()\nother.send(request)"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "prepare_url('http://203.0.113.5/', None)",
+            "prepare(method='GET', url='http://203.0.113.5/')",
+        ],
+    )
+    def test_prepared_request_url_method_requires_approval(self, mutation):
+        code = (
+            "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\n"
+            + f"alias = r\nalias.{mutation}\ns.send(r)"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_prepared_request_header_method_preserves_url(self):
+        code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (
