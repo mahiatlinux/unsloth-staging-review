@@ -925,6 +925,15 @@ class TestNetworkTargetResolution:
         )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    def test_removed_sole_proxy_popitem_does_not_block(self):
+        code = "import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {'https': 'http://203.0.113.5/'}\ns.proxies.popitem()\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_proxy_popitem_does_not_remove_another_entry(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/', 'no_proxy': 'example.com'}\ns.proxies.popitem()\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_alias_write_after_proxy_clear_requires_approval(self):
         code = "import requests\ns = requests.Session()\ns.proxies = {}\nmapping = s.proxies\ns.proxies.clear()\nmapping['https'] = 'http://203.0.113.5/'\ns.get('https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is True

@@ -16792,11 +16792,11 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign))
                 and isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Attribute)
-                and node.value.func.attr in ("clear", "pop")
+                and node.value.func.attr in ("clear", "pop", "popitem")
             ):
                 call = node.value
-                if call.func.attr == "clear" or call.args:
-                    key = None if call.func.attr == "clear" else call.args[0]
+                if call.func.attr != "pop" or call.args:
+                    key = call.args[0] if call.func.attr == "pop" else None
                     _mapping_removals.append((call.func.value, call, key))
             elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Del):
                 _mapping_removals.append((node.value, node, node.slice))
@@ -17464,6 +17464,9 @@ def _check_signal_escape_patterns(code: str):
                         or _end_position(removal) >= _position(read)
                     ):
                         continue
+                    if isinstance(removal, ast.Call) and removal.func.attr == "popitem":
+                        if len(expr.keys) != 1 or expr.keys[0] is None:
+                            continue
                     if removed_key is None:
                         return [(True, None)]
                     key = _static_prefix(removed_key)
