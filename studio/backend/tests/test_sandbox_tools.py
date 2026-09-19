@@ -878,6 +878,37 @@ class TestNetworkTargetResolution:
         code += tail
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("removal", ["clear()", "pop('https')", "pop('https', None)"])
+    @pytest.mark.parametrize("receiver", ["s.proxies", "mapping"])
+    def test_removed_proxy_does_not_block_request(self, removal, receiver):
+        code = (
+            "import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {'https': 'http://203.0.113.5/'}\nmapping = s.proxies\n"
+            + f"{receiver}.{removal}\ns.get('https://pypi.org/')"
+        )
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "removal",
+        [
+            "if False:\n    s.proxies.clear()",
+            "False and s.proxies.clear()",
+            "s.proxies.clear() if False else None",
+            "s.proxies.pop('http')",
+        ],
+    )
+    def test_proxy_removal_preserves_other_destinations(self, removal):
+        code = (
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/', 'http': 'https://pypi.org/'}\n"
+            + removal
+            + "\ns.get('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_alias_write_after_proxy_clear_requires_approval(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {}\nmapping = s.proxies\ns.proxies.clear()\nmapping['https'] = 'http://203.0.113.5/'\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (

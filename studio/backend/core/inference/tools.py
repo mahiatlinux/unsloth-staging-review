@@ -16441,6 +16441,7 @@ def _check_signal_escape_patterns(code: str):
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _proxy_stores: list = []
     _mapping_mutations: list = []
+    _mapping_removals: list = []
     _request_url_mutations: list = []
     _base_url_mutations: list = []
     _model_state: dict[str, bool] = {}
@@ -16787,6 +16788,13 @@ def _check_signal_escape_patterns(code: str):
                 mutated_mapping = node.func.value
             if mutated_mapping is not None:
                 _mapping_mutations.append((mutated_mapping, node, scope))
+            if (
+                isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign))
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr in ("clear", "pop")
+            ):
+                _mapping_removals.append(node.value)
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == "url"
@@ -17441,14 +17449,28 @@ def _check_signal_escape_patterns(code: str):
                     results += _base_url_hosts(expr, results)
                 return results
         if isinstance(expr, ast.Dict) and depth <= 8:
-            if not expr.values:
-                return [(True, None)]
+            removed_keys = {("no_proxy", True)}
+            if kind == "proxy" and read is not None:
+                for removal in _mapping_removals:
+                    if (
+                        _receiver_origins(removal.func.value) != {id(expr)}
+                        or _node_block.get(id(removal)) not in _blocks_around(read)
+                        or _execution_scope(removal) is not _execution_scope(read)
+                        or _end_position(removal) >= _position(read)
+                    ):
+                        continue
+                    if removal.func.attr == "clear":
+                        return [(True, None)]
+                    if removal.args:
+                        key = _static_prefix(removal.args[0])
+                        if key is not None and key[1]:
+                            removed_keys.add(key)
             return [
                 result
                 for key, value in zip(expr.keys, expr.values)
-                if kind != "proxy" or key is None or _static_prefix(key) != ("no_proxy", True)
+                if kind != "proxy" or key is None or _static_prefix(key) not in removed_keys
                 for result in _target_hosts(value, kind, depth + 1, read)
-            ]
+            ] or [(True, None)]
         if isinstance(expr, (ast.Tuple, ast.List)):
             if not expr.elts:
                 return [(True, None)]
