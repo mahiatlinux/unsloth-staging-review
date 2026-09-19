@@ -16822,7 +16822,7 @@ def _check_signal_escape_patterns(code: str):
                         _mapping_removals.append((target.value, node, target.slice))
             if (
                 isinstance(node, ast.Attribute)
-                and node.attr == "url"
+                and node.attr in ("url", "full_url", "host")
                 and isinstance(node.ctx, (ast.Store, ast.Del))
             ):
                 _request_url_mutations.append((node.value, node, scope))
