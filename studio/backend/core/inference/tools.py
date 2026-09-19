@@ -16480,6 +16480,7 @@ def _check_signal_escape_patterns(code: str):
     _pool_host_mutations: list = []
     _gateway_mutations: list = []
     _model_state: dict[str, bool] = {}
+    _initializer_instances: dict = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
         """`self.session` for a plain name or attribute chain, else None."""
@@ -16916,6 +16917,7 @@ def _check_signal_escape_patterns(code: str):
                 _build_scope_model()
             _model_state["built"] = wanted
             if wanted:
+                _map_initializer_instances()
                 _collect_aliased_mutations()
                 _discard_unused_proxy_defaults()
         return _model_state["built"]
@@ -17127,6 +17129,53 @@ def _check_signal_escape_patterns(code: str):
             return [alt for value in expr.values for alt in _alternatives(value)]
         return [expr]
 
+    def _map_initializer_instances() -> None:
+        for call in _tree_nodes(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            target, _seen = _bound_value(call.func, frozenset())
+            if not isinstance(target, ast.ClassDef):
+                continue
+            pending, seen = [target], set()
+            while pending:
+                cls = pending.pop(0)
+                if id(cls) in seen:
+                    continue
+                seen.add(id(cls))
+                initializer = next(
+                    (
+                        member
+                        for member in cls.body
+                        if isinstance(member, ast.FunctionDef) and member.name == "__init__"
+                    ),
+                    None,
+                )
+                if initializer is not None:
+                    _initializer_instances.setdefault(id(initializer), {})[id(call)] = call
+                    if not any(
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "__init__"
+                        and isinstance(node.func.value, ast.Call)
+                        and isinstance(node.func.value.func, ast.Name)
+                        and node.func.value.func.id == "super"
+                        for node in ast.walk(initializer)
+                    ):
+                        continue
+                pending.extend(_base_classes(cls))
+
+    def _initializer_parameter_origins(name: ast.Name) -> set:
+        scope = _node_scope.get(id(name))
+        while scope is not None:
+            if isinstance(scope, _FUNCTION_NODES):
+                parameters = [*scope.args.posonlyargs, *scope.args.args]
+                if any(parameter.arg == name.id for parameter in parameters):
+                    if parameters and parameters[0].arg == name.id:
+                        return set(_initializer_instances.get(id(scope), {}))
+                    return set()
+            scope = _scope_parent.get(id(scope))
+        return set()
+
     def _receiver_origins(expr: ast.AST) -> set:
         origins, seen = set(), set()
         pending = [expr]
@@ -17136,7 +17185,10 @@ def _check_signal_escape_patterns(code: str):
                 continue
             seen.add(id(value))
             if isinstance(value, ast.Name):
-                pending.extend(_name_values(value) or [])
+                values = _name_values(value) or []
+                pending.extend(values)
+                if None in values:
+                    origins.update(_initializer_parameter_origins(value))
             elif isinstance(value, ast.Attribute):
                 values = _attr_values(value)
                 pending.extend(values or [])
@@ -17324,12 +17376,26 @@ def _check_signal_escape_patterns(code: str):
         for owner, stored_receiver, attr, entry in _proxy_stores:
             stored_origins = _receiver_origins(stored_receiver)
             value, position, block, certain = entry
-            certain = certain and len(stored_origins) == 1
+            initializers = _initializer_instances.get(id(_node_scope.get(id(stored_receiver))), {})
             for origin in origins & stored_origins:
-                groups.setdefault((id(owner), attr, origin), (owner, []))[1].append(
-                    (value, position, block, certain)
+                store_owner, store_position, store_block = owner, position, block
+                store_certain = certain and len(stored_origins) == 1
+                if origin in initializers and _execution_scope(read) is not _node_scope.get(
+                    id(stored_receiver)
+                ):
+                    constructor = initializers[origin]
+                    store_owner = _node_scope.get(id(constructor), tree)
+                    # initializer state precedes instance use, including inline constructor receivers.
+                    store_position = (0, *position)
+                    store_block = _node_block.get(id(constructor))
+                    store_certain = certain and block == (
+                        id(_node_scope.get(id(stored_receiver))),
+                        "body",
+                    )
+                groups.setdefault((id(store_owner), attr, origin), (store_owner, []))[1].append(
+                    (value, store_position, store_block, store_certain)
                 )
-                if certain and block in around and position < read_at:
+                if store_certain and store_block in around and store_position < read_at:
                     replaced.add((origin, attr))
         values = [
             value for owner, stores in groups.values() for value in _reaching(stores, read, owner)
@@ -17444,6 +17510,15 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(value, tuple):
                     bases.append(value[1])
                     continue
+                if value is None:
+                    instances = _initializer_parameter_origins(cur)
+                    for constructors in _initializer_instances.values():
+                        for origin in instances & constructors.keys():
+                            constructor = constructors[origin]
+                            if not (parts and _has_local_method(constructor, parts[0])):
+                                bases.extend(_resolved_fqs(constructor.func, depth + 1))
+                    if instances:
+                        continue
                 if isinstance(value, ast.ClassDef):
                     if parts and _class_overrides_method(value, parts[0]):
                         continue
@@ -17936,19 +18011,19 @@ def _check_signal_escape_patterns(code: str):
                         if super_class is not None and bound_receiver.args:
                             bound_receiver = bound_receiver.args[1]
                             super_class = None
-                        receiver = "" if super_class is not None else _dotted(bound_receiver)
-                        if receiver is None:
-                            continue
-                        scope = _node_scope.get(id(bound_receiver), tree)
-                        path = (
-                            _receiver_key(receiver, scope)
-                            if _enclosing_class(scope) is not None
-                            else receiver
-                        )
                         proxy_values = (
                             None if super_class is not None else _proxy_values(bound_receiver, node)
                         )
                         if proxy_values is None:
+                            receiver = "" if super_class is not None else _dotted(bound_receiver)
+                            if receiver is None:
+                                continue
+                            scope = _node_scope.get(id(bound_receiver), tree)
+                            path = (
+                                _receiver_key(receiver, scope)
+                                if _enclosing_class(scope) is not None
+                                else receiver
+                            )
                             proxy_values = [
                                 value
                                 for attr in _PROXY_KEYWORDS

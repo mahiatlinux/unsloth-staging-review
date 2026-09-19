@@ -962,6 +962,37 @@ class TestNetworkTargetResolution:
         code = "import requests\nclass Holder: pass\no = Holder()\ns = requests.Session()\no.configure = s.proxies.update\no.configure = lambda mapping: None\no.configure({'https': 'http://203.0.113.5/'})\ns.get('https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("creation", ["Client()", "Child()", "Alias()"])
+    def test_constructor_proxy_state_reaches_instance(self, creation):
+        code = f"import requests\nclass Client(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {{'https': 'http://203.0.113.5/'}}\nclass Child(Client): pass\nAlias = Client\n{creation}.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_constructor_base_url_write_requires_approval(self):
+        code = "import httpx\nclass Client(httpx.Client):\n    def __init__(self):\n        super().__init__()\n        self.base_url = 'http://203.0.113.5/'\nClient().get('/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_constructor_proxy_store_does_not_merge_instances(self):
+        code = "import requests\nclass Client(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {'https': 'https://pypi.org/'}\na = Client()\nb = Client()\na.proxies = {'https': 'http://203.0.113.5/'}\nb.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_instance_proxy_replacement_supersedes_constructor(self):
+        code = "import requests\nclass Client(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {'https': 'http://203.0.113.5/'}\na = Client()\na.proxies = {}\na.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_overridden_constructor_does_not_inherit_unused_proxy_write(self):
+        code = "import requests\nclass Base(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {'https': 'http://203.0.113.5/'}\nclass Client(Base):\n    def __init__(self):\n        requests.Session.__init__(self)\nClient().get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_constructor_request_retains_earlier_proxy_write(self):
+        code = "import requests\nclass Client(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {'https': 'http://203.0.113.5/'}\n        self.get('https://pypi.org/')\nClient()"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_constructor_proxy_replacement_keeps_final_mapping(self):
+        code = "import requests\nclass Client(requests.Session):\n    def __init__(self):\n        super().__init__()\n        self.proxies = {'https': 'http://203.0.113.5/'}\n        self.proxies = {}\nClient().get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
