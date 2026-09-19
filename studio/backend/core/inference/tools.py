@@ -17098,12 +17098,7 @@ def _check_signal_escape_patterns(code: str):
                     ):
                         return True
                 if isinstance(member, (ast.Assign, ast.AnnAssign)) and member.value is not None:
-                    value, _seen = _bound_value(member.value, frozenset())
-                    local = (
-                        isinstance(value, ast.Lambda)
-                        or isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and not value.decorator_list
-                    )
+                    local = _is_local_function(member.value)
                     targets = member.targets if isinstance(member, ast.Assign) else [member.target]
                     if local and any(
                         isinstance(target, ast.Name) and target.id == name for target in targets
@@ -17157,6 +17152,36 @@ def _check_signal_escape_patterns(code: str):
                 return max(positions, default = None)
             current = _scope_parent.get(id(current))
         return None
+
+    def _has_certain_attr_store(expr: ast.Attribute) -> bool:
+        path = _dotted(expr.value)
+        if path is None:
+            return False
+        scope = _node_scope.get(id(expr), tree)
+        bound_at = None if "." in path else _latest_binding(path, scope, expr)
+        around, read_at = _blocks_around(expr), _position(expr)
+        current = scope
+        while current is not None:
+            receiver = _receiver_key(path, scope) if isinstance(current, ast.ClassDef) else path
+            stores = _attr_stores.get((id(current), receiver, expr.attr))
+            if stores is not None:
+                return any(
+                    certain
+                    and block in around
+                    and position < read_at
+                    and (bound_at is None or position >= bound_at)
+                    for _value, position, block, certain in stores
+                )
+            current = _scope_parent.get(id(current))
+        return False
+
+    def _is_local_function(expr: ast.AST) -> bool:
+        value, _seen = _bound_value(expr, frozenset())
+        return (
+            isinstance(value, ast.Lambda)
+            or isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not value.decorator_list
+        )
 
     def _attr_values(expr: ast.Attribute) -> "list | None":
         path = _dotted(expr.value)
@@ -17309,7 +17334,7 @@ def _check_signal_escape_patterns(code: str):
                 stored = _attr_values(value)
                 if stored:
                     pending.extend(stored)
-                else:
+                if not stored or not _has_certain_attr_store(value):
                     bindings.append((value.value, value.attr))
             elif (
                 isinstance(value, ast.Call)
@@ -17555,6 +17580,12 @@ def _check_signal_escape_patterns(code: str):
             ]
             if network:
                 return list(dict.fromkeys(network))
+            if (
+                stores
+                and all(_is_local_function(value) for value in stores)
+                and _has_certain_attr_store(cur)
+            ):
+                return [""]
             parts.insert(0, cur.attr)
             cur = cur.value
             while isinstance(cur, ast.NamedExpr):

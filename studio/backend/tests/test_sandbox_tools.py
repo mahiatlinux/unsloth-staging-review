@@ -1094,6 +1094,31 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ndict.update(s.proxies, {'no_proxy': '203.0.113.5'})\ns.get('https://pypi.org/')"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("replacement", ["lambda url: url", "local"])
+    def test_instance_local_method_override_does_not_connect(self, replacement):
+        code = f"import requests\ndef local(url):\n    return url\ns = requests.Session()\ns.get = {replacement}\ns.get('http://203.0.113.5/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            "if False:\n    s.get = lambda url: url",
+            "s.get = lambda url: url\ns = requests.Session()",
+        ],
+    )
+    def test_uncertain_instance_override_retains_network_method(self, replacement):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            + replacement
+            + "\ns.get('http://203.0.113.5/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_conditional_instance_override_retains_proxy_receiver(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\nif False:\n    s.get = lambda url: url\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
