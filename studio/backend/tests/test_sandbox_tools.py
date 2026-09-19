@@ -1128,6 +1128,31 @@ class TestNetworkTargetResolution:
         assert _check_code_safety(code) is None
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "client",
+        [
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            "urllib3.connection.HTTPConnection",
+            "urllib3.connection.HTTPSConnection",
+        ],
+    )
+    def test_unused_raw_http_connection_does_not_connect(self, client):
+        code = f"import http.client, urllib3\nc = {client}('203.0.113.5')\nc.close()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "operation", ["connect()", "request('GET', '/')", "send(b'data')", "endheaders()"]
+    )
+    def test_raw_http_connection_checks_host_when_used(self, operation):
+        code = f"import http.client\nc = http.client.HTTPConnection('203.0.113.5')\nc.{operation}"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_changed_raw_http_host_requires_approval(self):
+        code = "import http.client\nc = http.client.HTTPConnection('pypi.org')\nc.host = '203.0.113.5'\nc.request('GET', '/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

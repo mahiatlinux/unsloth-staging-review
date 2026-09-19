@@ -15815,8 +15815,13 @@ def _check_signal_escape_patterns(code: str):
         for module in ("urllib3", "urllib3.connectionpool")
         for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
     )
+    _RAW_HTTP_CLIENTS = tuple(
+        f"{module}.{connection}"
+        for module in ("http.client", "urllib3.connection")
+        for connection in ("HTTPConnection", "HTTPSConnection")
+    )
     _FABRIC_CLIENTS = ("fabric.Connection", "fabric.connection.Connection")
-    _LAZY_HOST_CLIENTS = (*_HOST_POOL_CLIENTS, *_FABRIC_CLIENTS)
+    _LAZY_HOST_CLIENTS = (*_HOST_POOL_CLIENTS, *_RAW_HTTP_CLIENTS, *_FABRIC_CLIENTS)
     _NETWORK_TARGET_ARGS = {
         "socket.create_connection": (0, "address", "host"),
         "socket.getaddrinfo": (0, "host", "host"),
@@ -15846,13 +15851,12 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.ProxyManager": (0, "proxy_url", "url"),
         "urllib3.poolmanager.ProxyManager": (0, "proxy_url", "url"),
         **{pool: (0, "host", "host") for pool in _HOST_POOL_CLIENTS},
-        # The raw connection classes take the host the same way the pools do.
+        **{client: (0, "host", "host") for client in _RAW_HTTP_CLIENTS},
         **{
-            f"urllib3.connection.{conn}": (0, "host", "host")
-            for conn in ("HTTPConnection", "HTTPSConnection")
+            f"{client}.{method}": (None, (), "host")
+            for client in _RAW_HTTP_CLIENTS
+            for method in ("connect", "request", "send", "endheaders")
         },
-        "http.client.HTTPConnection": (0, "host", "host"),
-        "http.client.HTTPSConnection": (0, "host", "host"),
         "paramiko.Transport": (0, "sock", "host"),
         "paramiko.transport.Transport": (0, "sock", "host"),
         **{client: (0, "host", "host") for client in _FABRIC_CLIENTS},
@@ -17390,6 +17394,7 @@ def _check_signal_escape_patterns(code: str):
                 *_CONNECTING_CLIENT_FQ,
                 *_PROXY_CONFIG_CLIENTS,
                 *_FABRIC_CLIENTS,
+                *_RAW_HTTP_CLIENTS,
             )
             for fq in _resolved_fqs(expr)
         )
