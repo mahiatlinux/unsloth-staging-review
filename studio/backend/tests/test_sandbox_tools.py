@@ -1074,6 +1074,26 @@ class TestNetworkTargetResolution:
         code = "import requests\ndef local(self, url):\n    return requests.get('http://203.0.113.5/')\nclass Client(requests.Session):\n    get = local\nClient().get('https://pypi.org/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "lookup, arguments",
+        [
+            ("dict.update", "{'https': 'http://203.0.113.5/'}"),
+            ("dict.setdefault", "'https', 'http://203.0.113.5/'"),
+            ("getattr(dict, 'update')", "{'https': 'http://203.0.113.5/'}"),
+        ],
+    )
+    def test_unbound_proxy_mutator_requires_approval(self, lookup, arguments):
+        code = f"import requests\ns = requests.Session()\nconfigure = {lookup}\nconfigure(s.proxies, {arguments})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_unbound_direct_proxy_mutator_requires_approval(self):
+        code = "import requests\ns = requests.Session()\ndict.update(s.proxies, {'https': 'http://203.0.113.5/'})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_unbound_bypass_key_is_not_a_proxy_destination(self):
+        code = "import requests\ns = requests.Session()\ndict.update(s.proxies, {'no_proxy': '203.0.113.5'})\ns.get('https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

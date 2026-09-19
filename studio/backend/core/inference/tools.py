@@ -17333,6 +17333,22 @@ def _check_signal_escape_patterns(code: str):
                 continue
             scope = _node_scope.get(id(node), tree)
             for receiver, method in _method_bindings(node.func):
+                unbound, _seen = _bound_value(receiver, frozenset())
+                if (
+                    method in ("update", "setdefault")
+                    and isinstance(unbound, ast.Name)
+                    and unbound.id == "dict"
+                    and _name_values(unbound) is None
+                    and node.args
+                ):
+                    mutation = ast.Call(
+                        func = ast.Attribute(value = node.args[0], attr = method),
+                        args = node.args[1:],
+                        keywords = node.keywords,
+                    )
+                    if _proxy_method_values(mutation):
+                        _mapping_mutations.append((node.args[0], node, scope))
+                    continue
                 if isinstance(node.func, ast.Attribute) and receiver is node.func.value:
                     continue
                 if method in ("prepare_url", "prepare", "set_proxy"):
