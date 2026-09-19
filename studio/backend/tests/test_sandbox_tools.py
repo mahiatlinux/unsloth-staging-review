@@ -389,11 +389,11 @@ class TestNetworkTargetResolution:
             ),
             # `stream` takes the method first, unlike the verb methods next to it.
             pytest.param(
-                f"import httpx\nc = httpx.AsyncClient()\nc.stream('GET', 'http://{_H}/')",
+                f"import httpx\nc = httpx.AsyncClient()\nasync with c.stream('GET', 'http://{_H}/'): pass",
                 id = "httpx_client_stream_url_position",
             ),
             pytest.param(
-                f"import httpx\nhttpx.stream('GET', 'http://{_H}/')",
+                f"import httpx\nwith httpx.stream('GET', 'http://{_H}/'): pass",
                 id = "httpx_module_stream_url_position",
             ),
             pytest.param(
@@ -1224,6 +1224,67 @@ class TestNetworkTargetResolution:
     def test_mutated_proxy_unpacking_requires_approval(self, mutation):
         code = f"import requests\ndisabled = {{'https': None}}\n{mutation}\nrequests.get('https://pypi.org/', proxies={{'https': 'http://203.0.113.6/', **disabled}}, allow_redirects=False)"
         assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "factory", ["httpx.stream", "httpx.Client().stream", "httpx.AsyncClient().stream"]
+    )
+    def test_unused_httpx_stream_does_not_connect(self, factory):
+        code = f"import httpx\ncm = {factory}('GET', 'http://203.0.113.5/')\nalias = cm"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "consume",
+        [
+            "with cm: pass",
+            "alias = cm\nwith alias: pass",
+            "cm.__enter__()",
+            "enter = cm.__enter__\nenter()",
+            "import contextlib\nstack = contextlib.ExitStack()\nstack.enter_context(cm)",
+        ],
+    )
+    def test_httpx_stream_checks_host_on_entry(self, consume):
+        code = f"import httpx\ncm = httpx.stream('GET', 'http://203.0.113.5/')\n{consume}"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize("consume", ["async with cm: pass", "await cm.__aenter__()"])
+    def test_async_httpx_stream_checks_host_on_entry(self, consume):
+        code = f"import httpx\nasync def run():\n    c = httpx.AsyncClient()\n    cm = c.stream('GET', 'http://203.0.113.5/')\n    {consume}"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_httpx_stream_keeps_url_argument_snapshot(self):
+        code = "import httpx\nurl = 'https://pypi.org/'\ncm = httpx.stream('GET', url)\nurl = 'http://203.0.113.5/'\nwith cm: pass"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_httpx_stream_checks_client_state_at_entry(self):
+        code = "import httpx\nc = httpx.Client(base_url='https://pypi.org/')\ncm = c.stream('GET', '/')\nc.base_url = 'http://203.0.113.5/'\nwith cm: pass"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_httpx_stream_unknown_consumer_requires_approval(self):
+        code = "import httpx\ndef consume(cm):\n    with cm: pass\ncm = httpx.stream('GET', 'http://203.0.113.5/')\nconsume(cm)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "escape",
+        [
+            "items = [cm]\nwith items[0]: pass",
+            "items = [None]\nitems[0]: object = cm\nwith items[0]: pass",
+            "f = lambda: cm\nwith f(): pass",
+            "def f(value=cm):\n    with value: pass\nf()",
+            "with globals()['cm']: pass",
+        ],
+    )
+    def test_httpx_stream_escaping_tracking_requires_approval(self, escape):
+        code = f"import httpx\ncm = httpx.stream('GET', 'http://203.0.113.5/')\n{escape}"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_httpx_stream_rebinding_leaves_old_manager_unused(self):
+        code = "import httpx\ncm = httpx.stream('GET', 'http://203.0.113.5/')\ncm = httpx.stream('GET', 'https://pypi.org/')\nwith cm: pass"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_httpx_client_stream_retains_constructor_proxy(self):
+        code = "import httpx\nc = httpx.Client(proxy='http://203.0.113.5/')\ncm = c.stream('GET', 'https://pypi.org/')\nwith cm: pass"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"

@@ -15820,6 +15820,7 @@ def _check_signal_escape_patterns(code: str):
         for module in ("http.client", "urllib3.connection")
         for connection in ("HTTPConnection", "HTTPSConnection")
     )
+    _STREAM_FACTORIES = ("httpx.stream", "httpx.Client.stream", "httpx.AsyncClient.stream")
     _FABRIC_CLIENTS = ("fabric.Connection", "fabric.connection.Connection")
     _LAZY_HOST_CLIENTS = (*_HOST_POOL_CLIENTS, *_RAW_HTTP_CLIENTS, *_FABRIC_CLIENTS)
     _NETWORK_TARGET_ARGS = {
@@ -16943,8 +16944,10 @@ def _check_signal_escape_patterns(code: str):
                 "eval",
                 "exec",
             ):
+                _model_state["reflective"] = True
                 return
             if isinstance(node, ast.Attribute) and node.attr in ("__dict__", "__getattribute__"):
+                _model_state["reflective"] = True
                 return
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 functions.setdefault(node.name, set()).add(id(node))
@@ -18192,7 +18195,105 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
 
-        def visit_Call(self, node):
+        def _stream_factories(self, expr):
+            origins = _receiver_origins(expr)
+            if not origins:
+                return []
+            return [
+                factory
+                for factory in _tree_nodes(tree)
+                if id(factory) in origins
+                and isinstance(factory, ast.Call)
+                and any(fq in _STREAM_FACTORIES for fq in _resolved_fqs(factory.func))
+            ]
+
+        def _consume_stream(self, expr, read):
+            for factory in self._stream_factories(expr):
+                # captured arguments retain their scope; client state is read at context entry.
+                call = ast.copy_location(
+                    ast.Call(func = factory.func, args = factory.args, keywords = factory.keywords),
+                    read,
+                )
+                _node_scope[id(call)] = _node_scope.get(id(read), tree)
+                _node_block[id(call)] = _node_block.get(id(read), _ROOT_BLOCK)
+                self.visit_Call(call, consumes_stream = True)
+
+        def visit_With(self, node):
+            for item in node.items:
+                self._consume_stream(item.context_expr, item.context_expr)
+            self.generic_visit(node)
+
+        visit_AsyncWith = visit_With
+
+        def visit_Return(self, node):
+            if node.value is not None:
+                self._consume_stream(node.value, node.value)
+            self.generic_visit(node)
+
+        visit_Yield = visit_Return
+        visit_YieldFrom = visit_Return
+
+        def visit_List(self, node):
+            for value in node.elts:
+                self._consume_stream(value, value)
+            self.generic_visit(node)
+
+        visit_Tuple = visit_List
+        visit_Set = visit_List
+
+        def visit_Dict(self, node):
+            for value in [*node.keys, *node.values]:
+                if value is not None:
+                    self._consume_stream(value, value)
+            self.generic_visit(node)
+
+        def visit_Lambda(self, node):
+            self._consume_stream(node.body, node.body)
+            self.generic_visit(node)
+
+        def visit_arguments(self, node):
+            for value in [*node.defaults, *node.kw_defaults]:
+                if value is not None:
+                    self._consume_stream(value, value)
+            self.generic_visit(node)
+
+        def visit_ListComp(self, node):
+            self._consume_stream(node.elt, node.elt)
+            self.generic_visit(node)
+
+        visit_SetComp = visit_ListComp
+        visit_GeneratorExp = visit_ListComp
+
+        def visit_DictComp(self, node):
+            self._consume_stream(node.key, node.key)
+            self._consume_stream(node.value, node.value)
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            if any(isinstance(target, ast.Subscript) for target in node.targets):
+                self._consume_stream(node.value, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if isinstance(node.target, ast.Subscript) and node.value is not None:
+                self._consume_stream(node.value, node.value)
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            if isinstance(node.ctx, ast.Load) and node.attr not in (
+                "__enter__",
+                "__aenter__",
+                "__exit__",
+                "__aexit__",
+            ):
+                self._consume_stream(node.value, node)
+            self.generic_visit(node)
+
+        def visit_Call(
+            self,
+            node,
+            consumes_stream = False,
+        ):
             parts: list[str] = []
             cur = node.func
             while isinstance(cur, ast.Attribute):
@@ -18202,6 +18303,15 @@ def _check_signal_escape_patterns(code: str):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
             net_fqs = _resolved_fqs(node.func)
+            if not consumes_stream:
+                for receiver, method in _method_bindings(node.func):
+                    if method in ("__enter__", "__aenter__", "__exit__", "__aexit__"):
+                        self._consume_stream(receiver, node)
+                if not net_fqs or not all(fq in ("print", "repr", "str", "type") for fq in net_fqs):
+                    for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+                        self._consume_stream(argument, node)
+                if not _model_state.get("reflective"):
+                    net_fqs = [fq for fq in net_fqs if fq not in _STREAM_FACTORIES]
             if _UNRESOLVED_FQ in net_fqs:
                 unresolved_network_calls.append(
                     {
