@@ -1192,6 +1192,31 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "p['https'] = 'http://203.0.113.5'",
+            "p.update({'https': 'http://203.0.113.5'})",
+            "p |= {'https': 'http://203.0.113.5'}",
+        ],
+    )
+    @pytest.mark.parametrize("tail", ["", "if False:\n    s.proxies = {}\n"])
+    def test_initial_proxy_mapping_alias_requires_approval(self, mutation, tail):
+        code = (
+            "import requests\ns = requests.Session()\np = s.proxies\n"
+            f"{mutation}\n{tail}s.get('https://pypi.org/')"
+        )
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize("replacement", ["s.proxies = {}", "s = requests.Session()"])
+    def test_replaced_initial_proxy_mapping_stays_safe(self, replacement):
+        code = (
+            "import requests\ns = requests.Session()\np = s.proxies\n"
+            f"p['https'] = 'http://203.0.113.5'\n{replacement}\ns.get('https://pypi.org/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

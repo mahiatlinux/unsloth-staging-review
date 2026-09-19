@@ -17060,7 +17060,12 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(value, ast.Name):
                 pending.extend(_name_values(value) or [])
             elif isinstance(value, ast.Attribute):
-                pending.extend(_attr_values(value) or [])
+                values = _attr_values(value)
+                pending.extend(values or [])
+                if not values and value.attr in _PROXY_KEYWORDS:
+                    origins.update(
+                        ("proxy", origin, value.attr) for origin in _receiver_origins(value.value)
+                    )
             elif isinstance(value, (ast.Call, ast.Dict)):
                 origins.add(id(value))
         return origins
@@ -17118,16 +17123,35 @@ def _check_signal_escape_patterns(code: str):
         if not origins:
             return None
         groups: dict = {}
+        replaced = set()
+        around, read_at = _blocks_around(read), _position(read)
         for owner, stored_receiver, attr, entry in _proxy_stores:
             stored_origins = _receiver_origins(stored_receiver)
             value, position, block, certain = entry
+            certain = certain and len(stored_origins) == 1
             for origin in origins & stored_origins:
                 groups.setdefault((id(owner), attr, origin), (owner, []))[1].append(
-                    (value, position, block, certain and len(stored_origins) == 1)
+                    (value, position, block, certain)
                 )
-        return [
+                if certain and block in around and position < read_at:
+                    replaced.add((origin, attr))
+        values = [
             value for owner, stores in groups.values() for value in _reaching(stores, read, owner)
         ]
+        initial_mappings = {
+            ("proxy", origin, attr)
+            for origin in origins
+            for attr in _PROXY_KEYWORDS
+            if (origin, attr) not in replaced
+        }
+        alias_mutations = [
+            mutation
+            for mutation in _mapping_mutations
+            if not (isinstance(mutation[0], ast.Attribute) and mutation[0].attr in _PROXY_KEYWORDS)
+        ]
+        if _mutations_reach(initial_mappings, read, alias_mutations):
+            values.append(None)
+        return values
 
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
@@ -17580,7 +17604,7 @@ def _check_signal_escape_patterns(code: str):
                         targets += [
                             (True, value, "proxy")
                             for value in proxy_values
-                            if isinstance(value, ast.AST)
+                            if isinstance(value, ast.AST) or value is None
                         ]
                     if any(
                         kind == "proxy"
