@@ -17437,7 +17437,7 @@ def _check_signal_escape_patterns(code: str):
             for receiver, method in _method_bindings(node.func):
                 unbound, _seen = _bound_value(receiver, frozenset())
                 if (
-                    method in ("update", "setdefault")
+                    method in ("update", "setdefault", "clear", "pop", "popitem")
                     and isinstance(unbound, ast.Name)
                     and unbound.id == "dict"
                     and _name_values(unbound) is None
@@ -17448,7 +17448,19 @@ def _check_signal_escape_patterns(code: str):
                         args = node.args[1:],
                         keywords = node.keywords,
                     )
-                    if _proxy_method_values(mutation):
+                    if method in ("clear", "pop", "popitem"):
+                        callee, _seen = _bound_value(node.func, frozenset())
+                        if (
+                            (method != "pop" or mutation.args)
+                            and isinstance(callee, ast.Attribute)
+                            and _resolved_fqs(node.func) == [f"dict.{method}"]
+                        ):
+                            ast.copy_location(mutation, node)
+                            _node_scope[id(mutation)] = scope
+                            _node_block[id(mutation)] = _node_block.get(id(node), _ROOT_BLOCK)
+                            key = mutation.args[0] if method == "pop" else None
+                            _mapping_removals.append((node.args[0], mutation, key))
+                    elif _proxy_method_values(mutation):
                         _mapping_mutations.append((node.args[0], node, scope))
                     continue
                 if isinstance(node.func, ast.Attribute) and receiver is node.func.value:

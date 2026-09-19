@@ -1291,6 +1291,29 @@ class TestNetworkTargetResolution:
         assert _check_code_safety(code) is None
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "method, arguments", [("clear", ""), ("pop", ", 'https'"), ("popitem", "")]
+    )
+    @pytest.mark.parametrize("alias", [False, True])
+    def test_unbound_proxy_removal_discards_deleted_host(self, method, arguments, alias):
+        binding = f"remove = dict.{method}\n" if alias else ""
+        caller = "remove" if alias else f"dict.{method}"
+        code = f"import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {{'https': 'http://203.0.113.5/'}}\n{binding}{caller}(s.proxies{arguments})\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "removal",
+        [
+            "if input():\n    dict.clear(s.proxies)",
+            "other = {}\ndict.clear(other)",
+            "remove = dict.clear if input() else lambda value: None\nremove(s.proxies)",
+        ],
+    )
+    def test_uncertain_unbound_proxy_removal_retains_host(self, removal):
+        code = f"import requests\ns = requests.Session()\ns.proxies = {{'https': 'http://203.0.113.5/'}}\n{removal}\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
