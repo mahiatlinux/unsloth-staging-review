@@ -15821,6 +15821,15 @@ def _check_signal_escape_patterns(code: str):
         for connection in ("HTTPConnection", "HTTPSConnection")
     )
     _STREAM_FACTORIES = ("httpx.stream", "httpx.Client.stream", "httpx.AsyncClient.stream")
+    _AIOHTTP_CONTEXT_FACTORIES = (
+        "aiohttp.request",
+        "aiohttp.client.request",
+        *(
+            f"{client}.{method}"
+            for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            for method in (*_HTTP_VERBS, "request", "ws_connect")
+        ),
+    )
     _COROUTINE_FACTORIES = tuple(
         f"httpx.AsyncClient.{method}" for method in (*_HTTP_VERBS, "request", "send")
     ) + ("httpx.AsyncHTTPTransport.handle_async_request",)
@@ -16944,7 +16953,10 @@ def _check_signal_escape_patterns(code: str):
                     continue
                 if not _scope_model_ready():
                     return
-                if not any(fq in _STREAM_FACTORIES for fq in _resolved_fqs(item.context_expr)):
+                if not any(
+                    fq in (*_STREAM_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES)
+                    for fq in _resolved_fqs(item.context_expr)
+                ):
                     continue
                 for groups in (_name_stores, _attr_stores):
                     for key, stores in groups.items():
@@ -18370,14 +18382,18 @@ def _check_signal_escape_patterns(code: str):
                 self.visit_Call(call, consumes_lazy_call = True)
 
         def _consume_stream(self, expr, read):
-            self._consume_lazy_call(expr, read, _STREAM_FACTORIES)
+            self._consume_lazy_call(expr, read, (*_STREAM_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES))
 
         def visit_Await(self, node):
-            self._consume_lazy_call(node.value, node, _COROUTINE_FACTORIES)
+            self._consume_lazy_call(
+                node.value, node, (*_COROUTINE_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES)
+            )
             self.generic_visit(node)
 
         def _consume_escaped_calls(self, expr, read):
-            self._consume_lazy_call(expr, read, (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES))
+            self._consume_lazy_call(
+                expr, read, (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES)
+            )
 
         def _check_lazy_escape(self, expr, read):
             self._consume_escaped_calls(expr, read)
@@ -18460,7 +18476,7 @@ def _check_signal_escape_patterns(code: str):
                 "__exit__",
                 "__aexit__",
             ):
-                self._consume_stream(node.value, node)
+                self._consume_lazy_call(node.value, node, _STREAM_FACTORIES)
             self.generic_visit(node)
 
         def visit_Call(
@@ -18482,7 +18498,9 @@ def _check_signal_escape_patterns(code: str):
                     if method in ("__enter__", "__aenter__", "__exit__", "__aexit__"):
                         self._consume_stream(receiver, node)
                     if method in ("send", "throw", "__await__"):
-                        self._consume_lazy_call(receiver, node, _COROUTINE_FACTORIES)
+                        self._consume_lazy_call(
+                            receiver, node, (*_COROUTINE_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES)
+                        )
                 if not net_fqs or not all(fq in ("print", "repr", "str", "type") for fq in net_fqs):
                     check_escape = (
                         self._consume_stream
@@ -18495,7 +18513,12 @@ def _check_signal_escape_patterns(code: str):
                     net_fqs = [
                         fq
                         for fq in net_fqs
-                        if fq not in (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES)
+                        if fq
+                        not in (
+                            *_STREAM_FACTORIES,
+                            *_COROUTINE_FACTORIES,
+                            *_AIOHTTP_CONTEXT_FACTORIES,
+                        )
                     ]
             if _UNRESOLVED_FQ in net_fqs:
                 unresolved_network_calls.append(

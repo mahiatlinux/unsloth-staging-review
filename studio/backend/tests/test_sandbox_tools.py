@@ -406,7 +406,7 @@ class TestNetworkTargetResolution:
                 id = "httpx_client_base_url",
             ),
             pytest.param(
-                f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
+                f"import aiohttp, asyncio\nasync def run():\n    await aiohttp.ClientSession('http://{_H}').get('/')\nasyncio.run(run())",
                 id = "aiohttp_session_base_url",
             ),
             # The encoded request helpers take the URL after the method, like `request`.
@@ -536,7 +536,7 @@ class TestNetworkTargetResolution:
                 id = "requests_session_factory_name",
             ),
             pytest.param(
-                f"import aiohttp\naiohttp.request('GET', 'http://{_H}/')",
+                f"import aiohttp, asyncio\nasync def run():\n    async with aiohttp.request('GET', 'http://{_H}/'): pass\nasyncio.run(run())",
                 id = "aiohttp_module_request",
             ),
             # The raw connection classes take a host like the pools do.
@@ -587,7 +587,7 @@ class TestNetworkTargetResolution:
             ),
             # A websocket is a connection like any other.
             pytest.param(
-                f"import aiohttp\naiohttp.ClientSession().ws_connect('http://{_H}/')",
+                f"import aiohttp, asyncio\nasync def run():\n    await aiohttp.ClientSession().ws_connect('http://{_H}/')\nasyncio.run(run())",
                 id = "aiohttp_ws_connect",
             ),
             # A client kept on an attribute sends just like one kept in a name.
@@ -626,7 +626,7 @@ class TestNetworkTargetResolution:
                 id = "canonical_requests_api",
             ),
             pytest.param(
-                f"from aiohttp.client import ClientSession\nClientSession().get('http://{_H}/')",
+                f"from aiohttp.client import ClientSession\nimport asyncio\nasync def run():\n    await ClientSession().get('http://{_H}/')\nasyncio.run(run())",
                 id = "canonical_aiohttp_client",
             ),
             # A request built ahead of the call still carries its URL.
@@ -668,7 +668,7 @@ class TestNetworkTargetResolution:
                 id = "self_assignment_keeps_the_alias",
             ),
             pytest.param(
-                f"import aiohttp\ns = aiohttp.ClientSession()\ns.get('http://{_H}/')",
+                f"import aiohttp, asyncio\nasync def run():\n    s = aiohttp.ClientSession()\n    await s.get('http://{_H}/')\nasyncio.run(run())",
                 id = "aiohttp_session_get",
             ),
             pytest.param(
@@ -828,9 +828,15 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("url", ["'/'", "'https://pypi.org/'"])
     def test_client_base_url_is_checked_when_consumed(self, client, url):
         code = f"import httpx, aiohttp\nclient = {client}(base_url='http://203.0.113.5/')\nalias = client\nfetch = alias.get\nfetch({url})"
-        if client == "httpx.AsyncClient":
+        if client == "httpx.AsyncClient" or client.startswith("aiohttp."):
             setup, call = code.rsplit("\n", 1)
-            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
+            code = (
+                "import asyncio\nasync def run():\n    "
+                + setup.replace("\n", "\n    ")
+                + "\n    await "
+                + call
+                + "\nasyncio.run(run())"
+            )
         if url == "'/'":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
         else:
@@ -840,9 +846,15 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("client", ["httpx.Client", "httpx.AsyncClient"])
     def test_built_relative_request_preserves_base_url(self, client):
         code = f"import httpx\nclient = {client}(base_url='http://203.0.113.5/')\nrequest = client.build_request('GET', '/')\nother = {client}()\nother.send(request)"
-        if client == "httpx.AsyncClient":
+        if client == "httpx.AsyncClient" or client.startswith("aiohttp."):
             setup, call = code.rsplit("\n", 1)
-            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
+            code = (
+                "import asyncio\nasync def run():\n    "
+                + setup.replace("\n", "\n    ")
+                + "\n    await "
+                + call
+                + "\nasyncio.run(run())"
+            )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize(
@@ -1467,6 +1479,31 @@ class TestNetworkTargetResolution:
         code = f"import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient()\n    pending = c.get('http://203.0.113.5/')\n    {consume}\nasyncio.run(run())"
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            "c.get('http://203.0.113.5/')",
+            "c.request('GET', 'http://203.0.113.5/')",
+            "c.ws_connect('http://203.0.113.5/')",
+        ],
+    )
+    def test_unused_aiohttp_context_does_not_connect(self, factory):
+        code = f"import aiohttp, asyncio\nasync def run():\n    async with aiohttp.ClientSession() as c:\n        pending = {factory}\n        pending.close()\nasyncio.run(run())"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "consume",
+        ["await pending", "async with pending: pass", "await asyncio.create_task(pending)"],
+    )
+    def test_aiohttp_context_checks_consumed_destination(self, consume):
+        code = f"import aiohttp, asyncio\nasync def run():\n    async with aiohttp.ClientSession() as c:\n        pending = c.get('http://203.0.113.5/')\n        {consume}\nasyncio.run(run())"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_aiohttp_response_does_not_reconsume_context(self):
+        code = "import aiohttp, asyncio\nasync def run():\n    async with aiohttp.ClientSession(base_url='https://pypi.org/') as c:\n        async with c.get('/') as response:\n            c._base_url = input()\n            await response.text()\nasyncio.run(run())"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_coroutine_captures_url_before_reassignment(self):
         code = "import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient()\n    url = 'http://203.0.113.5/'\n    pending = c.get(url)\n    url = 'https://pypi.org/'\n    await pending\nasyncio.run(run())"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
@@ -1503,9 +1540,15 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("setup", ["", "base_url='https://pypi.org/'"])
     def test_reassigned_client_base_url_requires_approval(self, client, setup):
         code = f"import httpx\nc = {client}({setup})\nalias = c\nalias.base_url = 'http://203.0.113.5/'\nc.get('/')"
-        if client == "httpx.AsyncClient":
+        if client == "httpx.AsyncClient" or client.startswith("aiohttp."):
             setup, call = code.rsplit("\n", 1)
-            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
+            code = (
+                "import asyncio\nasync def run():\n    "
+                + setup.replace("\n", "\n    ")
+                + "\n    await "
+                + call
+                + "\nasyncio.run(run())"
+            )
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
     @pytest.mark.parametrize(
@@ -1716,9 +1759,15 @@ class TestNetworkTargetResolution:
     )
     def test_unbound_request_checks_shifted_url(self, client):
         code = f"import requests, httpx, aiohttp, urllib3\ns = {client}()\n{client}.request(s, 'GET', 'http://203.0.113.5/')"
-        if client == "httpx.AsyncClient":
+        if client == "httpx.AsyncClient" or client.startswith("aiohttp."):
             setup, call = code.rsplit("\n", 1)
-            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
+            code = (
+                "import asyncio\nasync def run():\n    "
+                + setup.replace("\n", "\n    ")
+                + "\n    await "
+                + call
+                + "\nasyncio.run(run())"
+            )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize("callee", ["requests.Session.get", "getattr(requests.Session, 'get')"])
@@ -2365,7 +2414,7 @@ class TestNetworkTargetResolution:
             "import requests\n(fetch := requests.get)(input())",
             # A runtime attribute of a tracked module is a call we cannot name.
             "import requests\ngetattr(requests, name)('http://203.0.113.5/')",
-            "import aiohttp\naiohttp.ClientSession().ws_connect(input())",
+            "import aiohttp, asyncio\nasync def run():\n    await aiohttp.ClientSession().ws_connect(input())\nasyncio.run(run())",
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get(input())",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': input()})",
@@ -2494,8 +2543,8 @@ class TestUploadDenylist:
                 id = "requests_session_factory_post_files_blocked",
             ),
             pytest.param(
-                "import aiohttp\n"
-                'aiohttp.request("POST", "https://huggingface.co/x", data=open("artifact", "rb"))',
+                "import aiohttp, asyncio\nasync def run():\n"
+                '    async with aiohttp.request("POST", "https://huggingface.co/x", data=open("artifact", "rb")): pass\nasyncio.run(run())',
                 id = "aiohttp_request_data_open_handle_blocked",
             ),
             # A payload attached when the request is built is the same upload as an inline one.
