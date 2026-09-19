@@ -17083,6 +17083,12 @@ def _check_signal_escape_patterns(code: str):
                 pending.extend(_name_values(value) or [])
             elif isinstance(value, ast.Attribute):
                 receivers.append(value.value)
+            elif (
+                isinstance(value, ast.Call)
+                and value.args
+                and "getattr" in _resolved_fqs(value.func)
+            ):
+                receivers.append(value.args[0])
             elif isinstance(value, (ast.IfExp, ast.BoolOp)):
                 pending.extend(_alternatives(value))
         return receivers
@@ -17175,6 +17181,8 @@ def _check_signal_escape_patterns(code: str):
             owners = [b for b in _resolved_fqs(args[0], depth + 1) if b] if args else []
             attr = args[1] if len(args) > 1 else None
             if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                if args and _has_local_method(args[0], attr.value):
+                    return [""]
                 dynamic = [
                     fq
                     for fq in (".".join([b, attr.value, *parts]) for b in owners)

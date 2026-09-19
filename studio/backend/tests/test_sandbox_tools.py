@@ -1121,6 +1121,28 @@ class TestNetworkTargetResolution:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "getattr(s, 'get')('https://pypi.org/')",
+            "fetch = getattr(s, 'get')\nfetch('https://pypi.org/')",
+        ],
+    )
+    def test_getattr_method_retains_session_proxy(self, call):
+        _blocked(
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            + call,
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_getattr_respects_local_method_override(self):
+        code = (
+            "import requests\nclass Local(requests.Session):\n    def get(self, url):\n        return url\n"
+            "session = Local()\ngetattr(session, 'get')('http://203.0.113.5/')"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
