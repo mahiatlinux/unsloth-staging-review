@@ -974,6 +974,20 @@ class TestNetworkTargetResolution:
         code = "import httpx\nc = httpx.Client(proxy='http://203.0.113.5/')\nfetch = c.get\nfetch('https://pypi.org/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("method", ["get", "request", "ws_connect"])
+    def test_aiohttp_network_path_reference_checks_authority(self, method):
+        args = "'GET', " if method == "request" else ""
+        code = (
+            "import aiohttp\nasync def fetch():\n    async with aiohttp.ClientSession(base_url='https://pypi.org/') as client:\n"
+            + f"        await client.{method}({args}'//203.0.113.5/path')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_httpx_network_path_reference_keeps_base_host(self):
+        code = "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('//203.0.113.5/path')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (

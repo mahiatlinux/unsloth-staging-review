@@ -15906,12 +15906,20 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_TARGET_ARGS.update(
         {
             **{
-                f"{client}.{method}": (0, "url", "url")
+                f"{client}.{method}": (
+                    0,
+                    "url",
+                    "url_reference" if client.startswith("aiohttp.") else "url",
+                )
                 for client in _VERB_CLIENTS
                 for method in _HTTP_VERBS
             },
             **{
-                f"{client}.request": (1, "url", "url")
+                f"{client}.request": (
+                    1,
+                    "url",
+                    "url_reference" if client.startswith("aiohttp.") else "url",
+                )
                 for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
             },
             **{
@@ -15925,7 +15933,7 @@ def _check_signal_escape_patterns(code: str):
             "httpx.AsyncHTTPTransport.handle_async_request": (0, "request", "url"),
             **{client: (None, "proxy", "proxy") for client in _BASE_URL_CLIENTS},
             **{
-                f"{c}.ws_connect": (0, "url", "url")
+                f"{c}.ws_connect": (0, "url", "url_reference")
                 for c in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
             },
             **{f"{c}.send": (0, "request", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
@@ -17523,6 +17531,10 @@ def _check_signal_escape_patterns(code: str):
         # urlsplit drops tab and newline anywhere and ignores leading control characters, so
         # `requests.get(" http://host/")` reaches the host. Parse what the client will send.
         text = re.sub(r"[\t\r\n]", "", text).lstrip("\x00-\x20 ")
+        if kind == "url_reference":
+            if text.startswith("//"):
+                text = "http:" + text
+            kind = "url"
         if kind == "proxy":
             if not re.match(r"^\w+://", text):
                 text = ("http:" if text.startswith("//") else "http://") + text
