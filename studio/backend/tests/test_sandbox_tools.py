@@ -988,6 +988,32 @@ class TestNetworkTargetResolution:
         assert _check_code_safety(code) is None
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize(
+        "client",
+        [
+            "requests.Session",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+            "urllib3.PoolManager",
+        ],
+    )
+    def test_unbound_request_checks_shifted_url(self, client):
+        code = f"import requests, httpx, aiohttp, urllib3\ns = {client}()\n{client}.request(s, 'GET', 'http://203.0.113.5/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize("callee", ["requests.Session.get", "getattr(requests.Session, 'get')"])
+    def test_unbound_method_preserves_instance_proxy(self, callee):
+        code = (
+            "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\n"
+            + f"fetch = {callee}\nfetch(s, 'https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_unbound_request_with_dynamic_method_and_allowed_url(self):
+        code = "import requests\ns = requests.Session()\nrequests.Session.request(s, method, 'https://pypi.org/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (

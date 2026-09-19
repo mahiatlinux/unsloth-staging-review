@@ -17110,6 +17110,8 @@ def _check_signal_escape_patterns(code: str):
                     )
             elif isinstance(value, (ast.Call, ast.Dict)):
                 origins.add(id(value))
+            elif isinstance(value, ast.NamedExpr):
+                pending.append(value.value)
             elif isinstance(value, (ast.IfExp, ast.BoolOp)):
                 pending.extend(_alternatives(value))
         return origins
@@ -17150,6 +17152,25 @@ def _check_signal_escape_patterns(code: str):
                 receivers.append(value.args[0])
             elif isinstance(value, (ast.IfExp, ast.BoolOp)):
                 pending.extend(_alternatives(value))
+        return receivers
+
+    def _is_client_class(expr: ast.AST) -> bool:
+        return not _receiver_origins(expr) and any(
+            fq in (*_VERB_CLIENTS, *_POOL_CLIENTS, *_CONNECTING_CLIENT_FQ, *_PROXY_CONFIG_CLIENTS)
+            for fq in _resolved_fqs(expr)
+        )
+
+    def _network_receivers(call: ast.Call) -> list:
+        receivers = []
+        for receiver in _method_receivers(call.func):
+            if _is_client_class(receiver):
+                receiver = (
+                    call.args[0]
+                    if call.args
+                    else next((kw.value for kw in call.keywords if kw.arg == "self"), None)
+                )
+            if receiver is not None:
+                receivers.append(receiver)
         return receivers
 
     def _mutations_reach(origins: set, read: ast.AST, mutations: list) -> bool:
@@ -17387,7 +17408,7 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     def _configured_proxy_hosts(call: ast.Call) -> list:
-        pending = [(receiver, call) for receiver in _method_receivers(call.func)]
+        pending = [(receiver, call) for receiver in _network_receivers(call)]
         nodes = {id(node): node for node in _tree_nodes(tree)}
         seen, hosts = set(), []
         while pending:
@@ -17415,7 +17436,7 @@ def _check_signal_escape_patterns(code: str):
     def _base_url_hosts(call: ast.Call, results: list) -> list:
         if all(resolved and host for resolved, host in results):
             return []
-        origins = set().union(*(_receiver_origins(r) for r in _method_receivers(call.func)))
+        origins = set().union(*(_receiver_origins(r) for r in _network_receivers(call)))
         if _mutations_reach(origins, call, _base_url_mutations):
             return [(False, None)]
         hosts = []
@@ -17556,6 +17577,11 @@ def _check_signal_escape_patterns(code: str):
                 return True, kw.value
         args = node.args or []
         if position is not None:
+            binding = {_is_client_class(receiver) for receiver in _method_receivers(node.func)}
+            if len(binding) > 1:
+                return True, None
+            if binding == {True}:
+                position += 1
             if any(isinstance(a, ast.Starred) for a in args[: position + 1]):
                 return True, None
             if len(args) > position:
@@ -17700,7 +17726,7 @@ def _check_signal_escape_patterns(code: str):
                     if any(kw.arg is None for kw in node.keywords or []):
                         targets.append((True, None, "url"))
                     # `s.proxies = {...}` before the call sends there just the same.
-                    for bound_receiver in _method_receivers(node.func):
+                    for bound_receiver in _network_receivers(node):
                         super_class = _super_class(bound_receiver)
                         if super_class is not None and bound_receiver.args:
                             bound_receiver = bound_receiver.args[1]
