@@ -16805,7 +16805,7 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign))
                 and isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Attribute)
-                and node.value.func.attr in ("clear", "pop", "popitem")
+                and node.value.func.attr in ("clear", "pop", "popitem", "update")
             ):
                 call = node.value
                 if call.func.attr != "pop" or call.args:
@@ -17458,6 +17458,20 @@ def _check_signal_escape_patterns(code: str):
                         )
         return hosts
 
+    def _proxy_update_keys(call: ast.Call) -> list:
+        keys = [ast.Constant(value = kw.arg) for kw in call.keywords if kw.arg is not None]
+        for argument in call.args:
+            value, _seen = _bound_value(argument, frozenset())
+            if isinstance(value, ast.Dict):
+                keys.extend(key for key in value.keys if key is not None)
+            elif isinstance(value, (ast.List, ast.Tuple)):
+                keys.extend(
+                    pair.elts[0]
+                    for pair in value.elts
+                    if isinstance(pair, (ast.List, ast.Tuple)) and len(pair.elts) == 2
+                )
+        return keys
+
     def _target_hosts(
         expr: ast.AST,
         kind: str,
@@ -17529,6 +17543,13 @@ def _check_signal_escape_patterns(code: str):
                         or _execution_scope(removal) is not _execution_scope(read)
                         or _end_position(removal) >= _position(read)
                     ):
+                        continue
+                    if isinstance(removal, ast.Call) and removal.func.attr == "update":
+                        removed_keys.update(
+                            key
+                            for expr_key in _proxy_update_keys(removal)
+                            if (key := _static_prefix(expr_key)) is not None and key[1]
+                        )
                         continue
                     if isinstance(removal, ast.Call) and removal.func.attr == "popitem":
                         if len(expr.keys) != 1 or expr.keys[0] is None:

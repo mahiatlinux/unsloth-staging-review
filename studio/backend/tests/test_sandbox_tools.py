@@ -1040,6 +1040,21 @@ class TestNetworkTargetResolution:
         )
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "update", ["{'https': None}", "https=None", "[('https', None)]", "options"]
+    )
+    def test_proxy_update_replaces_old_destination(self, update):
+        code = (
+            "import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {'https': 'http://203.0.113.5/'}\noptions = {'https': None}\n"
+            + f"s.proxies.update({update})\ns.get('https://pypi.org/')"
+        )
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_conditional_proxy_update_keeps_old_destination(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\nif False:\n    s.proxies.update({'https': None})\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (
