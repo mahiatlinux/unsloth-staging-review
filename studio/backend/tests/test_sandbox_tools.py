@@ -1060,6 +1060,31 @@ class TestNetworkTargetResolution:
         assert _check_code_safety(code) is None
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("helper", ["configure()", "invoke()"])
+    def test_nested_later_helper_does_not_change_earlier_request(self, helper):
+        code = f"import requests\ns = requests.Session()\ndef configure():\n    s.proxies = {{'https': 'http://203.0.113.5/'}}\ndef invoke():\n    configure()\ndef run():\n    s.get('https://pypi.org/')\n    {helper}\nrun()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "calls", ["run()\nrun()", "for _ in range(2):\n    run()", "alias = run\nalias()\nalias()"]
+    )
+    def test_repeated_caller_retains_later_helper_state(self, calls):
+        code = f"import requests\ns = requests.Session()\ndef configure():\n    s.proxies = {{'https': 'http://203.0.113.5/'}}\ndef run():\n    s.get('https://pypi.org/')\n    configure()\n{calls}"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "configure()\n    s.get('https://pypi.org/')",
+            "s.get('https://pypi.org/', headers=configure())",
+            "alias = configure\n    alias()\n    s.get('https://pypi.org/')",
+        ],
+    )
+    def test_nested_earlier_helper_state_is_checked(self, body):
+        code = f"import requests\ns = requests.Session()\ndef configure():\n    s.proxies = {{'https': 'http://203.0.113.5/'}}\ndef run():\n    {body}\nrun()"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_helper_in_request_arguments_runs_before_request(self):
         code = "import requests\ns = requests.Session()\ndef configure():\n    s.proxies = {'https': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', headers=configure())"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")

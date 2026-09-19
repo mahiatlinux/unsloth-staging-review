@@ -16487,6 +16487,8 @@ def _check_signal_escape_patterns(code: str):
     _initializer_instances: dict = {}
     _inactive_functions: set = set()
     _function_activations: dict = {}
+    _function_references: dict = {}
+    _single_call_functions: set = set()
 
     def _dotted(expr: ast.AST) -> "str | None":
         """`self.session` for a plain name or attribute chain, else None."""
@@ -16977,12 +16979,59 @@ def _check_signal_escape_patterns(code: str):
                     entries.add(reached)
                     pending.append((function, reached))
         active = set(_function_activations)
+        direct_calls = {id(node.func) for node in _tree_nodes(tree) if isinstance(node, ast.Call)}
+        for scope, entries in references.items():
+            if scope in active:
+                for function, reference in entries:
+                    _function_references.setdefault(function, []).append((scope, reference))
+        _single_call_functions.add(id(tree))
+        changed = True
+        while changed:
+            changed = False
+            for function, entries in _function_references.items():
+                if function in _single_call_functions or len(entries) != 1:
+                    continue
+                scope, reference = entries[0]
+                if (
+                    scope in _single_call_functions
+                    and id(reference) in direct_calls
+                    and id(_node_scope.get(id(reference))) == scope
+                    and not (_blocks_around(reference) & _loop_blocks)
+                    and None not in _function_activations.get(function, {None})
+                ):
+                    _single_call_functions.add(function)
+                    changed = True
         _inactive_functions.update(
             function
             for values in functions.values()
             for function in values
             if function not in active
         )
+
+    def _later_function_use(owner: ast.AST, execution: ast.AST, read: ast.AST) -> bool:
+        if id(execution) not in _single_call_functions:
+            return False
+        cutoff = _end_position(read) if isinstance(read, ast.Call) else _position(read)
+        pending, seen = [id(owner)], set()
+        while pending:
+            function = pending.pop()
+            if function in seen:
+                return False
+            seen.add(function)
+            references = _function_references.get(function)
+            if not references:
+                return False
+            for scope, reference in references:
+                if scope == id(execution):
+                    if _position(reference) < cutoff or (
+                        _blocks_around(reference) & _blocks_around(read) & _loop_blocks
+                    ):
+                        return False
+                elif scope == id(tree):
+                    return False
+                else:
+                    pending.append(scope)
+        return True
 
     def _block_chain(block) -> set:
         """Return this block and every block enclosing it."""
@@ -17025,6 +17074,8 @@ def _check_signal_escape_patterns(code: str):
             if all(_position(reference) >= cutoff for reference in activations):
                 return []
         deferred = execution is not None and owner is not execution
+        if deferred and _later_function_use(owner, execution, read):
+            return []
         reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
         # A store in the same body, after this one and before the read, always runs in between,
         # but only if it is guaranteed to bind at all. Branches, loop bodies and walrus
