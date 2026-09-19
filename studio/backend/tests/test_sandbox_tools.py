@@ -1119,6 +1119,15 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\nif False:\n    s.get = lambda url: url\ns.get('https://pypi.org/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    def test_deleted_instance_override_restores_proxy_receiver(self):
+        code = "import requests\ns = requests.Session()\ns.proxies = {'https': 'http://203.0.113.5/'}\ns.get = lambda url: url\ndel s.get\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_deleted_instance_override_preserves_allowed_request(self):
+        code = "import requests\ns = requests.Session()\ns.get = lambda url: url\ndel s.get\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

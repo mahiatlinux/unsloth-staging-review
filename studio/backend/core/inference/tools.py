@@ -17334,7 +17334,7 @@ def _check_signal_escape_patterns(code: str):
                 stored = _attr_values(value)
                 if stored:
                     pending.extend(stored)
-                if not stored or not _has_certain_attr_store(value):
+                if not stored or None in stored or not _has_certain_attr_store(value):
                     bindings.append((value.value, value.attr))
             elif (
                 isinstance(value, ast.Call)
