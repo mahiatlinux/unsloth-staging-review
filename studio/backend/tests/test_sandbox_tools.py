@@ -2500,6 +2500,49 @@ class TestHostNormalization:
 
 class TestUploadDenylist:
     @pytest.mark.parametrize(
+        "builder",
+        [
+            "requests.Request('POST', 'https://pypi.org/', data=b'x')",
+            "httpx.Request('POST', 'https://pypi.org/', files={'f': b'x'})",
+            "httpx.Client().build_request('POST', 'https://pypi.org/', data=b'x')",
+            "requests.Session().prepare_request(requests.Request('POST', 'https://pypi.org/', data=b'x'))",
+        ],
+    )
+    def test_unused_request_payload_is_not_uploaded(self, builder):
+        code = f"import requests, httpx\nr = {builder}"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "setup, consume",
+        [
+            (
+                "s=requests.Session()\nr=s.prepare_request(requests.Request('POST', 'https://pypi.org/', data=b'x'))",
+                "s.send(r)",
+            ),
+            (
+                "c=httpx.Client()\nr=c.build_request('POST', 'https://pypi.org/', data=b'x')",
+                "c.send(r)",
+            ),
+            (
+                "r=urllib.request.Request('https://pypi.org/', data=b'x')",
+                "urllib.request.urlopen(r)",
+            ),
+            (
+                "s=requests.Session()\nr=requests.Request('POST', 'https://pypi.org/', data=b'x').prepare()",
+                "s.send(r)",
+            ),
+            (
+                "c=httpx.Client()\nr=c.build_request('POST', 'https://pypi.org/', data=b'x')\nitems=[r]",
+                "c.send(items[0])",
+            ),
+        ],
+    )
+    def test_built_request_payload_is_checked_when_sent(self, setup, consume):
+        code = f"import requests, httpx, urllib.request\n{setup}\n{consume}"
+        _blocked(code, expect_phrase = "Blocked: file upload disallowed in sandbox")
+
+    @pytest.mark.parametrize(
         "code",
         [
             pytest.param(

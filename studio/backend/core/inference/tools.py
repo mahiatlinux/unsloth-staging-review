@@ -18395,6 +18395,9 @@ def _check_signal_escape_patterns(code: str):
                 expr, read, (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES, *_AIOHTTP_CONTEXT_FACTORIES)
             )
 
+            if self._request_has_upload(expr):
+                self._block_upload(read)
+
         def _check_lazy_escape(self, expr, read):
             self._consume_escaped_calls(expr, read)
             if id(_execution_scope(read)) not in _inactive_functions and self._lazy_factories(
@@ -18407,6 +18410,42 @@ def _check_signal_escape_patterns(code: str):
                         "description": "Lazy network client escapes tracked consumption",
                     }
                 )
+
+        def _request_has_upload(
+            self,
+            expr,
+            depth = 0,
+        ):
+            if depth > 8:
+                return False
+            factories = (
+                *_REQUEST_BUILDERS,
+                "requests.Request.prepare",
+                "requests.models.Request.prepare",
+            )
+            for factory in self._lazy_factories(expr, factories):
+                for fq in _resolved_fqs(factory.func):
+                    if _call_is_upload_shape(factory, fq):
+                        return True
+                    if fq.endswith(".prepare"):
+                        nested = _method_receivers(factory.func)
+                    elif fq in _REQUEST_BUILDERS:
+                        _present, target = _call_target(factory, *_REQUEST_BUILDERS[fq])
+                        nested = [target] if target is not None else []
+                    else:
+                        nested = []
+                    if any(self._request_has_upload(value, depth + 1) for value in nested):
+                        return True
+            return False
+
+        def _block_upload(self, node):
+            network_calls.append(
+                {
+                    "type": "upload_blocked",
+                    "line": getattr(node, "lineno", -1),
+                    "description": "Blocked: file upload disallowed in sandbox",
+                }
+            )
 
         def visit_With(self, node):
             for item in node.items:
@@ -18504,7 +18543,10 @@ def _check_signal_escape_patterns(code: str):
                 if not net_fqs or not all(fq in ("print", "repr", "str", "type") for fq in net_fqs):
                     check_escape = (
                         self._consume_stream
-                        if net_fqs and all(fq in _NETWORK_TARGET_ARGS for fq in net_fqs)
+                        if net_fqs
+                        and all(
+                            fq in _NETWORK_TARGET_ARGS or fq in _REQUEST_BUILDERS for fq in net_fqs
+                        )
                         else self._check_lazy_escape
                     )
                     for argument in [*node.args, *(kw.value for kw in node.keywords)]:
@@ -18557,14 +18599,21 @@ def _check_signal_escape_patterns(code: str):
             # call whether or not some prefix also happens to cover it.
             if any(_is_network_fq(fq) for fq in net_fqs):
                 # 1) Upload-shape check (host-independent).
-                if any(_call_is_upload_shape(node, fq) for fq in net_fqs):
-                    network_calls.append(
-                        {
-                            "type": "upload_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": ("Blocked: file upload disallowed in sandbox"),
-                        }
+                if any(
+                    fq not in _REQUEST_BUILDERS and _call_is_upload_shape(node, fq)
+                    for fq in net_fqs
+                ) or (
+                    any(
+                        fq in _NETWORK_TARGET_ARGS
+                        and fq not in (*_PROXY_CONFIG_CLIENTS, *_LAZY_HOST_CLIENTS)
+                        for fq in net_fqs
                     )
+                    and any(
+                        self._request_has_upload(argument)
+                        for argument in [*node.args, *(kw.value for kw in node.keywords)]
+                    )
+                ):
+                    self._block_upload(node)
 
                 # 2) Resolve the call's URL or host argument under every candidate signature.
                 specs = list(
