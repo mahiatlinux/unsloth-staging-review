@@ -1178,6 +1178,21 @@ class TestNetworkTargetResolution:
         code = "import http.client\nc = http.client.HTTPConnection('pypi.org')\nc.host = '203.0.113.5'\nc.request('GET', '/')"
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize(
+        "caller",
+        ["requests.head", "requests.api.head", "requests.Session().head", "requests.Session.head"],
+    )
+    def test_requests_head_default_ignores_unused_proxy(self, caller):
+        arguments = "requests.Session(), " if caller == "requests.Session.head" else ""
+        code = f"import requests\n{caller}({arguments}'https://pypi.org/', proxies={{'http': 'http://203.0.113.5/'}})"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize("options", ["allow_redirects=True", "**{'allow_redirects': True}"])
+    def test_requests_head_enabled_redirects_retain_proxy(self, options):
+        code = f"import requests\nrequests.head('https://pypi.org/', proxies={{'http': 'http://203.0.113.5/'}}, {options})"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

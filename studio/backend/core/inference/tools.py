@@ -17894,17 +17894,21 @@ def _check_signal_escape_patterns(code: str):
     def _request_proxy_order(read: ast.AST) -> tuple | None:
         if not isinstance(read, ast.Call):
             return None
-        redirect = next((kw.value for kw in read.keywords if kw.arg == "allow_redirects"), None)
-        if redirect is None:
-            return None
-        redirect, _seen = _bound_value(redirect, frozenset())
-        if not isinstance(redirect, ast.Constant) or redirect.value is not False:
-            return None
         fqs = _resolved_fqs(read.func)
         if not fqs or any(
             not fq.startswith("requests.") or fq not in _NETWORK_TARGET_ARGS for fq in fqs
         ):
             return None
+        redirect = next((kw.value for kw in read.keywords if kw.arg == "allow_redirects"), None)
+        if redirect is None:
+            if any(kw.arg is None for kw in read.keywords) or not all(
+                fq.endswith(".head") for fq in fqs
+            ):
+                return None
+        else:
+            redirect, _seen = _bound_value(redirect, frozenset())
+            if not isinstance(redirect, ast.Constant) or redirect.value is not False:
+                return None
         specs = {_NETWORK_TARGET_ARGS[fq] for fq in fqs}
         if len(specs) != 1:
             return None
