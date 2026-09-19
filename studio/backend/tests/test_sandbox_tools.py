@@ -1029,6 +1029,34 @@ class TestNetworkTargetResolution:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize("url", ["'http://203.0.113.5/'", "input()", "'https://pypi.org/'"])
+    def test_super_network_method_checks_destination(self, url):
+        code = f"import requests\nclass Client(requests.Session):\n    def fetch(self):\n        return super().get({url})\nClient().fetch()"
+        assert is_high_risk_tool_call("python", {"code": code}) is (url != "'https://pypi.org/'")
+        if url == "'http://203.0.113.5/'":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_super_network_method_preserves_instance_proxy(self):
+        _blocked(
+            "import requests\nclass Client(requests.Session):\n"
+            "    def __init__(self):\n        super().__init__()\n"
+            "        self.proxies = {'https': 'http://203.0.113.5'}\n"
+            "    def fetch(self):\n        return super().get('https://pypi.org/')\nClient().fetch()",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "base, shadow", [("Local", ""), ("requests.Session", "super = Local\n")]
+    )
+    def test_non_network_super_stays_safe(self, base, shadow):
+        code = (
+            "import requests\nclass Local:\n    def get(self, url):\n        return url\n"
+            f"{shadow}class Client({base}):\n    def fetch(self):\n"
+            "        return super().get('http://203.0.113.5/')\nClient().fetch()"
+        )
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

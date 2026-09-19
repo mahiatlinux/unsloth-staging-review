@@ -17003,6 +17003,18 @@ def _check_signal_escape_patterns(code: str):
                 origins.add(id(value))
         return origins
 
+    def _super_class(expr: ast.AST):
+        if (
+            isinstance(expr, ast.Call)
+            and not expr.args
+            and not expr.keywords
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "super"
+            and _name_values(expr.func) is None
+        ):
+            return _enclosing_class(_node_scope.get(id(expr)))
+        return None
+
     def _method_receivers(expr: ast.AST) -> list:
         receivers, seen = [], set()
         pending = [expr]
@@ -17118,13 +17130,17 @@ def _check_signal_escape_patterns(code: str):
                 # A runtime attribute of a tracked module is a call we cannot name, so ask.
                 return [_UNRESOLVED_FQ]
         if isinstance(cur, ast.Call):
+            cls = _super_class(cur)
+            receiver_fqs = (
+                [fq for base in cls.bases for fq in _resolved_fqs(base, depth + 1)]
+                if cls is not None
+                else _resolved_fqs(cur.func, depth + 1)
+            )
             # An instance stands for the constructor that made it, but only when that lands on a
             # known client: an opaque helper's name says nothing about what it returned.
             instances = [
                 fq
-                for fq in (
-                    ".".join([base, *parts]) for base in _resolved_fqs(cur.func, depth + 1) if base
-                )
+                for fq in (".".join([base, *parts]) for base in receiver_fqs if base)
                 if _is_network_fq(fq)
             ]
             return list(dict.fromkeys(instances)) or [""]
@@ -17446,7 +17462,8 @@ def _check_signal_escape_patterns(code: str):
                         targets.append((True, None, "url"))
                     # `s.proxies = {...}` before the call sends there just the same.
                     for bound_receiver in _method_receivers(node.func):
-                        receiver = _dotted(bound_receiver)
+                        super_class = _super_class(bound_receiver)
+                        receiver = "" if super_class is not None else _dotted(bound_receiver)
                         if receiver is None:
                             continue
                         scope = _node_scope.get(id(bound_receiver), tree)
@@ -17455,7 +17472,9 @@ def _check_signal_escape_patterns(code: str):
                             if _enclosing_class(scope) is not None
                             else receiver
                         )
-                        proxy_values = _proxy_values(bound_receiver, node)
+                        proxy_values = (
+                            None if super_class is not None else _proxy_values(bound_receiver, node)
+                        )
                         if proxy_values is None:
                             proxy_values = [
                                 value
