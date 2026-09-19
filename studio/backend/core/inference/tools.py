@@ -16969,6 +16969,11 @@ def _check_signal_escape_patterns(code: str):
     def _find_inactive_functions() -> None:
         functions, references = {}, {}
         active = {id(tree)}
+        referenced_names = {
+            node.id if isinstance(node, ast.Name) else node.attr
+            for node in _tree_nodes(tree)
+            if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load)
+        }
         for node in _tree_nodes(tree):
             if isinstance(node, ast.Name) and node.id in (
                 "globals",
@@ -16985,7 +16990,16 @@ def _check_signal_escape_patterns(code: str):
                 return
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 functions.setdefault(node.name, set()).add(id(node))
-                if node.decorator_list or isinstance(_scope_parent.get(id(node)), ast.ClassDef):
+                parent = _scope_parent.get(id(node))
+                if node.decorator_list or (
+                    isinstance(parent, ast.ClassDef)
+                    and (
+                        parent.name in referenced_names
+                        or parent.bases
+                        or parent.keywords
+                        or parent.decorator_list
+                    )
+                ):
                     active.add(id(node))
         for node in _tree_nodes(tree):
             name = (
@@ -17607,6 +17621,9 @@ def _check_signal_escape_patterns(code: str):
         replaced = set()
         around, read_at = _blocks_around(read), _position(read)
         for owner, stored_receiver, attr, entry in _proxy_stores:
+            execution = _node_scope.get(id(stored_receiver), owner)
+            if id(execution) in _inactive_functions and not _reaching([entry], read, execution):
+                continue
             stored_origins = _receiver_origins(stored_receiver)
             value, position, block, certain = entry
             initializers = _initializer_instances.get(id(_node_scope.get(id(stored_receiver))), {})

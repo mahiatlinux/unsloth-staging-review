@@ -459,7 +459,7 @@ class TestNetworkTargetResolution:
                 "import requests\nclass A:\n    def __init__(self):\n"
                 "        self.session = requests.Session()\n"
                 f'        self.session.proxies = {{"https": "http://{_H}:8080"}}\n'
-                '    def go(self):\n        self.session.get("https://pypi.org/")',
+                '    def go(self):\n        self.session.get("https://pypi.org/")\nA().go()',
                 id = "proxy_on_a_session_held_on_self",
             ),
             # A client stored below more than one attribute resolves the same way.
@@ -1438,6 +1438,27 @@ class TestNetworkTargetResolution:
 
     def test_session_none_proxy_key_keeps_remaining_fallback(self):
         code = "import requests\ns = requests.Session()\ns.proxies = {'https': None, 'all': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', allow_redirects=False)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_unused_class_method_does_not_change_module_proxy(self):
+        code = "import requests\ns=requests.Session()\nclass Unused:\n    def configure(self):\n        s.proxies={'https':'http://203.0.113.5/'}\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "activate",
+        [
+            "Unused().configure()",
+            "configure = Unused().configure\nconfigure()",
+            "class Used(Unused): pass\nUsed().configure()",
+        ],
+    )
+    def test_referenced_class_method_keeps_proxy_store(self, activate):
+        code = f"import requests\ns=requests.Session()\nclass Unused:\n    def configure(self):\n        s.proxies={{'https':'http://203.0.113.5/'}}\n{activate}\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_metaclass_can_invoke_otherwise_unused_method(self):
+        code = "import requests\ns=requests.Session()\nclass Meta(type):\n    def __init__(cls, name, bases, ns):\n        ns['configure'](None)\nclass Unused(metaclass=Meta):\n    def configure(self):\n        s.proxies={'https':'http://203.0.113.5/'}\ns.get('https://pypi.org/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize(
