@@ -17431,6 +17431,18 @@ def _check_signal_escape_patterns(code: str):
 
     def _collect_aliased_mutations() -> None:
         for node in _tree_nodes(tree):
+            if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
+                value, _seen = _bound_value(node.value, frozenset())
+                removals = [
+                    (mapping, mutation, _node_scope.get(id(mutation), tree))
+                    for mapping, mutation, _key in _mapping_removals
+                ]
+                if isinstance(value, ast.Dict) and not _mutations_reach(
+                    _receiver_origins(node.value), node, [*_mapping_mutations, *removals]
+                ):
+                    for key, _value in _proxy_mapping_items(value):
+                        if key is not None:
+                            _mapping_removals.append((node.target, node, key))
             if not isinstance(node, ast.Call):
                 continue
             scope = _node_scope.get(id(node), tree)

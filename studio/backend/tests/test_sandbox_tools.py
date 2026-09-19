@@ -1422,6 +1422,26 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ns.proxies = {'https': None, 'all': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', allow_redirects=False)"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "value", ["{'https': None}", "{'https': 'https://pypi.org/'}", "replacement"]
+    )
+    def test_proxy_union_replaces_existing_keys(self, value):
+        code = f"import requests\ns = requests.Session()\ns.trust_env = False\ns.proxies = {{'https': 'http://203.0.113.5/'}}\nalias = s.proxies\nreplacement = {{'https': None}}\ns.proxies |= {value}\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "union",
+        [
+            "if input():\n    s.proxies |= {'https': None}",
+            "s.proxies |= {'http': None}",
+            "replacement = {'https': None}\nreplacement.clear()\ns.proxies |= replacement",
+        ],
+    )
+    def test_uncertain_proxy_union_preserves_existing_host(self, union):
+        code = f"import requests\ns = requests.Session()\ns.proxies = {{'https': 'http://203.0.113.5/'}}\n{union}\ns.get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
