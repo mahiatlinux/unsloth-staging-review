@@ -1286,6 +1286,11 @@ class TestNetworkTargetResolution:
         code = "import httpx\nc = httpx.Client(proxy='http://203.0.113.5/')\ncm = c.stream('GET', 'https://pypi.org/')\nwith cm: pass"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    def test_httpx_stream_response_does_not_reconnect(self):
+        code = "import httpx\nc = httpx.Client(base_url='https://pypi.org/')\nwith c.stream('GET', '/') as response:\n    c.base_url = 'http://203.0.113.5/'\n    response.read()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

@@ -16932,6 +16932,25 @@ def _check_signal_escape_patterns(code: str):
                 _discard_unused_proxy_defaults()
         return _model_state["built"]
 
+    def _map_stream_results() -> None:
+        for node in sorted(_tree_nodes(tree), key = _position):
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            for item in node.items:
+                if item.optional_vars is None:
+                    continue
+                if not _scope_model_ready():
+                    return
+                if not any(fq in _STREAM_FACTORIES for fq in _resolved_fqs(item.context_expr)):
+                    continue
+                for groups in (_name_stores, _attr_stores):
+                    for key, stores in groups.items():
+                        groups[key] = [
+                            (None, *entry[1:]) if entry[0] is item.context_expr else entry
+                            for entry in stores
+                        ]
+                _fq_cache.clear()
+
     def _find_inactive_functions() -> None:
         functions, references = {}, {}
         active = {id(tree)}
@@ -18447,6 +18466,7 @@ def _check_signal_escape_patterns(code: str):
                         )
             self.generic_visit(node)
 
+    _map_stream_results()
     NetworkAndIoVisitor().visit(tree)
 
     is_safe = (
