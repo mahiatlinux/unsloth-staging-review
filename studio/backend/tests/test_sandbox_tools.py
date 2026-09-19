@@ -802,6 +802,43 @@ class TestNetworkTargetResolution:
         if proxy_url != "input()":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "client",
+        [
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+            "aiohttp.client.ClientSession",
+        ],
+    )
+    def test_unused_client_base_url_is_not_a_destination(self, client):
+        code = f"import httpx, aiohttp\nclient = {client}(base_url='http://203.0.113.5/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "client",
+        [
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+            "aiohttp.client.ClientSession",
+        ],
+    )
+    @pytest.mark.parametrize("url", ["'/'", "'https://pypi.org/'"])
+    def test_client_base_url_is_checked_when_consumed(self, client, url):
+        code = f"import httpx, aiohttp\nclient = {client}(base_url='http://203.0.113.5/')\nalias = client\nfetch = alias.get\nfetch({url})"
+        if url == "'/'":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+        else:
+            assert _check_code_safety(code) is None
+            assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize("client", ["httpx.Client", "httpx.AsyncClient"])
+    def test_built_relative_request_preserves_base_url(self, client):
+        code = f"import httpx\nclient = {client}(base_url='http://203.0.113.5/')\nrequest = client.build_request('GET', '/')\nother = {client}()\nother.send(request)"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (

@@ -15894,6 +15894,12 @@ def _check_signal_escape_patterns(code: str):
     }
     # An explicit proxy is the socket destination, whatever the request URL says.
     _PROXY_KEYWORDS = ("proxy", "proxies")
+    _BASE_URL_CLIENTS = {
+        "httpx.Client": (None, "base_url"),
+        "httpx.AsyncClient": (None, "base_url"),
+        "aiohttp.ClientSession": (0, "base_url"),
+        "aiohttp.client.ClientSession": (0, "base_url"),
+    }
     _NETWORK_TARGET_ARGS.update(
         {
             **{
@@ -15912,10 +15918,7 @@ def _check_signal_escape_patterns(code: str):
             "httpx.stream": (1, "url", "url"),
             "httpx.HTTPTransport": (None, "proxy", "proxy"),
             "httpx.AsyncHTTPTransport": (None, "proxy", "proxy"),
-            # A client built on a base URL sends there even when the call passes a bare path.
-            **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
-            "aiohttp.ClientSession": (0, "base_url", "url"),
-            "aiohttp.client.ClientSession": (0, "base_url", "url"),
+            **{client: (None, "proxy", "proxy") for client in _BASE_URL_CLIENTS},
             **{
                 f"{c}.ws_connect": (0, "url", "url")
                 for c in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
@@ -17068,6 +17071,8 @@ def _check_signal_escape_patterns(code: str):
                     )
             elif isinstance(value, (ast.Call, ast.Dict)):
                 origins.add(id(value))
+            elif isinstance(value, (ast.IfExp, ast.BoolOp)):
+                pending.extend(_alternatives(value))
         return origins
 
     def _super_class(expr: ast.AST):
@@ -17342,6 +17347,23 @@ def _check_signal_escape_patterns(code: str):
             return text, True
         return None
 
+    def _base_url_hosts(call: ast.Call, results: list) -> list:
+        if all(resolved and host for resolved, host in results):
+            return []
+        origins = set().union(*(_receiver_origins(r) for r in _method_receivers(call.func)))
+        hosts = []
+        for constructor in _tree_nodes(tree):
+            if id(constructor) not in origins or not isinstance(constructor, ast.Call):
+                continue
+            for fq in _resolved_fqs(constructor.func):
+                if fq in _BASE_URL_CLIENTS:
+                    present, value = _call_target(constructor, *_BASE_URL_CLIENTS[fq])
+                    if present:
+                        hosts.extend(
+                            [(False, None)] if value is None else _target_hosts(value, "url")
+                        )
+        return hosts
+
     def _target_hosts(
         expr: ast.AST,
         kind: str,
@@ -17399,7 +17421,10 @@ def _check_signal_escape_patterns(code: str):
                 present, inner = _call_target(expr, *builder)
                 if not present or inner is None:
                     return [(False, None)]
-                return _target_hosts(inner, "url", depth + 1, expr)
+                results = _target_hosts(inner, "url", depth + 1, expr)
+                if any(fq.endswith(".build_request") for fq in _resolved_fqs(expr.func)):
+                    results += _base_url_hosts(expr, results)
+                return results
         if isinstance(expr, ast.Dict) and depth <= 8:
             if not expr.values:
                 return [(True, None)]
@@ -17482,6 +17507,12 @@ def _check_signal_escape_patterns(code: str):
                 results.extend(
                     [(False, None)] if expr is None else _target_hosts(expr, kind, read = node)
                 )
+            if connects and any(
+                fq.rsplit(".", 1)[0] in _BASE_URL_CLIENTS
+                and fq.rsplit(".", 1)[1] in (*_HTTP_VERBS, "request", "stream", "ws_connect")
+                for fq in _resolved_fqs(node.func)
+            ):
+                results += _base_url_hosts(node, results)
             if not results:
                 return
             # Competing signatures and stores may only add a prompt, never drop a refusal, so a
