@@ -16481,6 +16481,7 @@ def _check_signal_escape_patterns(code: str):
     _gateway_mutations: list = []
     _model_state: dict[str, bool] = {}
     _initializer_instances: dict = {}
+    _inactive_functions: set = set()
 
     def _dotted(expr: ast.AST) -> "str | None":
         """`self.session` for a plain name or attribute chain, else None."""
@@ -16917,10 +16918,58 @@ def _check_signal_escape_patterns(code: str):
                 _build_scope_model()
             _model_state["built"] = wanted
             if wanted:
+                _find_inactive_functions()
                 _map_initializer_instances()
                 _collect_aliased_mutations()
                 _discard_unused_proxy_defaults()
         return _model_state["built"]
+
+    def _find_inactive_functions() -> None:
+        functions, references = {}, {}
+        active = {id(tree)}
+        for node in _tree_nodes(tree):
+            if isinstance(node, ast.Name) and node.id in (
+                "globals",
+                "locals",
+                "vars",
+                "getattr",
+                "eval",
+                "exec",
+            ):
+                return
+            if isinstance(node, ast.Attribute) and node.attr in ("__dict__", "__getattribute__"):
+                return
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.setdefault(node.name, set()).add(id(node))
+                if node.decorator_list or isinstance(_scope_parent.get(id(node)), ast.ClassDef):
+                    active.add(id(node))
+        for node in _tree_nodes(tree):
+            name = (
+                node.id
+                if isinstance(node, ast.Name)
+                else node.attr
+                if isinstance(node, ast.Attribute)
+                else None
+            )
+            if name not in functions or not isinstance(node.ctx, ast.Load):
+                continue
+            scope = _node_scope.get(id(node), tree)
+            while scope is not tree and not isinstance(
+                scope, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                scope = _scope_parent.get(id(scope)) or tree
+            references.setdefault(id(scope), set()).update(functions[name])
+        pending = list(active)
+        while pending:
+            called = references.get(pending.pop(), set()) - active
+            active.update(called)
+            pending.extend(called)
+        _inactive_functions.update(
+            function
+            for values in functions.values()
+            for function in values
+            if function not in active
+        )
 
     def _block_chain(block) -> set:
         """Return this block and every block enclosing it."""
@@ -16951,6 +17000,12 @@ def _check_signal_escape_patterns(code: str):
         # body runs whenever it is called. Inside that body, source order still holds.
         loops = around & _loop_blocks
         execution = _execution_scope(read)
+        if id(owner) in _inactive_functions:
+            enclosing = _node_scope.get(id(read))
+            while enclosing is not None and enclosing is not owner:
+                enclosing = _scope_parent.get(id(enclosing))
+            if enclosing is None:
+                return []
         deferred = execution is not None and owner is not execution
         reaches = [s for s in stores if deferred or s[1] < read_at or (_block_chain(s[2]) & loops)]
         # A store in the same body, after this one and before the read, always runs in between,
