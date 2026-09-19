@@ -15821,6 +15821,9 @@ def _check_signal_escape_patterns(code: str):
         for connection in ("HTTPConnection", "HTTPSConnection")
     )
     _STREAM_FACTORIES = ("httpx.stream", "httpx.Client.stream", "httpx.AsyncClient.stream")
+    _COROUTINE_FACTORIES = tuple(
+        f"httpx.AsyncClient.{method}" for method in (*_HTTP_VERBS, "request", "send")
+    ) + ("httpx.AsyncHTTPTransport.handle_async_request",)
     _FABRIC_CLIENTS = ("fabric.Connection", "fabric.connection.Connection")
     _LAZY_HOST_CLIENTS = (*_HOST_POOL_CLIENTS, *_RAW_HTTP_CLIENTS, *_FABRIC_CLIENTS)
     _NETWORK_TARGET_ARGS = {
@@ -18355,19 +18358,29 @@ def _check_signal_escape_patterns(code: str):
                 and any(fq in classes for fq in _resolved_fqs(factory.func))
             ]
 
-        def _consume_stream(self, expr, read):
-            for factory in self._lazy_factories(expr, _STREAM_FACTORIES):
-                # captured arguments retain their scope; client state is read at context entry.
+        def _consume_lazy_call(self, expr, read, factories):
+            for factory in self._lazy_factories(expr, factories):
+                # captured arguments retain their scope; client state is read at consumption.
                 call = ast.copy_location(
                     ast.Call(func = factory.func, args = factory.args, keywords = factory.keywords),
                     read,
                 )
                 _node_scope[id(call)] = _node_scope.get(id(read), tree)
                 _node_block[id(call)] = _node_block.get(id(read), _ROOT_BLOCK)
-                self.visit_Call(call, consumes_stream = True)
+                self.visit_Call(call, consumes_lazy_call = True)
+
+        def _consume_stream(self, expr, read):
+            self._consume_lazy_call(expr, read, _STREAM_FACTORIES)
+
+        def visit_Await(self, node):
+            self._consume_lazy_call(node.value, node, _COROUTINE_FACTORIES)
+            self.generic_visit(node)
+
+        def _consume_escaped_calls(self, expr, read):
+            self._consume_lazy_call(expr, read, (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES))
 
         def _check_lazy_escape(self, expr, read):
-            self._consume_stream(expr, read)
+            self._consume_escaped_calls(expr, read)
             if id(_execution_scope(read)) not in _inactive_functions and self._lazy_factories(
                 expr, (*_LAZY_HOST_CLIENTS, *_PROXY_CONFIG_CLIENTS)
             ):
@@ -18396,7 +18409,7 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_List(self, node):
             for value in node.elts:
-                self._consume_stream(value, value)
+                self._consume_escaped_calls(value, value)
             self.generic_visit(node)
 
         visit_Tuple = visit_List
@@ -18405,7 +18418,7 @@ def _check_signal_escape_patterns(code: str):
         def visit_Dict(self, node):
             for value in [*node.keys, *node.values]:
                 if value is not None:
-                    self._consume_stream(value, value)
+                    self._consume_escaped_calls(value, value)
             self.generic_visit(node)
 
         def visit_Lambda(self, node):
@@ -18419,25 +18432,25 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_ListComp(self, node):
-            self._consume_stream(node.elt, node.elt)
+            self._consume_escaped_calls(node.elt, node.elt)
             self.generic_visit(node)
 
         visit_SetComp = visit_ListComp
         visit_GeneratorExp = visit_ListComp
 
         def visit_DictComp(self, node):
-            self._consume_stream(node.key, node.key)
-            self._consume_stream(node.value, node.value)
+            self._consume_escaped_calls(node.key, node.key)
+            self._consume_escaped_calls(node.value, node.value)
             self.generic_visit(node)
 
         def visit_Assign(self, node):
             if any(isinstance(target, ast.Subscript) for target in node.targets):
-                self._consume_stream(node.value, node.value)
+                self._consume_escaped_calls(node.value, node.value)
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node):
             if isinstance(node.target, ast.Subscript) and node.value is not None:
-                self._consume_stream(node.value, node.value)
+                self._consume_escaped_calls(node.value, node.value)
             self.generic_visit(node)
 
         def visit_Attribute(self, node):
@@ -18453,7 +18466,7 @@ def _check_signal_escape_patterns(code: str):
         def visit_Call(
             self,
             node,
-            consumes_stream = False,
+            consumes_lazy_call = False,
         ):
             parts: list[str] = []
             cur = node.func
@@ -18464,10 +18477,12 @@ def _check_signal_escape_patterns(code: str):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
             net_fqs = _resolved_fqs(node.func)
-            if not consumes_stream:
+            if not consumes_lazy_call:
                 for receiver, method in _method_bindings(node.func):
                     if method in ("__enter__", "__aenter__", "__exit__", "__aexit__"):
                         self._consume_stream(receiver, node)
+                    if method in ("send", "throw", "__await__"):
+                        self._consume_lazy_call(receiver, node, _COROUTINE_FACTORIES)
                 if not net_fqs or not all(fq in ("print", "repr", "str", "type") for fq in net_fqs):
                     check_escape = (
                         self._consume_stream
@@ -18477,7 +18492,11 @@ def _check_signal_escape_patterns(code: str):
                     for argument in [*node.args, *(kw.value for kw in node.keywords)]:
                         check_escape(argument, node)
                 if not _model_state.get("reflective"):
-                    net_fqs = [fq for fq in net_fqs if fq not in _STREAM_FACTORIES]
+                    net_fqs = [
+                        fq
+                        for fq in net_fqs
+                        if fq not in (*_STREAM_FACTORIES, *_COROUTINE_FACTORIES)
+                    ]
             if _UNRESOLVED_FQ in net_fqs:
                 unresolved_network_calls.append(
                     {

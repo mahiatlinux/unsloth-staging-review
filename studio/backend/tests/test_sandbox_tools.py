@@ -828,6 +828,9 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("url", ["'/'", "'https://pypi.org/'"])
     def test_client_base_url_is_checked_when_consumed(self, client, url):
         code = f"import httpx, aiohttp\nclient = {client}(base_url='http://203.0.113.5/')\nalias = client\nfetch = alias.get\nfetch({url})"
+        if client == "httpx.AsyncClient":
+            setup, call = code.rsplit("\n", 1)
+            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
         if url == "'/'":
             _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
         else:
@@ -837,6 +840,9 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("client", ["httpx.Client", "httpx.AsyncClient"])
     def test_built_relative_request_preserves_base_url(self, client):
         code = f"import httpx\nclient = {client}(base_url='http://203.0.113.5/')\nrequest = client.build_request('GET', '/')\nother = {client}()\nother.send(request)"
+        if client == "httpx.AsyncClient":
+            setup, call = code.rsplit("\n", 1)
+            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize(
@@ -1423,6 +1429,53 @@ class TestNetworkTargetResolution:
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize(
+        "method, args",
+        [
+            ("get", "'http://203.0.113.5/'"),
+            ("request", "'GET', 'http://203.0.113.5/'"),
+            ("send", "httpx.Request('GET', 'http://203.0.113.5/')"),
+        ],
+    )
+    @pytest.mark.parametrize("tail", ["", "pending.close()"])
+    def test_unused_httpx_coroutine_does_not_connect(self, method, args, tail):
+        code = f"import httpx\nc = httpx.AsyncClient()\npending = c.{method}({args})\n{tail}"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "consume",
+        [
+            "await pending",
+            "await asyncio.create_task(pending)",
+            "await asyncio.gather(pending)",
+            "pending.send(None)",
+        ],
+    )
+    def test_consumed_httpx_coroutine_checks_host(self, consume):
+        code = f"import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient()\n    pending = c.get('http://203.0.113.5/')\n    {consume}\nasyncio.run(run())"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "consume",
+        [
+            "items = [pending]\n    await items[0]",
+            "items = {}\n    items['pending'] = pending\n    await items['pending']",
+            "def make():\n        return pending\n    await make()",
+        ],
+    )
+    def test_coroutine_opaque_consumption_keeps_host_check(self, consume):
+        code = f"import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient()\n    pending = c.get('http://203.0.113.5/')\n    {consume}\nasyncio.run(run())"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_coroutine_captures_url_before_reassignment(self):
+        code = "import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient()\n    url = 'http://203.0.113.5/'\n    pending = c.get(url)\n    url = 'https://pypi.org/'\n    await pending\nasyncio.run(run())"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_coroutine_reads_changed_client_state_when_awaited(self):
+        code = "import httpx, asyncio\nasync def run():\n    c = httpx.AsyncClient(base_url='https://pypi.org/')\n    pending = c.get('/')\n    c.base_url = 'http://203.0.113.5/'\n    await pending\nasyncio.run(run())"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
         "value", ["{'https': None}", "{'https': 'https://pypi.org/'}", "replacement"]
     )
     def test_proxy_union_replaces_existing_keys(self, value):
@@ -1450,6 +1503,9 @@ class TestNetworkTargetResolution:
     @pytest.mark.parametrize("setup", ["", "base_url='https://pypi.org/'"])
     def test_reassigned_client_base_url_requires_approval(self, client, setup):
         code = f"import httpx\nc = {client}({setup})\nalias = c\nalias.base_url = 'http://203.0.113.5/'\nc.get('/')"
+        if client == "httpx.AsyncClient":
+            setup, call = code.rsplit("\n", 1)
+            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
     @pytest.mark.parametrize(
@@ -1660,6 +1716,9 @@ class TestNetworkTargetResolution:
     )
     def test_unbound_request_checks_shifted_url(self, client):
         code = f"import requests, httpx, aiohttp, urllib3\ns = {client}()\n{client}.request(s, 'GET', 'http://203.0.113.5/')"
+        if client == "httpx.AsyncClient":
+            setup, call = code.rsplit("\n", 1)
+            code = setup + "\nimport asyncio\nasyncio.run(" + call + ")"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize("callee", ["requests.Session.get", "getattr(requests.Session, 'get')"])
