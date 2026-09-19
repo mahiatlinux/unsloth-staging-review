@@ -16773,7 +16773,7 @@ def _check_signal_escape_patterns(code: str):
             mutated_mapping = None
             if (
                 isinstance(node, ast.Subscript)
-                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.ctx, ast.Store)
                 and not _is_proxy_bypass_key(node.slice)
             ):
                 mutated_mapping = node.value
@@ -16794,7 +16794,12 @@ def _check_signal_escape_patterns(code: str):
                 and isinstance(node.value.func, ast.Attribute)
                 and node.value.func.attr in ("clear", "pop")
             ):
-                _mapping_removals.append(node.value)
+                call = node.value
+                if call.func.attr == "clear" or call.args:
+                    key = None if call.func.attr == "clear" else call.args[0]
+                    _mapping_removals.append((call.func.value, call, key))
+            elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Del):
+                _mapping_removals.append((node.value, node, node.slice))
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == "url"
@@ -17451,20 +17456,19 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.Dict) and depth <= 8:
             removed_keys = {("no_proxy", True)}
             if kind == "proxy" and read is not None:
-                for removal in _mapping_removals:
+                for mapping, removal, removed_key in _mapping_removals:
                     if (
-                        _receiver_origins(removal.func.value) != {id(expr)}
+                        _receiver_origins(mapping) != {id(expr)}
                         or _node_block.get(id(removal)) not in _blocks_around(read)
                         or _execution_scope(removal) is not _execution_scope(read)
                         or _end_position(removal) >= _position(read)
                     ):
                         continue
-                    if removal.func.attr == "clear":
+                    if removed_key is None:
                         return [(True, None)]
-                    if removal.args:
-                        key = _static_prefix(removal.args[0])
-                        if key is not None and key[1]:
-                            removed_keys.add(key)
+                    key = _static_prefix(removed_key)
+                    if key is not None and key[1]:
+                        removed_keys.add(key)
             return [
                 result
                 for key, value in zip(expr.keys, expr.values)
