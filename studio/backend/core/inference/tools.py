@@ -16442,6 +16442,7 @@ def _check_signal_escape_patterns(code: str):
     _proxy_stores: list = []
     _mapping_mutations: list = []
     _request_url_mutations: list = []
+    _base_url_mutations: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16798,6 +16799,12 @@ def _check_signal_escape_patterns(code: str):
                 and node.func.attr in ("prepare_url", "prepare")
             ):
                 _request_url_mutations.append((node.func.value, node, scope))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "base_url"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                _base_url_mutations.append((node.value, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]
@@ -17357,6 +17364,8 @@ def _check_signal_escape_patterns(code: str):
         if all(resolved and host for resolved, host in results):
             return []
         origins = set().union(*(_receiver_origins(r) for r in _method_receivers(call.func)))
+        if _mutations_reach(origins, call, _base_url_mutations):
+            return [(False, None)]
         hosts = []
         for constructor in _tree_nodes(tree):
             if id(constructor) not in origins or not isinstance(constructor, ast.Call):

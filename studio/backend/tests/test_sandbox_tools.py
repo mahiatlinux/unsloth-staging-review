@@ -857,6 +857,27 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("client", ["httpx.Client", "httpx.AsyncClient"])
+    @pytest.mark.parametrize("setup", ["", "base_url='https://pypi.org/'"])
+    def test_reassigned_client_base_url_requires_approval(self, client, setup):
+        code = f"import httpx\nc = {client}({setup})\nalias = c\nalias.base_url = 'http://203.0.113.5/'\nc.get('/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "c.get('https://pypi.org/')",
+            "c = httpx.Client(base_url='https://pypi.org/')\nc.get('/')",
+            "r = c.build_request('GET', '/')\nc.base_url = 'http://203.0.113.5/'\nc.send(r)",
+        ],
+    )
+    def test_unused_client_base_url_mutation_does_not_prompt(self, tail):
+        code = "import httpx\nc = httpx.Client(base_url='https://pypi.org/')\n"
+        if not tail.startswith("r ="):
+            code += "c.base_url = 'http://203.0.113.5/'\n"
+        code += tail
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
     @pytest.mark.parametrize("base_url", ["'http://203.0.113.5/'", "input()"])
     def test_canonical_aiohttp_session_requires_approval(self, base_url):
         code = (
