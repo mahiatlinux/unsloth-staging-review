@@ -18259,8 +18259,20 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
 
-        def _stream_factories(self, expr):
-            origins = _receiver_origins(expr)
+        def _lazy_factories(self, expr, classes):
+            origins, seen, pending = set(), set(), [expr]
+            while pending:
+                value, _seen = _bound_value(pending.pop(), frozenset())
+                if id(value) in seen:
+                    continue
+                seen.add(id(value))
+                origins.update(_receiver_origins(value))
+                if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                    pending.extend(value.elts)
+                elif isinstance(value, ast.Dict):
+                    pending.extend([*value.keys, *value.values])
+                elif isinstance(value, (ast.IfExp, ast.BoolOp)):
+                    pending.extend(_alternatives(value))
             if not origins:
                 return []
             return [
@@ -18268,11 +18280,11 @@ def _check_signal_escape_patterns(code: str):
                 for factory in _tree_nodes(tree)
                 if id(factory) in origins
                 and isinstance(factory, ast.Call)
-                and any(fq in _STREAM_FACTORIES for fq in _resolved_fqs(factory.func))
+                and any(fq in classes for fq in _resolved_fqs(factory.func))
             ]
 
         def _consume_stream(self, expr, read):
-            for factory in self._stream_factories(expr):
+            for factory in self._lazy_factories(expr, _STREAM_FACTORIES):
                 # captured arguments retain their scope; client state is read at context entry.
                 call = ast.copy_location(
                     ast.Call(func = factory.func, args = factory.args, keywords = factory.keywords),
@@ -18281,6 +18293,19 @@ def _check_signal_escape_patterns(code: str):
                 _node_scope[id(call)] = _node_scope.get(id(read), tree)
                 _node_block[id(call)] = _node_block.get(id(read), _ROOT_BLOCK)
                 self.visit_Call(call, consumes_stream = True)
+
+        def _check_lazy_escape(self, expr, read):
+            self._consume_stream(expr, read)
+            if id(_execution_scope(read)) not in _inactive_functions and self._lazy_factories(
+                expr, (*_LAZY_HOST_CLIENTS, *_PROXY_CONFIG_CLIENTS)
+            ):
+                unresolved_network_calls.append(
+                    {
+                        "type": "unresolved_network_host",
+                        "line": getattr(read, "lineno", -1),
+                        "description": "Lazy network client escapes tracked consumption",
+                    }
+                )
 
         def visit_With(self, node):
             for item in node.items:
@@ -18291,7 +18316,7 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Return(self, node):
             if node.value is not None:
-                self._consume_stream(node.value, node.value)
+                self._check_lazy_escape(node.value, node.value)
             self.generic_visit(node)
 
         visit_Yield = visit_Return
@@ -18312,13 +18337,13 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Lambda(self, node):
-            self._consume_stream(node.body, node.body)
+            self._check_lazy_escape(node.body, node.body)
             self.generic_visit(node)
 
         def visit_arguments(self, node):
             for value in [*node.defaults, *node.kw_defaults]:
                 if value is not None:
-                    self._consume_stream(value, value)
+                    self._check_lazy_escape(value, value)
             self.generic_visit(node)
 
         def visit_ListComp(self, node):
@@ -18372,8 +18397,13 @@ def _check_signal_escape_patterns(code: str):
                     if method in ("__enter__", "__aenter__", "__exit__", "__aexit__"):
                         self._consume_stream(receiver, node)
                 if not net_fqs or not all(fq in ("print", "repr", "str", "type") for fq in net_fqs):
+                    check_escape = (
+                        self._consume_stream
+                        if net_fqs and all(fq in _NETWORK_TARGET_ARGS for fq in net_fqs)
+                        else self._check_lazy_escape
+                    )
                     for argument in [*node.args, *(kw.value for kw in node.keywords)]:
-                        self._consume_stream(argument, node)
+                        check_escape(argument, node)
                 if not _model_state.get("reflective"):
                     net_fqs = [fq for fq in net_fqs if fq not in _STREAM_FACTORIES]
             if _UNRESOLVED_FQ in net_fqs:

@@ -1345,6 +1345,41 @@ class TestNetworkTargetResolution:
         code = "import requests\noptions = {'timeout': 5}\noptions['proxies'] = {'https': 'http://203.0.113.5/'}\nrequests.get('https://pypi.org/', **options)"
         assert is_high_risk_tool_call("python", {"code": code}) is True
 
+    @pytest.mark.parametrize(
+        "constructor, use",
+        [
+            ("http.client.HTTPConnection('203.0.113.5')", "request('GET', '/')"),
+            ("urllib3.HTTPConnectionPool('203.0.113.5')", "request('GET', '/')"),
+            ("httpx.Client(proxy='http://203.0.113.5/')", "get('https://pypi.org/')"),
+        ],
+    )
+    def test_returned_lazy_client_requires_approval(self, constructor, use):
+        code = f"import http.client, urllib3, httpx\ndef make():\n    return {constructor}\nmake().{use}"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_uncalled_lazy_client_factory_does_not_connect(self):
+        code = (
+            "import http.client\ndef make():\n    return http.client.HTTPConnection('203.0.113.5')"
+        )
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "construction",
+        [
+            "c = httpx.Client(transport=httpx.HTTPTransport(proxy='http://203.0.113.5/'))",
+            "mounts = {'https://': httpx.HTTPTransport(proxy='http://203.0.113.5/')}\nc = httpx.Client(mounts=mounts)",
+        ],
+    )
+    def test_unused_composed_lazy_client_does_not_connect(self, construction):
+        code = f"import httpx\n{construction}\nc.close()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_returned_container_of_lazy_clients_requires_approval(self):
+        code = "import http.client\ndef make():\n    return [http.client.HTTPConnection('203.0.113.5')]\nmake()[0].request('GET', '/')"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
