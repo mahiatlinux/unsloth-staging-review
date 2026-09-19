@@ -15815,6 +15815,8 @@ def _check_signal_escape_patterns(code: str):
         for module in ("urllib3", "urllib3.connectionpool")
         for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
     )
+    _FABRIC_CLIENTS = ("fabric.Connection", "fabric.connection.Connection")
+    _LAZY_HOST_CLIENTS = (*_HOST_POOL_CLIENTS, *_FABRIC_CLIENTS)
     _NETWORK_TARGET_ARGS = {
         "socket.create_connection": (0, "address", "host"),
         "socket.getaddrinfo": (0, "host", "host"),
@@ -15853,8 +15855,24 @@ def _check_signal_escape_patterns(code: str):
         "http.client.HTTPSConnection": (0, "host", "host"),
         "paramiko.Transport": (0, "sock", "host"),
         "paramiko.transport.Transport": (0, "sock", "host"),
-        "fabric.Connection": (0, "host", "host"),
-        "fabric.connection.Connection": (0, "host", "host"),
+        **{client: (0, "host", "host") for client in _FABRIC_CLIENTS},
+        **{
+            f"{client}.{method}": (None, (), "host")
+            for client in _FABRIC_CLIENTS
+            for method in (
+                "open",
+                "run",
+                "sudo",
+                "shell",
+                "sftp",
+                "get",
+                "put",
+                "create_session",
+                "forward_local",
+                "forward_remote",
+                "open_gateway",
+            )
+        },
         "asyncssh.connect": (0, "host", "host"),
         "urllib3.util.connection.create_connection": (0, "address", "host"),
         "urllib3.contrib.socks.SOCKSProxyManager": (0, "proxy_url", "url"),
@@ -16460,6 +16478,7 @@ def _check_signal_escape_patterns(code: str):
     _request_url_mutations: list = []
     _base_url_mutations: list = []
     _pool_host_mutations: list = []
+    _gateway_mutations: list = []
     _model_state: dict[str, bool] = {}
 
     def _dotted(expr: ast.AST) -> "str | None":
@@ -16840,10 +16859,11 @@ def _check_signal_escape_patterns(code: str):
                 _base_url_mutations.append((node.value, node, scope))
             if (
                 isinstance(node, ast.Attribute)
-                and node.attr == "host"
+                and node.attr in ("host", "gateway")
                 and isinstance(node.ctx, (ast.Store, ast.Del))
             ):
-                _pool_host_mutations.append((node.value, node, scope))
+                mutations = _pool_host_mutations if node.attr == "host" else _gateway_mutations
+                mutations.append((node.value, node, scope))
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 positional = [*args.posonlyargs, *args.args]
@@ -17189,7 +17209,14 @@ def _check_signal_escape_patterns(code: str):
 
     def _is_client_class(expr: ast.AST) -> bool:
         return not _receiver_origins(expr) and any(
-            fq in (*_VERB_CLIENTS, *_POOL_CLIENTS, *_CONNECTING_CLIENT_FQ, *_PROXY_CONFIG_CLIENTS)
+            fq
+            in (
+                *_VERB_CLIENTS,
+                *_POOL_CLIENTS,
+                *_CONNECTING_CLIENT_FQ,
+                *_PROXY_CONFIG_CLIENTS,
+                *_FABRIC_CLIENTS,
+            )
             for fq in _resolved_fqs(expr)
         )
 
@@ -17514,10 +17541,18 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(constructor, ast.Dict):
                     pending.extend((value, read) for value in constructor.values)
                 elif isinstance(constructor, ast.Call) and any(
-                    fq in (*_PROXY_CONFIG_CLIENTS, *_HOST_POOL_CLIENTS)
+                    fq in (*_PROXY_CONFIG_CLIENTS, *_LAZY_HOST_CLIENTS)
                     for fq in _resolved_fqs(constructor.func)
                 ):
-                    if any(fq in _HOST_POOL_CLIENTS for fq in _resolved_fqs(constructor.func)):
+                    fabric = any(fq in _FABRIC_CLIENTS for fq in _resolved_fqs(constructor.func))
+                    if fabric and _mutations_reach({origin}, call, _gateway_mutations):
+                        hosts.append((False, None))
+                    gateway_only = read is call and any(
+                        fq.endswith(".open_gateway") for fq in _resolved_fqs(call.func)
+                    )
+                    if not gateway_only and any(
+                        fq in _LAZY_HOST_CLIENTS for fq in _resolved_fqs(constructor.func)
+                    ):
                         present, host = _call_target(constructor, 0, "host")
                         if _mutations_reach({origin}, call, _pool_host_mutations) or host is None:
                             hosts.append((False, None))
@@ -17530,6 +17565,37 @@ def _check_signal_escape_patterns(code: str):
                             hosts.extend(_target_hosts(kw.value, "proxy", read = constructor))
                         elif kw.arg in ("transport", "mounts"):
                             pending.append((kw.value, constructor))
+                    if fabric:
+                        for position, name in (
+                            (3, "config"),
+                            (4, "gateway"),
+                            (7, "connect_kwargs"),
+                        ):
+                            present, option = _call_target(constructor, position, name)
+                            if not present:
+                                continue
+                            if option is None:
+                                hosts.append((False, None))
+                                continue
+                            option, _seen = _bound_value(option, frozenset())
+                            if isinstance(option, ast.Constant) and option.value is None:
+                                continue
+                            if name == "gateway":
+                                if isinstance(option, ast.Constant) and option.value is False:
+                                    continue
+                                if any(fq in _FABRIC_CLIENTS for fq in _resolved_fqs(option)):
+                                    pending.append((option, constructor))
+                                else:
+                                    hosts.append((False, None))
+                            elif (
+                                name == "config"
+                                or not isinstance(option, ast.Dict)
+                                or any(
+                                    key is None or _static_prefix(key) in (None, ("sock", True))
+                                    for key in option.keys
+                                )
+                            ):
+                                hosts.append((False, None))
         return hosts
 
     def _base_url_hosts(call: ast.Call, results: list) -> list:
@@ -17844,7 +17910,7 @@ def _check_signal_escape_patterns(code: str):
                         for fq in net_fqs
                         if fq in _NETWORK_TARGET_ARGS
                         and fq not in _PROXY_CONFIG_CLIENTS
-                        and fq not in _HOST_POOL_CLIENTS
+                        and fq not in _LAZY_HOST_CLIENTS
                     )
                 )
                 if specs:

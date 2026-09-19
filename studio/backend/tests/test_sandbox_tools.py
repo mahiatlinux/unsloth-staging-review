@@ -949,6 +949,50 @@ class TestNetworkTargetResolution:
         code += tail
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("client", ["fabric.Connection", "fabric.connection.Connection"])
+    def test_unused_fabric_connection_is_not_a_destination(self, client):
+        code = f"import fabric, fabric.connection\nc = {client}('203.0.113.5')\nc.close()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            "open()",
+            "run('id')",
+            "sudo('id')",
+            "shell()",
+            "sftp()",
+            "get('file')",
+            "put('file')",
+            "create_session()",
+            "forward_local(8080)",
+            "forward_remote(8080)",
+        ],
+    )
+    def test_fabric_host_is_checked_when_consumed(self, operation):
+        code = f"import fabric\nc = fabric.Connection('203.0.113.5')\nalias = c\nalias.{operation}"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_changed_fabric_host_requires_approval(self):
+        code = "import fabric\nc = fabric.Connection('pypi.org')\nc.host = '203.0.113.5'\nc.open()"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_changed_fabric_gateway_requires_approval(self):
+        code = "import fabric\nc = fabric.Connection('pypi.org')\nc.gateway = fabric.Connection('203.0.113.5')\nc.open()"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_fabric_auth_options_do_not_change_destination(self):
+        code = "import fabric\nc = fabric.Connection('pypi.org', config=None, gateway=False, connect_kwargs={'look_for_keys': False})\nc.open()"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize("operation", ["open", "open_gateway"])
+    @pytest.mark.parametrize("options", ["gateway=gateway", "None, None, None, gateway"])
+    def test_fabric_gateway_host_is_checked_when_consumed(self, options, operation):
+        code = f"import fabric\ngateway = fabric.Connection('203.0.113.5')\nc = fabric.Connection('pypi.org', {options})\nc.{operation}()"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("receiver", ["s.proxies", "mapping"])
     @pytest.mark.parametrize("value", ["'https://pypi.org/'", "None"])
     def test_existing_proxy_key_ignores_setdefault(self, receiver, value):
