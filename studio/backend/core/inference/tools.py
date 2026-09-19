@@ -17992,6 +17992,39 @@ def _check_signal_escape_patterns(code: str):
             retained.append((key, value))
         return list(reversed(retained))
 
+    def _unpacked_network_options_need_approval(node: ast.Call) -> bool:
+        expansions = [kw.value for kw in node.keywords if kw.arg is None]
+        if not expansions:
+            return False
+        routing = {
+            *_PROXY_KEYWORDS,
+            "files",
+            "data",
+            "transport",
+            "mounts",
+            "base_url",
+            "config",
+            "gateway",
+            "connect_kwargs",
+        }
+        for _position, keyword, _kind in _NETWORK_TARGET_ARGS.values():
+            routing.update((keyword,) if isinstance(keyword, str) else keyword)
+        removals = [
+            (mapping, mutation, _node_scope.get(id(mutation), tree))
+            for mapping, mutation, _key in _mapping_removals
+        ]
+        for expansion in expansions:
+            value, _seen = _bound_value(expansion, frozenset())
+            if not isinstance(value, ast.Dict) or _mutations_reach(
+                _receiver_origins(expansion), node, [*_mapping_mutations, *removals]
+            ):
+                return True
+            for key, _value in _proxy_mapping_items(value):
+                literal = _static_prefix(key) if key is not None else None
+                if literal is None or not literal[1] or literal[0] in routing:
+                    return True
+        return False
+
     def _target_hosts(
         expr: ast.AST,
         kind: str,
@@ -18406,8 +18439,8 @@ def _check_signal_escape_patterns(code: str):
                         for kw in node.keywords or []
                         if kw.arg in _PROXY_KEYWORDS
                     ]
-                    # unpacked options can supply a proxy even when the url is explicit.
-                    if any(kw.arg is None for kw in node.keywords or []):
+                    # unknown unpackings can supply a proxy even when the url is explicit.
+                    if _unpacked_network_options_need_approval(node):
                         targets.append((True, None, "url"))
                     # `s.proxies = {...}` before the call sends there just the same.
                     for bound_receiver in _network_receivers(node):

@@ -1314,6 +1314,37 @@ class TestNetworkTargetResolution:
         code = f"import requests\ns = requests.Session()\ns.proxies = {{'https': 'http://203.0.113.5/'}}\n{removal}\ns.get('https://pypi.org/')"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "options",
+        [
+            "{'timeout': 5}",
+            "{'headers': {'X-Test': 'value'}, 'verify': True}",
+            "{'timeout': 5, **{'params': {'q': 'example'}}}",
+            "options",
+        ],
+    )
+    def test_known_nonrouting_keyword_options_do_not_require_approval(self, options):
+        code = f"import requests\noptions = {{'timeout': 5}}\nrequests.get('https://pypi.org/', **{options})"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            "input()",
+            "{'proxies': {'https': 'http://203.0.113.5/'}}",
+            "{'files': {'file': b'secret'}}",
+            "{'data': b'secret'}",
+        ],
+    )
+    def test_routing_and_upload_keyword_options_require_approval(self, options):
+        code = f"import requests\nrequests.post('https://pypi.org/', **{options})"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    def test_mutated_keyword_options_require_approval(self):
+        code = "import requests\noptions = {'timeout': 5}\noptions['proxies'] = {'https': 'http://203.0.113.5/'}\nrequests.get('https://pypi.org/', **options)"
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False
