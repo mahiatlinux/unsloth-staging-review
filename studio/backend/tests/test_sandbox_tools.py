@@ -1064,6 +1064,16 @@ class TestNetworkTargetResolution:
         code = "import requests\ns = requests.Session()\ndef configure():\n    s.proxies = {'https': 'http://203.0.113.5/'}\ns.get('https://pypi.org/', headers=configure())"
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize("assignment", ["get = local", "get = alias", "get: object = local"])
+    def test_assigned_local_function_overrides_network_method(self, assignment):
+        code = f"import requests\ndef local(self, url):\n    return url\nalias = local\nclass Client(requests.Session):\n    {assignment}\nClient().get('http://203.0.113.5/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    def test_assigned_local_function_keeps_its_network_calls(self):
+        code = "import requests\ndef local(self, url):\n    return requests.get('http://203.0.113.5/')\nclass Client(requests.Session):\n    get = local\nClient().get('https://pypi.org/')"
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_prepared_request_header_method_preserves_url(self):
         code = "import requests\ns = requests.Session()\nr = s.prepare_request(requests.Request('GET', 'https://pypi.org/'))\nr.prepare_headers({'X-Test': 'value'})\ns.send(r)"
         assert is_high_risk_tool_call("python", {"code": code}) is False

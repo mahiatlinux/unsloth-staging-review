@@ -16801,7 +16801,7 @@ def _check_signal_escape_patterns(code: str):
                 # The node itself, so `class Sub(Base)` can find Base's attribute stores.
                 _add_name_store(scope, node.name, node, node, position = _header_end(node))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _add_name_store(scope, node.name, None, node, position = _header_end(node))
+                _add_name_store(scope, node.name, node, node, position = _header_end(node))
             elif isinstance(node, ast.ExceptHandler) and node.name:
                 _add_name_store(scope, node.name, None, node, certain = False)
             elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
@@ -17097,10 +17097,16 @@ def _check_signal_escape_patterns(code: str):
                         for decorator in member.decorator_list
                     ):
                         return True
-                if isinstance(member, ast.Assign) and isinstance(member.value, ast.Lambda):
-                    if any(
-                        isinstance(target, ast.Name) and target.id == name
-                        for target in member.targets
+                if isinstance(member, (ast.Assign, ast.AnnAssign)) and member.value is not None:
+                    value, _seen = _bound_value(member.value, frozenset())
+                    local = (
+                        isinstance(value, ast.Lambda)
+                        or isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and not value.decorator_list
+                    )
+                    targets = member.targets if isinstance(member, ast.Assign) else [member.target]
+                    if local and any(
+                        isinstance(target, ast.Name) and target.id == name for target in targets
                     ):
                         return True
             if direct_only or not cls.bases or not isinstance(cls.bases[0], ast.Name):
