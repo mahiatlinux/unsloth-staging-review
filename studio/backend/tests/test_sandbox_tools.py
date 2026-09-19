@@ -1057,6 +1057,21 @@ class TestNetworkTargetResolution:
         _ok(code)
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("url", ["'http://203.0.113.5/'", "input()", "'https://pypi.org/'"])
+    def test_explicit_super_network_method_checks_destination(self, url):
+        code = f"import requests\nclass Client(requests.Session):\n    def fetch(self):\n        return super(Client, self).get({url})\nClient().fetch()"
+        assert is_high_risk_tool_call("python", {"code": code}) is (url != "'https://pypi.org/'")
+        if url == "'http://203.0.113.5/'":
+            _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_explicit_super_preserves_external_instance_proxy(self):
+        _blocked(
+            "import requests\nclass Client(requests.Session):\n    pass\n"
+            "s = Client()\ns.proxies = {'https': 'http://203.0.113.5'}\n"
+            "super(Client, s).get('https://pypi.org/')",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",

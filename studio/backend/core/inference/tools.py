@@ -17006,13 +17006,17 @@ def _check_signal_escape_patterns(code: str):
     def _super_class(expr: ast.AST):
         if (
             isinstance(expr, ast.Call)
-            and not expr.args
             and not expr.keywords
             and isinstance(expr.func, ast.Name)
             and expr.func.id == "super"
             and _name_values(expr.func) is None
         ):
-            return _enclosing_class(_node_scope.get(id(expr)))
+            if not expr.args:
+                return _enclosing_class(_node_scope.get(id(expr)))
+            if len(expr.args) == 2 and isinstance(expr.args[0], ast.Name):
+                values = _name_values(expr.args[0]) or []
+                if len(values) == 1 and isinstance(values[0], ast.ClassDef):
+                    return values[0]
         return None
 
     def _method_receivers(expr: ast.AST) -> list:
@@ -17463,6 +17467,9 @@ def _check_signal_escape_patterns(code: str):
                     # `s.proxies = {...}` before the call sends there just the same.
                     for bound_receiver in _method_receivers(node.func):
                         super_class = _super_class(bound_receiver)
+                        if super_class is not None and bound_receiver.args:
+                            bound_receiver = bound_receiver.args[1]
+                            super_class = None
                         receiver = "" if super_class is not None else _dotted(bound_receiver)
                         if receiver is None:
                             continue
