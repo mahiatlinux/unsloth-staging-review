@@ -911,6 +911,33 @@ class TestNetworkTargetResolution:
         code += tail
         assert is_high_risk_tool_call("python", {"code": code}) is False
 
+    @pytest.mark.parametrize("receiver", ["s.proxies", "mapping"])
+    @pytest.mark.parametrize("value", ["'https://pypi.org/'", "None"])
+    def test_existing_proxy_key_ignores_setdefault(self, receiver, value):
+        code = f"import requests\ns = requests.Session()\ns.proxies = {{'https': {value}}}\nmapping = s.proxies\n{receiver}.setdefault('https', 'http://203.0.113.5/')\ns.get('https://pypi.org/')"
+        assert _check_code_safety(code) is None
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "s.proxies = {}",
+            "s.proxies = {'https': 'https://pypi.org/'}\ns.proxies.clear()",
+            "s.proxies = {'https': 'https://pypi.org/'}\ns.proxies.pop('https')",
+            "s.proxies = {'https': 'https://pypi.org/'}\ndel s.proxies['https']",
+            "s.proxies = {'https': 'https://pypi.org/'}\nif input():\n    s.proxies.clear()",
+            "s.proxies = {'https': 'https://pypi.org/'} if input() else {}",
+            "s.proxies = {'https': 'https://pypi.org/'} if input() else input()",
+        ],
+    )
+    def test_potentially_absent_proxy_key_retains_setdefault(self, setup):
+        code = (
+            "import requests\ns = requests.Session()\n"
+            + setup
+            + "\ns.proxies.setdefault('https', 'http://203.0.113.5/')\ns.get('https://pypi.org/')"
+        )
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     @pytest.mark.parametrize("removal", ["clear()", "pop('https')", "pop('https', None)"])
     @pytest.mark.parametrize("receiver", ["s.proxies", "mapping"])
     def test_removed_proxy_does_not_block_request(self, removal, receiver):

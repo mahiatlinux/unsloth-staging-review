@@ -16895,6 +16895,8 @@ def _check_signal_escape_patterns(code: str):
             if wanted:
                 _build_scope_model()
             _model_state["built"] = wanted
+            if wanted:
+                _discard_unused_proxy_defaults()
         return _model_state["built"]
 
     def _block_chain(block) -> set:
@@ -17195,6 +17197,56 @@ def _check_signal_escape_patterns(code: str):
                 if _reaching([store], read, scope):
                     return True
         return False
+
+    def _discard_unused_proxy_defaults() -> None:
+        for _mapping, call, _scope in sorted(
+            _mapping_mutations, key = lambda item: _position(item[1])
+        ):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "setdefault"
+                and len(call.args) == 2
+            ):
+                continue
+            key = _static_prefix(call.args[0])
+            if key is None or not key[1]:
+                continue
+            pending, seen, dictionaries = [call.func.value], set(), set()
+            while pending:
+                value = pending.pop()
+                if id(value) in seen:
+                    break
+                seen.add(id(value))
+                if isinstance(value, ast.Dict):
+                    if not any(k is not None and _static_prefix(k) == key for k in value.keys):
+                        break
+                    dictionaries.add(id(value))
+                elif isinstance(value, (ast.Name, ast.Attribute)):
+                    values = (
+                        _name_values(value) if isinstance(value, ast.Name) else _attr_values(value)
+                    )
+                    if not values:
+                        break
+                    pending.extend(values)
+                elif isinstance(value, (ast.IfExp, ast.BoolOp)):
+                    pending.extend(_alternatives(value))
+                else:
+                    break
+            else:
+                removals = [
+                    (mapping, removal, _node_scope.get(id(removal), tree))
+                    for mapping, removal, _key in _mapping_removals
+                ]
+                if not dictionaries or _mutations_reach(dictionaries, call, removals):
+                    continue
+                default = call.args[1]
+                for stores in _attr_stores.values():
+                    stores[:] = [entry for entry in stores if entry[0] is not default]
+                _proxy_stores[:] = [store for store in _proxy_stores if store[3][0] is not default]
+                _mapping_mutations[:] = [
+                    mutation for mutation in _mapping_mutations if mutation[1] is not call
+                ]
 
     def _untracked_proxy_mutations() -> list:
         return [
