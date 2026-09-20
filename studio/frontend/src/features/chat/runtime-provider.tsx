@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { authFetch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -39,6 +38,8 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+// eslint-disable-next-line no-restricted-imports
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
@@ -161,6 +162,9 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
+import { updateChatTitles } from "./utils/chat-title-writes";
+import { queueChatTitle } from "./utils/chat-title-queue";
+import { generateChatTitle } from "./utils/generate-chat-title";
 import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -201,15 +205,6 @@ const pendingRunStartReadyByMessageId = new Map<
   Promise<string | undefined>
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
-
-type TitleResponse = {
-  choices?: Array<{
-    finish_reason?: string | null;
-    message?: {
-      content?: string;
-    };
-  }>;
-};
 
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
@@ -695,65 +690,19 @@ async function generateTitleWithModel(payload: {
     parts.push(`Assistant: ${assistant}`);
   }
 
-  function normalizeTitle(raw: string): string | null {
-    let title = raw.split(/\r?\n/, 1)[0] ?? "";
-    title = title.replace(/^\s*title\s*:\s*/i, "");
-    title = title.replace(/[^\x20-\x7E]+/g, " ");
-    title = title.replace(/["'`]+/g, "");
-
-    // Echo fail-safe: reject leading role labels before punctuation strips the ":".
-    if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
-      return null;
-    }
-
-    title = title.replace(/[.!?:;,]+/g, " ");
-    title = title.replace(/\s+/g, " ").trim();
-
-    const words = title.split(" ").filter(Boolean).slice(0, 6);
-    const joined = words.join(" ").trim();
-    if (!joined) return null;
-    return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  const timeout = disposableTimeoutSignal(60_000);
+  try {
+    return await generateChatTitle(
+      parts.join("\n"),
+      params.checkpoint,
+      timeout.signal,
+    );
+  } catch {
+    return null;
+  } finally {
+    timeout.dispose();
   }
-
-  const response = await authFetch("/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: params.checkpoint,
-      stream: false,
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 24,
-      top_k: 20,
-      repetition_penalty: 1.0,
-      enable_thinking: false,
-      reasoning_effort: "none",
-      // Titling is a one-shot summarisation: never let it enter the tool loop. Omitting the field
-      // would inherit the server's tools-on default and put tool schemas in a 24-token prompt.
-      enable_tools: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
-        },
-        { role: "user", content: parts.join("\n") },
-      ],
-    }),
-  });
-
-  const body = (await response
-    .json()
-    .catch(() => null)) as TitleResponse | null;
-  if (!response.ok) return null;
-  const choice = body?.choices?.[0];
-  if (choice?.finish_reason === "length") return null;
-  const raw: string | undefined = choice?.message?.content;
-  if (!raw || /<\/?think>/i.test(raw)) return null;
-  return normalizeTitle(raw);
 }
-
-const inflightTitleByKey = new Set<string>();
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -1368,100 +1317,103 @@ function createStudioDbAdapter(
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
-      const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      // The run normally waits for its history append, but a bounded persistence wait can expire while
-      // the creator is still queued, so use the same retry choke point as other mutations. A title
-      // is cosmetic, so a row that never landed falls back to the default.
-      const thread = await ensureStoredChatThread(remoteId).catch(
-        () => undefined,
-      );
-      const defaultTitle = "New Chat";
+      return queueChatTitle(
+        pairId ? `pair:${pairId}` : `thread:${remoteId}`,
+        async () => {
+          const autoTitle = useChatRuntimeStore.getState().autoTitle;
+          // The run normally waits for its history append, but a bounded persistence wait can expire while
+          // the creator is still queued, so use the same retry choke point as other mutations. A title
+          // is cosmetic, so a row that never landed falls back to the default.
+          const thread = await ensureStoredChatThread(remoteId).catch(
+            () => undefined,
+          );
+          const defaultTitle = "New Chat";
 
-      function streamTitle(title: string) {
-        return createAssistantStream((c) => {
-          c.appendText(title);
-          c.close();
-        });
-      }
-
-      async function persistTitle(title: string): Promise<void> {
-        await ensureStoredChatThread(remoteId, thread);
-        await updateStoredChatThread(remoteId, { title });
-        if (!pairId) return;
-        const paired = (await listStoredChatThreads({ pairId })).find(
-          (t) => t.id !== remoteId,
-        );
-        if (paired) {
-          await ensureStoredChatThread(paired.id, paired);
-          await updateStoredChatThread(paired.id, { title });
-        }
-      }
-
-      if (!thread) {
-        return streamTitle(defaultTitle);
-      }
-
-      // Only generate once per thread/pair.
-      if (thread.title && thread.title !== "New Chat") {
-        return streamTitle(thread.title);
-      }
-
-      const firstUserIndex = messages.findIndex((m) => m.role === "user");
-      const firstUser =
-        firstUserIndex === -1 ? undefined : messages[firstUserIndex];
-      const firstAssistant =
-        firstUserIndex === -1
-          ? undefined
-          : messages.find(
-              (m, i) => m.role === "assistant" && i > firstUserIndex,
-            );
-      const userText = titleTextOf(firstUser) || defaultTitle;
-      const assistantText = extractTextParts(firstAssistant);
-
-      if (!autoTitle) {
-        const title = fallbackTitleFromUserText(userText);
-        await persistTitle(title);
-        return streamTitle(title);
-      }
-
-      const key = pairId ? `pair:${pairId}` : `thread:${remoteId}`;
-      if (inflightTitleByKey.has(key)) {
-        return streamTitle(thread.title || defaultTitle);
-      }
-
-      if (pairId) {
-        const paired = (await listStoredChatThreads({ pairId })).find(
-          (t) => t.id !== remoteId,
-        );
-
-        if (paired) {
-          const running = useChatRuntimeStore.getState().runningByThreadId;
-          if (running[paired.id]) {
-            setTimeout(() => {
-              void createStudioDbAdapter(
-                modelType,
-                pairId,
-                projectId,
-              ).generateTitle(remoteId, messages);
-            }, 600);
-            return streamTitle(thread.title || defaultTitle);
+          function streamTitle(title: string) {
+            return createAssistantStream((c) => {
+              c.appendText(title);
+              c.close();
+            });
           }
-        }
-      }
 
-      inflightTitleByKey.add(key);
-      try {
-        const title =
-          (await generateTitleWithModel({
-            userText,
-            assistantText,
-          })) || fallbackTitleFromUserText(userText);
+          async function persistTitle(title: string): Promise<string> {
+            try {
+              await ensureStoredChatThread(remoteId, thread);
+              if (paired) await ensureStoredChatThread(paired.id, paired);
+              await updateChatTitles(
+                [
+                  { id: remoteId, title: thread?.title ?? defaultTitle },
+                  ...(paired ? [paired] : []),
+                ],
+                title,
+              );
+              return title;
+            } catch (error) {
+              const current = await getStoredChatThread(remoteId);
+              if (
+                current &&
+                current.title !== thread?.title &&
+                current.title !== title
+              )
+                return current.title;
+              throw error;
+            }
+          }
 
-        await persistTitle(title);
-        return streamTitle(title);
-      } finally {
-        inflightTitleByKey.delete(key);
-      }
+          if (!thread) {
+            return streamTitle(defaultTitle);
+          }
+
+          // Only generate once per thread/pair.
+          if (thread.title && thread.title !== "New Chat") {
+            return streamTitle(thread.title);
+          }
+
+          const paired = pairId
+            ? (await listStoredChatThreads({ pairId })).find(
+                (candidate) => candidate.id !== remoteId,
+              )
+            : undefined;
+
+          const firstUserIndex = messages.findIndex((m) => m.role === "user");
+          const firstUser =
+            firstUserIndex === -1 ? undefined : messages[firstUserIndex];
+          const firstAssistant =
+            firstUserIndex === -1
+              ? undefined
+              : messages.find(
+                  (m, i) => m.role === "assistant" && i > firstUserIndex,
+                );
+          const userText = titleTextOf(firstUser) || defaultTitle;
+          const assistantText = extractTextParts(firstAssistant);
+
+          if (!autoTitle) {
+            const title = fallbackTitleFromUserText(userText);
+            return streamTitle(await persistTitle(title));
+          }
+
+          if (paired) {
+            const running = useChatRuntimeStore.getState().runningByThreadId;
+            if (running[paired.id]) {
+              setTimeout(() => {
+                void createStudioDbAdapter(
+                  modelType,
+                  pairId,
+                  projectId,
+                ).generateTitle(remoteId, messages);
+              }, 600);
+              return streamTitle(thread.title || defaultTitle);
+            }
+          }
+
+          const title =
+            (await generateTitleWithModel({
+              userText,
+              assistantText,
+            })) || fallbackTitleFromUserText(userText);
+          return streamTitle(await persistTitle(title));
+        },
+      );
     },
   };
 }

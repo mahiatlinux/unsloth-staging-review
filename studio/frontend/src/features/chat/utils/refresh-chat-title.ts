@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// eslint-disable-next-line no-restricted-imports
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import { authFetch } from "@/features/auth";
+import { schemaDeclaresRepairGuards } from "./openapi-support";
+import { parseExternalModelId } from "../external-providers";
+import { updateChatTitles } from "./chat-title-writes";
+import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  getStoredChatThread,
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "./chat-history-storage";
+import { queueChatTitle } from "./chat-title-queue";
+import { generateChatTitle } from "./generate-chat-title";
+import { liveThreadBranch } from "./live-thread-head";
+import { orderByParentChain } from "./message-order";
+import { attachmentsSample } from "./pasted-text";
+
+const pending = new Map<string, Promise<void>>();
+
+export function refreshChatTitle(item: SidebarItem): Promise<void> {
+  const key = `${item.type === "compare" ? "pair" : "thread"}:${item.id}`;
+  const existing = pending.get(key);
+  if (existing) return existing;
+  const runtime = useChatRuntimeStore.getState();
+  const model = runtime.params.checkpoint;
+  if (!model)
+    return Promise.reject(
+      new Error("Select a model to refresh the chat title."),
+    );
+  const contextLength = parseExternalModelId(model)
+    ? 4096
+    : (runtime.loadedCustomContextLength ??
+      runtime.loadedContextLength ??
+      (runtime.params.maxSeqLength || 4096));
+  const request = queueChatTitle(key, () =>
+    refresh(item, model, contextLength),
+  ).finally(() => pending.delete(key));
+  pending.set(key, request);
+  return request;
+}
+
+function budgetTranscript(conversation: string, budget: number): string {
+  const bytes = new TextEncoder().encode(conversation);
+  if (bytes.length <= budget) return conversation;
+  const marker = "\n[Earlier conversation abbreviated]\n";
+  const available = budget - new TextEncoder().encode(marker).length;
+  let headEnd = Math.floor(available / 4);
+  let tailStart = bytes.length - (available - headEnd);
+  while ((bytes[headEnd] & 0xc0) === 0x80) headEnd -= 1;
+  while ((bytes[tailStart] & 0xc0) === 0x80) tailStart += 1;
+  const decoder = new TextDecoder();
+  return (
+    decoder.decode(bytes.subarray(0, headEnd)) +
+    marker +
+    decoder.decode(bytes.subarray(tailStart))
+  );
+}
+
+async function refresh(
+  item: SidebarItem,
+  model: string,
+  contextLength: number,
+): Promise<void> {
+  const schema = await authFetch("/openapi.json");
+  if (!schema.ok)
+    throw new Error("Unable to check Studio compatibility. Try again.");
+  if (!schemaDeclaresRepairGuards(await schema.json())) {
+    throw new Error("Update Studio to use chat title refresh.");
+  }
+  const threads =
+    item.type === "compare"
+      ? await listStoredChatThreads({ pairId: item.id, includeArchived: true })
+      : [await getStoredChatThread(item.id)].filter(
+          (thread) => thread !== undefined,
+        );
+  if (threads.length === 0) throw new Error("This chat no longer exists.");
+  const conversations = await Promise.all(
+    threads.map(async (thread) => {
+      const liveBranch = liveThreadBranch(thread.id);
+      const raw = await listStoredChatMessages(thread.id);
+      const storedIds = new Set(raw.map((message) => message.id));
+      const messages = raw.some((message) => message.parentId != null)
+        ? orderByParentChain(raw, {
+            includeSiblings: false,
+            headId: liveBranch
+              ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ??
+                null)
+              : undefined,
+          })
+        : raw;
+      return messages
+        .flatMap((message) => {
+          if (message.role !== "user" && message.role !== "assistant")
+            return [];
+          const text =
+            typeof message.content === "string"
+              ? message.content
+              : Array.isArray(message.content)
+                ? message.content
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n")
+                : "";
+          const sample =
+            message.role === "user"
+              ? attachmentsSample(message.attachments)
+              : "";
+          const content = [text, sample].filter(Boolean).join("\n\n").trim();
+          return content ? [`${message.role}: ${content}`] : [];
+        })
+        .join("\n\n");
+    }),
+  );
+  const nonempty = conversations.filter(Boolean);
+  if (nonempty.length === 0)
+    throw new Error("This chat has no text to summarize.");
+  const separator = "\n\nAnother comparison pane:\n\n";
+  // reserve prompt/output space and budget utf-8 bytes conservatively for multilingual text.
+  const budget = Math.max(128, Math.min(12_000, contextLength - 512));
+  const paneBudget = Math.floor(
+    (budget - (nonempty.length - 1) * separator.length) / nonempty.length,
+  );
+  const conversation = nonempty
+    .map((pane) => budgetTranscript(pane, paneBudget))
+    .join(separator);
+  const timeout = disposableTimeoutSignal(60_000);
+  let title: string | null;
+  try {
+    title = await generateChatTitle(
+      conversation,
+      model,
+      timeout.signal,
+      "refresh",
+    );
+  } finally {
+    timeout.dispose();
+  }
+  if (!title) throw new Error("The model did not return a title. Try again.");
+  await updateChatTitles(threads, title);
+}
