@@ -6,7 +6,7 @@ import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { authFetch } from "@/features/auth";
 import { schemaDeclaresRepairGuards } from "./openapi-support";
 import { parseExternalModelId } from "../external-providers";
-import { updateChatThread } from "../api/chat-api";
+import { updateChatTitles } from "./chat-title-writes";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -26,9 +26,20 @@ export function refreshChatTitle(item: SidebarItem): Promise<void> {
   const key = `${item.type === "compare" ? "pair" : "thread"}:${item.id}`;
   const existing = pending.get(key);
   if (existing) return existing;
-  const request = queueChatTitle(key, () => refresh(item)).finally(() =>
-    pending.delete(key),
-  );
+  const runtime = useChatRuntimeStore.getState();
+  const model = runtime.params.checkpoint;
+  if (!model)
+    return Promise.reject(
+      new Error("Select a model to refresh the chat title."),
+    );
+  const contextLength = parseExternalModelId(model)
+    ? 4096
+    : (runtime.loadedCustomContextLength ??
+      runtime.loadedContextLength ??
+      (runtime.params.maxSeqLength || 4096));
+  const request = queueChatTitle(key, () =>
+    refresh(item, model, contextLength),
+  ).finally(() => pending.delete(key));
   pending.set(key, request);
   return request;
 }
@@ -50,15 +61,11 @@ function budgetTranscript(conversation: string, budget: number): string {
   );
 }
 
-async function refresh(item: SidebarItem): Promise<void> {
-  const runtime = useChatRuntimeStore.getState();
-  const model = runtime.params.checkpoint;
-  const contextLength = parseExternalModelId(model)
-    ? 4096
-    : (runtime.loadedCustomContextLength ??
-      runtime.loadedContextLength ??
-      (runtime.params.maxSeqLength || 4096));
-  if (!model) throw new Error("Select a model to refresh the chat title.");
+async function refresh(
+  item: SidebarItem,
+  model: string,
+  contextLength: number,
+): Promise<void> {
   const schema = await authFetch("/openapi.json");
   if (!schema.ok)
     throw new Error("Unable to check Studio compatibility. Try again.");
@@ -129,24 +136,5 @@ async function refresh(item: SidebarItem): Promise<void> {
     timeout.dispose();
   }
   if (!title) throw new Error("The model did not return a title. Try again.");
-  const results = await Promise.allSettled(
-    threads.map((thread) =>
-      updateChatThread(thread.id, { title }, { expectedTitle: thread.title }),
-    ),
-  );
-  const failure = results.find((result) => result.status === "rejected");
-  if (failure) {
-    await Promise.all(
-      threads.map((thread, index) =>
-        results[index].status === "fulfilled"
-          ? updateChatThread(
-              thread.id,
-              { title: thread.title },
-              { expectedTitle: title },
-            )
-          : Promise.resolve(),
-      ),
-    );
-    throw failure.reason;
-  }
+  await updateChatTitles(threads, title);
 }
