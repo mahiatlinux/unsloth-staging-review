@@ -16,6 +16,7 @@ import { type MonitorStats, computeStats } from "./stats";
 
 /** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
+const MAX_CACHED_PROMPT_CHARS = 64 * 1024 * 1024;
 
 export { computeStats };
 export type { MonitorStats };
@@ -94,12 +95,26 @@ export function useApiMonitor({
   );
   // Mirrors `loadingDetails` outside React state so the guard sees same-tick writes.
   const inFlightDetails = useRef<Set<string>>(new Set());
+  const retainedEntryIds = useRef<Set<string>>(new Set());
+
+  const updateData = useCallback((next: ApiMonitorResponse): void => {
+    const ids = new Set(next.entries.map((entry) => entry.id));
+    retainedEntryIds.current = ids;
+    setData(next);
+    setDetails((previous) => {
+      const expired = Object.keys(previous).filter((id) => !ids.has(id));
+      if (expired.length === 0) return previous;
+      const retained = { ...previous };
+      for (const id of expired) delete retained[id];
+      return retained;
+    });
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     setRefreshing(true);
     try {
       const next = await getApiMonitor();
-      setData(next);
+      updateData(next);
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Monitor unavailable");
@@ -107,7 +122,7 @@ export function useApiMonitor({
       setRefreshing(false);
       setLoading(false);
     }
-  }, []);
+  }, [updateData]);
 
   useEffect(() => {
     if (paused) {
@@ -120,7 +135,7 @@ export function useApiMonitor({
       getApiMonitor()
         .then((next) => {
           if (cancelled) return;
-          setData(next);
+          updateData(next);
           setError(null);
         })
         .catch((err: unknown) => {
@@ -141,7 +156,7 @@ export function useApiMonitor({
         window.clearTimeout(timer);
       }
     };
-  }, [paused, intervalMs]);
+  }, [paused, intervalMs, updateData]);
 
   // Returns whether a fetch started: recording "fetched revision N" when the guard
   // refused would skip that revision once updated_at settles.
@@ -151,9 +166,24 @@ export function useApiMonitor({
     }
     inFlightDetails.current.add(id);
     setLoadingDetails((prev) => new Set(prev).add(id));
-    getApiMonitorEntry(id)
+    const cachedPrompt = details[id]?.prompt;
+    getApiMonitorEntry(id, cachedPrompt == null)
       .then((entry) => {
-        setDetails((prev) => ({ ...prev, [id]: entry }));
+        if (!retainedEntryIds.current.has(id)) return;
+        setDetails((prev) => {
+          const refreshed =
+            cachedPrompt == null ? entry : { ...entry, prompt: cachedPrompt };
+          const retained: Record<string, ApiMonitorEntry> = { [id]: refreshed };
+          let promptChars = refreshed.prompt?.length ?? 0;
+          for (const [cachedId, cached] of Object.entries(prev)) {
+            if (cachedId === id) continue;
+            const cachedChars = cached.prompt?.length ?? 0;
+            if (promptChars + cachedChars > MAX_CACHED_PROMPT_CHARS) continue;
+            retained[cachedId] = cached;
+            promptChars += cachedChars;
+          }
+          return retained;
+        });
       })
       .catch(() => {
         // Aged out of the ring buffer: drop the stale copy so the row previews show.
@@ -173,7 +203,7 @@ export function useApiMonitor({
         });
       });
     return true;
-  }, []);
+  }, [details]);
 
   // The Clear log button discards this promise, so a failed DELETE has to land in the
   // error banner here: rethrowing leaves an unhandled rejection and a log that silently

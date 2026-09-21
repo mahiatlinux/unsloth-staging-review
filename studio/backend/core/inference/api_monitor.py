@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import sys
 import threading
 import time
 import uuid
@@ -32,7 +33,7 @@ TerminalCallback = Callable[[ApiUsageReceipt], None]
 
 
 _MAX_ENTRIES = 50
-_MAX_PROMPT_CHARS = 12000
+_MAX_PROMPT_BYTES = 64 * 1024 * 1024
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
 _MAX_STREAM_TOOL_CALLS = 64
@@ -216,11 +217,13 @@ class ApiMonitorEntry:
     openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
     openai_stream_last_tool_indexes: dict[int, int] = field(default_factory = dict)
     openai_stream_last_segment_was_tool: bool = False
+    prompt_complete: bool = True
 
     def snapshot(
         self,
         *,
         include_details: bool = True,
+        include_prompt: bool = True,
         attributed: bool = True,
     ) -> dict[str, Any]:
         duration_ms = None
@@ -264,7 +267,7 @@ class ApiMonitorEntry:
             "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
-            "prompt_truncated": len(self.prompt) > _PREVIEW_CHARS,
+            "prompt_truncated": not self.prompt_complete or len(self.prompt) > _PREVIEW_CHARS,
             "reply_truncated": len(self.reply) > _PREVIEW_CHARS,
             "status": self.status,
             "started_at": self.started_at,
@@ -292,7 +295,8 @@ class ApiMonitorEntry:
             "stop_reason": self.stop_reason,
         }
         if include_details:
-            payload["prompt"] = self.prompt
+            if include_prompt and self.prompt_complete:
+                payload["prompt"] = self.prompt
             payload["reply"] = self.reply
         return payload
 
@@ -374,7 +378,7 @@ class ApiMonitor:
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
-            prompt = _trim(prompt, _MAX_PROMPT_CHARS),
+            prompt = prompt or "",
             status = "running",
             started_at = now,
             updated_at = now,
@@ -386,6 +390,16 @@ class ApiMonitor:
         with self._lock:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            remaining = _MAX_PROMPT_BYTES
+            for retained in self._entries:
+                if not retained.prompt_complete or len(retained.prompt) <= _PREVIEW_CHARS:
+                    continue
+                prompt_bytes = sys.getsizeof(retained.prompt)
+                if prompt_bytes <= remaining:
+                    remaining -= prompt_bytes
+                else:
+                    retained.prompt = _trim(retained.prompt, _PREVIEW_CHARS)
+                    retained.prompt_complete = False
         return entry.id
 
     def record_lifecycle(
@@ -935,6 +949,7 @@ class ApiMonitor:
         entry_id: str,
         *,
         subject: Optional[str] = None,
+        include_prompt: bool = True,
     ) -> Optional[dict[str, Any]]:
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -944,6 +959,7 @@ class ApiMonitor:
                 return None
             return entry.snapshot(
                 include_details = True,
+                include_prompt = include_prompt,
                 attributed = self._attributed(entry, subject),
             )
 
