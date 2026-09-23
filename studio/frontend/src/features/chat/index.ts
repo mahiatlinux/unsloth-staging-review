@@ -464,3 +464,5 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+
+export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";
