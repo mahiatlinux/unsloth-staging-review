@@ -1,0 +1,45 @@
+{
+  "pr": 11850,
+  "head_ref": "9b3056c8200c25d66bc83f699eb76e36ea18a617",
+  "base_sha": "f9bffe265889379126785d129700345a11f38b60",
+  "head_sha": "9b3056c8200c25d66bc83f699eb76e36ea18a617",
+  "scene": "audio_detected_columns_training",
+  "expect": "BEFORE reaches an Error state with 'No text column found' after the dataset check accepted normalized_text. AFTER reaches Completed with one training step. Facts: terminal_phase error -> completed, missing_text_error true -> false, and final_step 0 -> 1.",
+  "facts": {
+    "BEFORE": {
+      "job_id": "job_20260925_061407_3139936a",
+      "dataset_column": "normalized_text",
+      "terminal_phase": "error",
+      "missing_text_error": true,
+      "final_step": 0,
+      "final_loss": null,
+      "status_message": "Loaded 2 samples from local files",
+      "status_error": "No text column found in dataset. Columns: ['audio', 'normalized_text']",
+      "ui_text": "Training Progress No text column found in dataset. Columns: ['audio', 'normalized_text'] Stop Error Epoch 0.00 0% complete Step 0 / -- 0% No text column found in dataset. Columns: ['audio', 'normalized_text'] Loss 0.0000 LR 0.00e+0 Grad Norm -- Model -- Method LoRA Elapsed: -- ETA: -- -- steps/s GPU Monitor Live Utilization -- Temperature -- VRAM -- Power --"
+    },
+    "AFTER": {
+      "job_id": "job_20260925_061438_c45826b2",
+      "dataset_column": "normalized_text",
+      "terminal_phase": "completed",
+      "missing_text_error": false,
+      "final_step": 1,
+      "final_loss": 4.982524394989014,
+      "status_message": "Training completed! Model saved to /home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/home_after/outputs/unsloth_csm-1b__project-detected-normalized_text-proof_1790317571",
+      "status_error": null,
+      "ui_text": "Training Progress Training completed! Model saved to /home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/home_after/outputs/unsloth_csm-1b__project-detected-normalized_text-proof_1790317571 Export to GGUF Stop Completed Epoch 0.50 100% complete Step 1 / 1 100% Training done. Next step: compare base vs fine-tuned outputs. Compare in Chat Export Model Loss 4.9825 LR 2.00e-4 Grad Norm 3.124 Model -- Method LoRA Elapsed: -- ETA: -- -- steps/s GPU Monitor Live Utilization -- Temperature -- VRAM -- Power --"
+    }
+  },
+  "studio_env": {
+    "HF_HOME": "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/hf_{label}",
+    "HF_HUB_CACHE": "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/hf_{label}/hub",
+    "HF_XET_CACHE": "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/hf_{label}/xet",
+    "XDG_CACHE_HOME": "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/runtime-cache_{label}",
+    "PLAYWRIGHT_BROWSERS_PATH": "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/playwright-browsers",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "DO_NOT_TRACK": "1",
+    "TZ": "UTC"
+  },
+  "pairs": [
+    "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-11850/artifacts/ui/combined/pr11850_before_after.png"
+  ]
+}
