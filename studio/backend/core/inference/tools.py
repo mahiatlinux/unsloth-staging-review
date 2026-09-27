@@ -3936,6 +3936,7 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4012,8 +4013,17 @@ def _references_studio_credential_here(
         # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
         # directory every later relative path opens from, and handing the unexpanded text to the cwd
         # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        if expanded != text:
+            # An unfinished expansion can still hide the auth path. Exhausting the scan budget
+            # must refuse the command, not classify its unresolved aliases as ordinary paths.
+            if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+            ):
+                return True
+            if _references_studio_credential_here(
+                expanded, workdir, _assign_expand_depth = _assign_expand_depth + 1
+            ):
+                return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -5077,6 +5087,9 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# Each substitution pass doubles the number of resolved alias hops. Allow long finite chains,
+# then fail closed if expansion still has work left; growing unresolved text has a separate bound.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
@@ -5246,11 +5259,26 @@ def _posix_join(parts) -> str:
     return out
 
 
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR); such bindings never reach a concrete path here."""
+    if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
+        return True
+    return any(
+        m.group(1) == name
+        for pattern in (_SHELL_PARAM_REPL_RE, _SHELL_PARAM_CASE_RE, _SHELL_PARAM_INDIRECT_RE)
+        for m in pattern.finditer(value)
+    )
+
+
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
+    env = {
+        var: val
+        for var, val in _SHELL_ASSIGN_RE.findall(command)
+        if not _shell_assign_value_self_references(var, val)
+    }
     if not env:
         return command
 
