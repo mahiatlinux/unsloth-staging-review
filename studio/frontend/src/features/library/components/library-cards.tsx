@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
@@ -262,8 +263,9 @@ const COMPACT_CARD_WIDTH = 190;
 
 function useCardLayout(container: RefObject<HTMLDivElement | null>) {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  const { columns, columnWidth } = useColumnLayout(container, minWidth, max);
-  return { columns, compact: columnWidth < COMPACT_CARD_WIDTH };
+  const uiSpaceScale = useUiSpaceScale();
+  const { columns, columnWidth } = useColumnLayout(container, minWidth * uiSpaceScale, max);
+  return { columns, compact: columnWidth < COMPACT_CARD_WIDTH * uiSpaceScale };
 }
 
 export function Masonry<T>({

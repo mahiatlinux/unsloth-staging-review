@@ -440,7 +440,9 @@ test("chat, project and section cards keep one fixed 8:7 size", () => {
 
   const cards = readSrc("features/library/components/library-cards.tsx");
   assert.match(cards, /const COMPACT_CARD_WIDTH = 190/);
-  assert.match(cards, /compact: columnWidth < COMPACT_CARD_WIDTH/);
+  assert.match(cards, /const uiSpaceScale = useUiSpaceScale\(\)/);
+  assert.match(cards, /minWidth \* uiSpaceScale/);
+  assert.match(cards, /compact: columnWidth < COMPACT_CARD_WIDTH \* uiSpaceScale/);
   assert.match(cards, /<CardGridCompactContext\.Provider value=\{compact\}>/);
 
   const hooks = readSrc("features/library/hooks.ts");
