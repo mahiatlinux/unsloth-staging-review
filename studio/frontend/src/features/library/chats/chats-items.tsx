@@ -82,6 +82,7 @@ const CARD = cn(
   CARD_SHADOW,
   "group/chat relative flex aspect-[8/7] min-h-0 cursor-pointer flex-col gap-2.5 overflow-hidden rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
+const COMPACT_CARD = "gap-1 px-3 pb-2 pt-3";
 import {
   type ChatContents,
   type ChatSort,
@@ -1160,6 +1161,7 @@ export function ChatCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
+  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
   const selected = actions.selection.has(chat.id);
   const selecting = actions.selection.size > 0;
   const location =
@@ -1173,10 +1175,10 @@ export function ChatCard({
       onClick={(event) =>
         selecting ? actions.toggleSelected(chat.id, event.shiftKey) : actions.open(chat)
       }
-      className={cn(CARD, selected && "ring-2 ring-foreground")}
+      className={cn(CARD, compact && COMPACT_CARD, selected && "ring-2 ring-foreground")}
     >
       <div className="flex items-center gap-2">
-        <ChatTile chat={chat} />
+        <ChatTile chat={chat} className={compact ? "size-8" : undefined} />
         <ChatBadges chat={chat} marksOnly />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
@@ -1196,17 +1198,29 @@ export function ChatCard({
       <CardFooter
         meta={location}
         date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
+        compact={compact}
         className={selecting ? "pe-7" : undefined}
       />
     </div>
   );
 }
 
-function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
+function CardFooter({
+  meta,
+  date,
+  compact,
+  className,
+}: {
+  meta?: ReactNode;
+  date: string;
+  compact: boolean;
+  className?: string;
+}) {
   return (
     <div
       className={cn(
-        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
+        "mt-auto flex min-w-0 shrink-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
+        compact && "gap-0",
         className,
       )}
     >
@@ -1240,9 +1254,9 @@ export function GroupHeading({
   );
 }
 
-function CollectionTile({ icon }: { icon: IconSvgElement }) {
+function CollectionTile({ icon, className }: { icon: IconSvgElement; className?: string }) {
   return (
-    <span className={TILE}>
+    <span className={cn(TILE, className)}>
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={TILE_ICON} />
     </span>
   );
@@ -1399,15 +1413,16 @@ export function ProjectCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
+  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
   const pinned = actions.pinnedProjects.has(project.id);
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
     <div
       onClick={() => actions.viewProject(project.id)}
-      className={CARD}
+      className={cn(CARD, compact && COMPACT_CARD)}
     >
       <div className="flex items-center gap-2">
-        <CollectionTile icon={Folder02Icon} />
+        <CollectionTile icon={Folder02Icon} className={compact ? "size-8" : undefined} />
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
         {pinned && <PinMark />}
       </div>
@@ -1425,6 +1440,7 @@ export function ProjectCard({
       <CardFooter
         meta={chatCount(stats?.chats ?? 0, t)}
         date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
+        compact={compact}
       />
     </div>
   );
@@ -1646,14 +1662,15 @@ export function SectionCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
+  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
     <div
       onClick={() => actions.viewSection(section.id)}
-      className={CARD}
+      className={cn(CARD, compact && COMPACT_CARD)}
     >
       <div className="flex items-center gap-2">
-        <CollectionTile icon={LayerIcon} />
+        <CollectionTile icon={LayerIcon} className={compact ? "size-8" : undefined} />
         {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
@@ -1670,6 +1687,7 @@ export function SectionCard({
       <CardFooter
         meta={sectionCountLabel(stats, t)}
         date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
+        compact={compact}
       />
     </div>
   );

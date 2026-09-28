@@ -425,6 +425,10 @@ test("chat, project and section cards keep one fixed 8:7 size", () => {
   assert.match(card, /overflow-hidden/);
   assert.doesNotMatch(card, /self-stretch/);
   assert.match(items, /const CARD_TITLE =\s*"[^"]*shrink-0/);
+  assert.match(items, /const COMPACT_CARD = "gap-1 px-3 pb-2 pt-3"/);
+  assert.match(items, /"mt-auto flex min-w-0 shrink-0 flex-col items-start gap-1/);
+  assert.match(items, /compact && "gap-0"/);
+  assert.match(items, /className=\{compact \? "size-8" : undefined\}/);
   assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
 
@@ -439,7 +443,7 @@ test("chat, project and section tiles share one box and hover tint", () => {
   assert.match(items, /const TILE =\s*"[^"]*bg-muted[^"]*group-hover\/chat:bg-primary\/10 group-hover\/chat:text-primary"/);
   assert.equal(items.split("group-hover/chat:bg-primary/10").length - 1, 1, "one tile style");
   assert.match(items, /<div className=\{cn\(TILE, className\)\}>/);
-  assert.match(items, /<span className=\{TILE\}>/);
+  assert.match(items, /<span className=\{cn\(TILE, className\)\}>/);
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
 });
 
