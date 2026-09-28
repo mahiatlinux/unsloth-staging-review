@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -291,6 +292,7 @@ export function AudioPage({
   const initialReadySent = useRef(false);
   // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
+  const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
   const { rootStyle: railRootStyle } = useMediaRailWidth("audio");
   const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
@@ -2667,7 +2669,12 @@ export function AudioPage({
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
-            isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+            isMobileShell
+            ? "pl-12"
+            : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+              !pinned && isTauri
+              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
@@ -2688,7 +2695,7 @@ export function AudioPage({
               onValueChange={handleModelSelect}
               onEject={busy === null && selectorValue ? handleEject : undefined}
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2 translate-y-[var(--studio-model-picker-offset,0px)]"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
               catalog={AUDIO_CATALOG}
@@ -2717,7 +2724,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="translate-y-[var(--studio-model-picker-offset,0px)] h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2739,7 +2746,7 @@ export function AudioPage({
               ]}
             />
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <LibraryPageLink
                 tab="audio"

@@ -46,6 +46,7 @@ import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
+import { isChatLikeRoute } from "@/lib/chat-like-routes";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
@@ -495,7 +496,8 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+      // The cap stops below the window chrome, where the window controls sit above the page.
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -566,23 +568,43 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
 
+// One top row, as on macOS: page headers sit in the titlebar band beside the window
+// controls, which reserve --studio-window-control-inset on the right.
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-custom-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
-  "--studio-collapsed-chat-controls-inset": "12px",
+  // Clears the titlebar navigation (left-1, three 30px buttons, two gap-0.5) plus a 10px gap.
+  "--studio-collapsed-chat-controls-inset":
+    "calc(90px + 18px * var(--ui-space-scale, 1))",
   "--studio-startup-top-inset": "42px",
-  "--studio-content-top-inset": "34px",
+  "--studio-content-top-inset": "0px",
+  "--studio-non-chat-content-top-inset": "34px",
+  "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  // Same split as the native-mac block: chat chrome scales, window chrome does not.
-  "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not. Header
+  // controls take the 30px of the navigation buttons and start 2px down, so they centre on
+  // the window controls' line and clear the window edge.
+  "--studio-chat-header-height": "calc(40px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(2px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
-  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-right-inset": "0px",
-  "--studio-window-control-inset": "112px",
+  "--studio-chat-control-height": "calc(30px * var(--ui-space-scale, 1))",
+  // The media headers' 34px model picker, Create/Train toggle and Library link take it too.
+  "--studio-media-control-height": "calc(30px * var(--ui-space-scale, 1))",
+  // The model picker that opens each page header, and the media pages' Create/Train toggle,
+  // sit 3px lower, set apart from the window chrome.
+  "--studio-model-picker-offset": "3px",
+  // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
+  // rises with them and keeps the same gap below.
+  "--studio-sidebar-brand-lift": "6.5px",
+  // The navigation centres on the 26px window controls, which sit top-1 (4px) down.
+  "--studio-titlebar-row-center": "calc(13px + 4px * var(--ui-space-scale, 1))",
+  // Min, max and close: three 26px buttons, two gap-0.5 and right-1, which mirrors the
+  // navigation's left-1 so both corners hold the same margin.
+  "--studio-window-control-inset":
+    "calc(78px + 8px * var(--ui-space-scale, 1))",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -604,7 +626,10 @@ function DesktopChromeVarsEffect({
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    set(
+      "--studio-window-control-inset",
+      usesCustomTitlebar ? "calc(78px + 8px * var(--ui-space-scale, 1))" : null,
+    );
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
@@ -1003,8 +1028,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       style={CUSTOM_CHROME_STYLE}
     >
       {chromeVars}
-      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+      <WindowTitlebar
+        showSidebarSurface={showSidebarSurface}
+        pageHeaderInBand={isChatLikeRoute(pathname)}
+      />
+      {/* Sign-in forms can outgrow a small window, so they scroll here, under the titlebar. */}
+      <div
+        className={
+          hidesTitlebarSidebar
+            ? "h-full min-h-0 overflow-x-hidden overflow-y-auto"
+            : "h-full min-h-0 overflow-hidden"
+        }
+      >
+        {content}
+      </div>
     </div>
   );
 }
@@ -1044,8 +1081,8 @@ export function AppProvider({ children }: AppProviderProps) {
   const toastOffsets = getToastOffsets(
     pathname,
     isTauri,
-    shouldUseCustomWindowTitlebar(),
     uiSpaceScale,
+    shouldUseCustomWindowTitlebar(),
   );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,

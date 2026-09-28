@@ -29,6 +29,7 @@ const SIDEBAR = readSrc("components/app-sidebar.tsx");
 const PROVIDER = readSrc("app/provider.tsx");
 
 const SCALED = /calc\([\d.]+(?:px|rem)\s*\*\s*var\(--ui-space-scale,\s*1\)\)/;
+const COLLAPSED_NAV_SLOT = /"calc\(90px \+ 8px \* var\(--ui-space-scale, 1\)\)"/;
 
 test("the spacing scale is the font-size preference, normalised at the default", () => {
   // --ui-font-scale is against a 16px base and the default is 15px, so
@@ -173,13 +174,14 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   // its own trigger, so it holds the same fixed width.
   assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
   assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
-  // The padding and gaps around them still scale, so the drag region has to
-  // start further out or it covers the last button.
-  // max(), because the buttons are fixed: the slot may grow with the padding
-  // around them but must never fall under their own width.
+  // Collapsed, the slot is the buttons (fixed) plus their scaled left-1 and gaps,
+  // and the page header beside it starts a scaled 10px further out, so neither
+  // covers the other at any size.
+  assert.match(titlebar, COLLAPSED_NAV_SLOT);
+  const provider = readSrc("app/provider.tsx");
   assert.match(
-    titlebar,
-    /max\(7rem, calc\(7rem \* var\(--ui-space-scale, 1\)\)\)/,
+    provider,
+    /"--studio-collapsed-chat-controls-inset":\s*"calc\(90px \+ 18px \* var\(--ui-space-scale, 1\)\)"/,
   );
 });
 
@@ -399,23 +401,21 @@ test("a scaled media rail leaves the preview its minimum", () => {
   // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
   // preview. The header column shrinks the same way, so the dividers line up.
   // The width is the draggable --media-rail-width, falling back to the old fixed one.
-  for (const [file, width, split] of [
-    ["features/images/images-page.tsx", "408px", "@[50rem]"],
-    ["features/audio/audio-page.tsx", "408px", "@[50rem]"],
-    ["features/video/video-page.tsx", "400px", "lg"],
-  ] as const) {
+  const rail = "var(--media-rail-width,calc(408px*var(--ui-space-scale,1)))";
+  for (const file of [
+    "features/images/images-page.tsx",
+    "features/audio/audio-page.tsx",
+    "features/video/video-page.tsx",
+  ]) {
     const source = readSrc(file);
-    const rail = `var(--media-rail-width,calc(${width}*var(--ui-space-scale,1)))`;
     assert.ok(
-      source.includes(`${split}:w-[min(${rail},calc(100%-13rem))]`),
+      source.includes(`@[50rem]:w-[min(${rail},calc(100%-13rem))]`),
       `${file} rail can outgrow its split`,
     );
-    if (split !== "lg") {
-      assert.ok(
-        source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
-        `${file} header column drifts from its rail`,
-      );
-    }
+    assert.ok(
+      source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
+      `${file} header column drifts from its rail`,
+    );
   }
 });
 

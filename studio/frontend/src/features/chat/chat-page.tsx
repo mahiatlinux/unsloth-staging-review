@@ -53,7 +53,7 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { holdSidebarPinned, releaseSidebarPinned } from "@/hooks/use-sidebar-pin";
 import {
   DOWNLOAD_KIND,
@@ -754,7 +754,12 @@ function ComparePane({
       )}
     >
       {header}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        {/* The single-thread fade spans one column; each pane fades under its own header instead. */}
+        <div
+          aria-hidden={true}
+          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-[var(--thread-scrollbar-gutter,10px)] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+        />
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
@@ -1023,7 +1028,9 @@ function GeneralCompareHeader({
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+            : isTauri
+              ? "pl-12 pr-3 md:pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
           : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
@@ -1040,7 +1047,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
+        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)] translate-y-[var(--studio-model-picker-offset,0px)]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -2269,6 +2276,10 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
+  const isCompact = useIsCompact();
+  // Mirrors ChatSettingsPanel's own open and docked conditions.
+  const settingsDocked =
+    active && modelConfigRequest === null && settingsOpen && !isCompact;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
       setSettingsOpen(false);
@@ -4106,12 +4117,18 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
+          // A docked Run settings panel owns the right edge, and the window controls with it.
+          style={
+            settingsDocked
+              ? ({ "--studio-chat-header-right-inset": "0px" } as CSSProperties)
+              : undefined
+          }
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4120,7 +4137,7 @@ export function ChatPage({
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
@@ -4175,7 +4192,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] translate-y-[var(--studio-model-picker-offset,0px)]"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4247,7 +4264,8 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
+          {/* Control height, so the 30px icons centre on the model selector's line. */}
+          <div className="pointer-events-auto ml-auto flex h-[var(--studio-chat-control-height,34px)] items-center gap-1">
             {showContextWindowUsage &&
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (
