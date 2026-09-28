@@ -417,14 +417,21 @@ test("sections have created and last modified dates, and Last modified is the de
   assert.doesNotMatch(readSrc("features/library/chats/chats-items.tsx"), /field="updated"/);
 });
 
-test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
+test("chat, project and section cards keep one fixed 8:7 size", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
   assert.match(card, /aspect-\[8\/7\]/);
-  assert.doesNotMatch(card, /overflow-hidden/);
-  assert.match(card, /self-stretch/);
+  assert.match(card, /min-h-0/);
+  assert.match(card, /overflow-hidden/);
+  assert.doesNotMatch(card, /self-stretch/);
+  assert.match(items, /const CARD_TITLE =\s*"[^"]*shrink-0/);
   assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
+
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.equal(library.match(/aspect-\[8\/7\]/g)?.length, 2, "new project and section tiles");
+  assert.doesNotMatch(library, /min-h-(40|44)/);
+  assert.doesNotMatch(library, /LoadingRows|<Skeleton/);
 });
 
 test("chat, project and section tiles share one box and hover tint", () => {
