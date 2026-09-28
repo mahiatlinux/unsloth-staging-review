@@ -428,6 +428,7 @@ test("chat, project and section cards keep one fixed 8:7 size", () => {
   assert.match(items, /const COMPACT_CARD = "gap-1 px-3 pb-2 pt-3"/);
   assert.match(items, /"mt-auto flex min-w-0 shrink-0 flex-col items-start gap-1/);
   assert.match(items, /compact && "gap-0"/);
+  assert.equal(items.match(/const compact = useCompactCardLayout\(\);/g)?.length, 3);
   assert.match(items, /className=\{compact \? "size-8" : undefined\}/);
   assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
@@ -436,6 +437,14 @@ test("chat, project and section cards keep one fixed 8:7 size", () => {
   assert.equal(library.match(/aspect-\[8\/7\]/g)?.length, 2, "new project and section tiles");
   assert.doesNotMatch(library, /min-h-(40|44)/);
   assert.doesNotMatch(library, /LoadingRows|<Skeleton/);
+
+  const cards = readSrc("features/library/components/library-cards.tsx");
+  assert.match(cards, /const COMPACT_CARD_WIDTH = 190/);
+  assert.match(cards, /compact: columnWidth < COMPACT_CARD_WIDTH/);
+  assert.match(cards, /<CardGridCompactContext\.Provider value=\{compact\}>/);
+
+  const hooks = readSrc("features/library/hooks.ts");
+  assert.match(hooks, /\(element\.clientWidth - gap \* \(columns - 1\)\) \/ columns/);
 });
 
 test("chat, project and section tiles share one box and hover tint", () => {

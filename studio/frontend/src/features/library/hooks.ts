@@ -155,24 +155,41 @@ export function useSeen(ref: RefObject<Element | null>): boolean {
   return seen;
 }
 
-export function useColumnCount(
+export function useColumnLayout(
   ref: RefObject<HTMLElement | null>,
   minColumnWidth = 200,
   maxColumns = 5,
-): number {
-  const [columns, setColumns] = useState(4);
+): { columns: number; columnWidth: number } {
+  const [layout, setLayout] = useState({
+    columns: 4,
+    columnWidth: Number.POSITIVE_INFINITY,
+  });
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
       const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth + gap));
-      setColumns(Math.max(2, Math.min(maxColumns, fit)));
+      const columns = Math.max(2, Math.min(maxColumns, fit));
+      const columnWidth = Math.max(0, (element.clientWidth - gap * (columns - 1)) / columns);
+      setLayout((current) =>
+        current.columns === columns && current.columnWidth === columnWidth
+          ? current
+          : { columns, columnWidth },
+      );
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
   }, [ref, minColumnWidth, maxColumns]);
-  return columns;
+  return layout;
+}
+
+export function useColumnCount(
+  ref: RefObject<HTMLElement | null>,
+  minColumnWidth = 200,
+  maxColumns = 5,
+): number {
+  return useColumnLayout(ref, minColumnWidth, maxColumns).columns;
 }

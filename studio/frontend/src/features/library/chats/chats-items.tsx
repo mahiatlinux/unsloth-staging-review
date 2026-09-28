@@ -71,9 +71,10 @@ import {
   CARD_ICON_CLASS as FILE_CARD_ICON_CLASS,
   CARD_SURFACE as FILE_CARD_SURFACE,
 } from "../components/library-cards";
+import { useCompactCardLayout } from "../components/card-grid-context";
 import { FILE_LIST_COLUMNS } from "../components/library-list";
-import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
+import { useLibrarySettingsStore } from "../settings-store";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
 // Fixed 8:7 size: min-h-0 and overflow-hidden stop long names from growing the card.
@@ -1161,7 +1162,7 @@ export function ChatCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
-  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
+  const compact = useCompactCardLayout();
   const selected = actions.selection.has(chat.id);
   const selecting = actions.selection.size > 0;
   const location =
@@ -1413,7 +1414,7 @@ export function ProjectCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
-  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
+  const compact = useCompactCardLayout();
   const pinned = actions.pinnedProjects.has(project.id);
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
@@ -1662,7 +1663,7 @@ export function SectionCard({
   const t = useT();
   const locale = useLocale();
   const actions = useChatsActions();
-  const compact = useLibrarySettingsStore((s) => s.cardSize === "small");
+  const compact = useCompactCardLayout();
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
     <div
