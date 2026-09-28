@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -62,6 +73,10 @@ export function DecisionApiSection(): ReactElement | null {
   const [planState, setPlanState] = useState<{
     model: string;
     plan: SystemOneDownloadPlan;
+  } | null>(null);
+  const [confirm, setConfirm] = useState<{
+    plan: SystemOneDownloadPlan;
+    undo: Parameters<typeof updateSystemOneSettings>[0];
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,16 +164,22 @@ export function DecisionApiSection(): ReactElement | null {
     patch: Parameters<typeof updateSystemOneSettings>[0],
     downloadAfter: boolean,
   ) => {
+    const undo =
+      patch.model !== undefined
+        ? { model: settings?.model }
+        : { enabled: settings?.enabled };
     setBusy(true);
     setError(null);
     try {
       const next = await updateSystemOneSettings(patch);
       setSettings(next);
-      // Download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
+      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
       if (next.enabled && downloadAfter) {
         const nextPlan = await resolveSystemOneDownload();
         setPlanState({ model: next.model, plan: nextPlan });
-        await startDownload(nextPlan);
+        if (nextPlan.repo && !nextPlan.cached && nextPlan.files.length > 0) {
+          setConfirm({ plan: nextPlan, undo });
+        }
       }
     } catch (err) {
       setError(
@@ -419,6 +440,48 @@ export function DecisionApiSection(): ReactElement | null {
           </Select>
         </SettingsRow>
       </div>
+
+      <AlertDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          // Declining undoes the switch, so an enabled API never fetches the model on its first request.
+          if (!open && confirm) {
+            setConfirm(null);
+            void apply(confirm.undo, false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia>
+              <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
+            </AlertDialogMedia>
+            <AlertDialogTitle>
+              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
+                model: modelLabel(settings.model),
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("settings.apiKeys.decisionApi.downloadConfirmBody", {
+                size: formatBytes(confirm?.plan.sizeBytes || sizeBytes),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                const accepted = confirm;
+                setConfirm(null);
+                if (accepted) void startDownload(accepted.plan);
+              }}
+            >
+              {t("settings.apiKeys.decisionApi.download")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
