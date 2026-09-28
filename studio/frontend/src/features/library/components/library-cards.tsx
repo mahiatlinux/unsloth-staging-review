@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { CardGridCompactContext } from "./card-grid-context";
 import {
   KIND_ICONS,
   KIND_ICON_CLASS,
@@ -15,7 +17,7 @@ import {
   hasThumbnail,
 } from "../file-kind";
 import { formatCardTime, formatItemCount } from "../format";
-import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
+import { useColumnLayout, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
 import {
@@ -257,10 +259,13 @@ function FolderCard({
 
 // Extra row spacing only; card width is unchanged.
 const CARD_ROW_GAP = "gap-y-6";
+const COMPACT_CARD_WIDTH = 190;
 
-function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
+function useCardLayout(container: RefObject<HTMLDivElement | null>) {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  return useColumnCount(container, minWidth, max);
+  const uiSpaceScale = useUiSpaceScale();
+  const { columns, columnWidth } = useColumnLayout(container, minWidth * uiSpaceScale, max);
+  return { columns, compact: columnWidth < COMPACT_CARD_WIDTH * uiSpaceScale };
 }
 
 export function Masonry<T>({
@@ -273,7 +278,7 @@ export function Masonry<T>({
   render: (item: T) => ReactNode;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
+  const { columns } = useCardLayout(container);
   const buckets: T[][] = Array.from({ length: columns }, () => []);
   items.forEach((item, index) => buckets[index % columns]!.push(item));
   return (
@@ -291,15 +296,17 @@ export function Masonry<T>({
 
 export function CardGrid({ children }: { children: ReactNode }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
+  const { columns, compact } = useCardLayout(container);
   return (
-    <div
-      ref={container}
-      className={cn("grid gap-x-5", CARD_ROW_GAP)}
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-    >
-      {children}
-    </div>
+    <CardGridCompactContext.Provider value={compact}>
+      <div
+        ref={container}
+        className={cn("grid gap-x-5", CARD_ROW_GAP)}
+        style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      >
+        {children}
+      </div>
+    </CardGridCompactContext.Provider>
   );
 }
 
