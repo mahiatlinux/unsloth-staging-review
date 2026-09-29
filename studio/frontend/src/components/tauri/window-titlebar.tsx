@@ -10,7 +10,7 @@ import { Z_LAYER } from "@/lib/z-layers";
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
-import { ArrowLeft, ArrowRight, Copy, Minus, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import {
   type MouseEvent,
   type PointerEvent,
@@ -75,6 +75,68 @@ async function getAppWindow(): Promise<TauriWindow> {
   return getCurrentWindow();
 }
 
+/**
+ * The Windows caption symbols, on Windows and Linux alike: a 10-DIP glyph whose size and
+ * stroke round to whole device pixels, so it stays crisp at fractional display scales.
+ */
+function CaptionGlyph({
+  kind,
+}: {
+  kind: "minimize" | "maximize" | "restore" | "close";
+}): ReactElement {
+  const [scale, setScale] = useState(() => window.devicePixelRatio || 1);
+  useEffect(() => {
+    const update = () => setScale(window.devicePixelRatio || 1);
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  const pixels = Math.round(10 * scale);
+  const stroke = (Math.max(1, Math.round(scale)) * 10) / pixels;
+  const inset = stroke / 2;
+  const edge = 10 - inset;
+  return (
+    <svg
+      aria-hidden="true"
+      width={pixels / scale}
+      height={pixels / scale}
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={stroke}
+      className="shrink-0"
+    >
+      {kind === "minimize" && <path d="M0 5h10" />}
+      {kind === "maximize" && (
+        <rect
+          x={inset}
+          y={inset}
+          width={10 - stroke}
+          height={10 - stroke}
+          rx="0.7"
+        />
+      )}
+      {/* Windows puts the front window bottom-left. */}
+      {kind === "restore" && (
+        <>
+          <path d={`M2.5 2.5V${inset}H${edge}V7.5H7.5`} />
+          <rect
+            x={inset}
+            y="2.5"
+            width={7.5 - inset}
+            height={7.5 - inset}
+            rx="0.7"
+          />
+        </>
+      )}
+      {kind === "close" && (
+        <path
+          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
+        />
+      )}
+    </svg>
+  );
+}
+
 function WindowControlButton({
   label,
   className,
@@ -93,7 +155,9 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+        // A Windows 11 caption button: 46px wide and the strip's full height, so the three meet
+        // the window's top and right edges, where a pointer thrown at them lands.
+        "relative z-[80] inline-flex h-full w-[46px] shrink-0 items-center justify-center transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -121,11 +185,17 @@ export function DesktopTitlebarNavigation({
   // size while the slot holding them scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  // Beside the Windows caption buttons the glyphs are 18px, 4px apart.
+  const customTitlebar = shouldUseCustomWindowTitlebar();
+  const iconClass = customTitlebar
+    ? "size-[18px]"
+    : "size-icon !size-[calc(var(--icon-size)+1px)]";
 
   return (
     <div
       className={cn(
-        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
+        customTitlebar ? "gap-[4px]" : "gap-0.5",
         className,
       )}
       role="toolbar"
@@ -147,7 +217,7 @@ export function DesktopTitlebarNavigation({
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className="size-icon !size-[calc(var(--icon-size)+1px)]"
+            className={iconClass}
           />
         </button>
       ) : (
@@ -170,7 +240,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon !size-[calc(var(--icon-size)+1px)]"
+          className={iconClass}
         />
       </button>
       <button
@@ -188,7 +258,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon !size-[calc(var(--icon-size)+1px)]"
+          className={iconClass}
         />
       </button>
     </div>
@@ -202,6 +272,8 @@ export function WindowTitlebar({
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
+  // Windows dims the caption glyphs while the window is in the background.
+  const [focused, setFocused] = useState(true);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -271,7 +343,8 @@ export function WindowTitlebar({
         unlistenResize = await appWindow.onResized(() => {
           scheduleMaximizedRefresh();
         });
-        unlistenFocus = await appWindow.onFocusChanged(() => {
+        unlistenFocus = await appWindow.onFocusChanged(({ payload }) => {
+          setFocused(payload);
           scheduleMaximizedRefresh();
         });
       } catch {
@@ -395,10 +468,9 @@ export function WindowTitlebar({
       >
         {showSidebarSurface && (
           <div
-            className={cn(
-              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              "pl-4",
-            )}
+            // The sidebar toggle's glyph starts over the sidebar logo's left edge: the logo's
+            // pl-4, less the button's 6px padding and the glyph's ~2px inset.
+            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4*var(--spacing)-8px)]"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
@@ -414,14 +486,17 @@ export function WindowTitlebar({
           className="pointer-events-auto absolute top-0 h-full"
           style={{
             left: titlebarNavigationWidth,
-            right: "var(--studio-window-control-inset,112px)",
+            right: "var(--studio-window-control-inset,138px)",
           }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
         <div
-          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5"
+          className={cn(
+            "pointer-events-auto absolute right-0 top-0 flex h-full",
+            focused ? "text-foreground" : "text-muted-foreground",
+          )}
           role="toolbar"
           aria-label="Window controls"
         >
@@ -429,12 +504,7 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <Minus
-              aria-hidden="true"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              size={16}
-            />
+            <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -442,22 +512,7 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            {maximized ? (
-              <Copy
-                aria-hidden="true"
-                absoluteStrokeWidth
-                strokeWidth={1.5}
-                size={14}
-                className="rotate-180"
-              />
-            ) : (
-              <Square
-                aria-hidden="true"
-                absoluteStrokeWidth
-                strokeWidth={1.5}
-                size={14}
-              />
-            )}
+            <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
@@ -467,71 +522,72 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
+            // Windows 11's caption red, with the glyph in white.
+            className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >
-            <X
-              aria-hidden="true"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              size={20}
-            />
+            <CaptionGlyph kind="close" />
           </WindowControlButton>
         </div>
       </header>
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("North")}
-      />
-      {/* resize grips stay above dialogs and notifications. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("South")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("West")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("East")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("NorthWest")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
-        style={{
-          zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
-          // keep the resize corner outside the close button.
-          clipPath:
-            "polygon(0 0, 100% 0, 100% 100%, calc(100% - 0.25rem) 100%, calc(100% - 0.25rem) 0.25rem, 0 0.25rem)",
-        }}
-        onPointerDown={handleResizePointerDown("NorthEast")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("SouthWest")}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-        onPointerDown={handleResizePointerDown("SouthEast")}
-      />
+      {/* A maximized window has no edges to resize, and the corner belongs to Close. */}
+      {!maximized && (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("North")}
+          />
+          {/* resize grips stay above dialogs and notifications. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("South")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("West")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("East")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("NorthWest")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+            style={{
+              zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
+              // keep the resize corner outside the close button.
+              clipPath:
+                "polygon(0 0, 100% 0, 100% 100%, calc(100% - 0.25rem) 100%, calc(100% - 0.25rem) 0.25rem, 0 0.25rem)",
+            }}
+            onPointerDown={handleResizePointerDown("NorthEast")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("SouthWest")}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+            style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+            onPointerDown={handleResizePointerDown("SouthEast")}
+          />
+        </>
+      )}
     </>
   );
 }
