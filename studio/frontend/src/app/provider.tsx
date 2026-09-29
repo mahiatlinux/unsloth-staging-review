@@ -495,7 +495,8 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+      // The cap stops below the window chrome, where the window controls sit above the page.
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -575,6 +576,10 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-collapsed-chat-controls-inset": "12px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
+  // Pages without their own shell scroll in a box that starts below the band, so their
+  // scrollbar and pinned toolbars never run up beside the window controls.
+  "--studio-non-chat-content-top-inset": "34px",
+  "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
   // Same split as the native-mac block: chat chrome scales, window chrome does not.
   "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
@@ -582,7 +587,8 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
-  "--studio-window-control-inset": "112px",
+  // Min, max and close: three 46px Windows caption buttons in the corner.
+  "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -604,7 +610,9 @@ function DesktopChromeVarsEffect({
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
+    // The toaster sits outside the wrapper, and stacks under the find bar, which sits this far down.
+    set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
@@ -618,6 +626,7 @@ function DesktopChromeVarsEffect({
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
+      set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
@@ -1004,7 +1013,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     >
       {chromeVars}
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+      {/* Sign-in forms can outgrow a small window, so they scroll here, under the titlebar. */}
+      <div
+        className={
+          hidesTitlebarSidebar
+            ? "h-full min-h-0 overflow-x-hidden overflow-y-auto"
+            : "h-full min-h-0 overflow-hidden"
+        }
+      >
+        {content}
+      </div>
     </div>
   );
 }

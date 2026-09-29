@@ -138,12 +138,18 @@
 
 
 
+/* Regular and Medium put their line gap into usWinAscent without USE_TYPO_METRICS, so
+   DirectWrite set every line 0.1em lower on Windows than hhea does on macOS and Linux.
+   The overrides are the hhea values (ascender, descender, lineGap / 2048 units). */
 @font-face {
 	font-family: "Hellix";
 	src: url("/fonts/Hellix-Regular.woff") format("woff");
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 81.5918%;
+	descent-override: 18.4082%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
@@ -152,6 +158,9 @@
 	font-weight: 500;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 82.1777%;
+	descent-override: 17.8223%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
@@ -4229,6 +4238,36 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* Streamdown's table controls, drawn like the code block's (ACTION_BUTTON_CLASS in
+	   markdown-text.tsx) so the two toolbars in one answer agree. Copy and download sit in
+	   dropdown wrappers, which flex keeps on the fullscreen button's line. Without controls
+	   the table box is the only child, hence :not(:last-child). */
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {
+		margin-right: calc(var(--spacing) * 1);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative {
+		display: flex;
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button,
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: calc(var(--spacing) * 8);
+		height: calc(var(--spacing) * 8);
+		padding: 0;
+		border-radius: 10px;
+		color: var(--color-chat-icon-fg);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button:hover:not(:disabled),
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button:hover:not(:disabled) {
+		background-color: var(--color-chat-icon-bg-hover);
+		color: var(--color-chat-icon-fg-hover);
+	}
+
 	/* Chat: use the app sans stack for UI + prose. */
 	.aui-thread-root {
 		--font-heading: var(--font-sans);
@@ -4931,20 +4970,37 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
-   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are set, and
+   its standard Windows scrollbar draws arrow buttons. Reset both everywhere on Windows
+   (:hover too, or the reveal rules flip it back); scrollbar-width stays overridable, so
+   the !important and inline hides still win. */
 @supports selector(::-webkit-scrollbar) {
-	:root.client-windows .sidebar-scroll-fade,
-	:root.client-windows .sidebar-scroll-fade:hover,
-	:root.client-windows .run-settings-scroll,
-	:root.client-windows .run-settings-scroll:hover,
-	:root.client-windows .aui-thread-viewport,
-	:root.client-windows .aui-thread-viewport:hover,
-	:root.client-windows .hover-scrollbar,
-	:root.client-windows .hover-scrollbar:hover {
+	:root.client-windows *,
+	:root.client-windows *:hover {
 		scrollbar-width: auto;
-		scrollbar-color: auto;
+		scrollbar-color: auto !important;
 	}
+
+	/* Set inline for Firefox, which this block never reaches. */
+	:root.client-windows [data-radix-select-viewport] {
+		scrollbar-width: auto !important;
+	}
+
+	/* The unlayered thin default kept these visible; keep them so, without arrows. */
+	:root.client-windows .no-scrollbar::-webkit-scrollbar {
+		display: block;
+	}
+
+	/* The ::-webkit-scrollbar width, which the reset lets through. */
+	:root.client-windows {
+		--thread-scrollbar-gutter: 8px;
+	}
+}
+
+/* The chat header overlays the thread, and the window controls share its row: start
+   the classic Windows scrollbar below it. */
+:root.client-windows .aui-thread-viewport::-webkit-scrollbar-track {
+	margin-top: var(--thread-header-offset, 0px);
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close
@@ -4956,6 +5012,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 /* Reserve the measured overlay strip; classic scrollbars already take space. */
 .overlay-scrollbar-gutter {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
+}
+
+/* The thread's gutter, which the header, fades, model notice and composer dock stop at:
+   Chromium's thin scrollbar. Scrollbars ignore the UI scale, so this does too. */
+:root {
+	--thread-scrollbar-gutter: 10px;
 }
 
 /* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
@@ -5456,6 +5518,13 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	   cards it floats over at every contrast, not just the default. */
 	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
 	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+/* The find bar holds the top-right corner the toasts use, so while it is open they stack under it:
+   its top-[content inset + 3.5rem] and h-13, then an 8px gap. */
+:root:has(.find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
+	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
+	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 }
 
 @layer components {

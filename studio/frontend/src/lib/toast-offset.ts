@@ -6,7 +6,7 @@ const MOBILE_EDGE_OFFSET = 16;
 const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
-const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);
+const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);
 
 export type ToastOffset = {
   top: number;
