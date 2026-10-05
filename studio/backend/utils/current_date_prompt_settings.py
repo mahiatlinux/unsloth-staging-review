@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -113,32 +114,105 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
     return f"{CURRENT_DATE_PROMPT_PREFIX}{resolved_date.isoformat()}."
 
 
-def conversation_start_date(thread_id: Any, request: Any = None) -> date | None:
-    """Local date the thread (or the root of its fork chain) was created, None when unknown."""
-    if not isinstance(thread_id, str) or not thread_id:
-        return None
-    try:
-        from storage.studio_db import get_chat_thread
+_PROBE_SYSTEM = "UNSLOTH_DATE_PROBE_SYSTEM"
+_PROBE_USER = "UNSLOTH_DATE_PROBE_USER"
+# stand-ins for the tokenizer's control tokens, so a default that carries one can be told apart.
+_PROBE_SPECIAL_TOKENS = {
+    f"{name}_token": f"UNSLOTH_DATE_PROBE_{name.upper()}"
+    for name in ("bos", "eos", "pad", "unk", "sep", "cls", "mask")
+}
+# a catalog a tool request's branch can render, for probing the template it selects.
+PROBE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "probe",
+            "description": "Probe.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
 
-        thread = get_chat_thread(thread_id)
-        seen = {thread_id}
-        # a fork keeps its parent's history, so it keeps the parent's prompt prefix too.
-        while thread:
-            parent_id = thread.get("forkedFromThreadId")
-            if not parent_id or parent_id in seen:
-                break
-            seen.add(parent_id)
-            parent = get_chat_thread(parent_id)
-            if not parent:
-                break
-            thread = parent
-        created_ms = thread.get("createdAt") if thread else None
-        if isinstance(created_ms, bool) or not isinstance(created_ms, (int, float)):
-            return None
-        created = datetime.fromtimestamp(created_ms / 1000, timezone.utc)
-    except Exception:
-        return None
-    return _request_local_date(request, now = created)
+
+def _render_probe(
+    chat_template: str,
+    messages: list[dict],
+    today: date,
+    tools: list | None = None,
+    controls: dict | None = None,
+) -> str:
+    from jinja2.exceptions import TemplateError
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise TemplateError(message)
+
+    env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    env.globals["raise_exception"] = raise_exception
+    # the user's day, so a default that dates itself (or works out yesterday) is dated for them.
+    env.globals["strftime_now"] = today.strftime
+    return env.from_string(chat_template).render(
+        messages = messages,
+        add_generation_prompt = False,
+        **_PROBE_SPECIAL_TOKENS,
+        **({"tools": tools} if tools else {}),
+        **(controls or {}),
+    )
+
+
+@lru_cache(maxsize = 16)
+def template_system_turn(
+    chat_template: str | None,
+    today: date,
+    tools: bool = False,
+    controls: tuple = (),
+) -> tuple[bool, str | None]:
+    """How a system turn the chat did not send renders in this template on ``today``.
+
+    Whether one renders at all, and the default system prompt it has to carry so the prompt reads as
+    the template's own render: "" when there is none, None when no system turn reproduces it (the
+    template rewrites what it is given). A template the probe cannot render takes one carrying nothing.
+    """
+    if not chat_template:
+        return True, ""
+    catalog = PROBE_TOOLS if tools else None
+    kwargs = dict(controls)
+    renders_chat = False
+    # some templates read message text only from content parts, as a vision processor sends it.
+    for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
+        user = {"role": "user", "content": content(_PROBE_USER)}
+
+        def render(system: str | None) -> str:
+            turns = [{"role": "system", "content": content(system)}] if system is not None else []
+            return _render_probe(chat_template, [*turns, user], today, catalog, kwargs)
+
+        try:
+            bare = render(None)
+        except Exception:
+            continue
+        renders_chat = True
+        try:
+            with_system = render(_PROBE_SYSTEM)
+        except Exception:
+            continue
+        if with_system.count(_PROBE_SYSTEM) != 1:
+            continue
+        head, tail = with_system.split(_PROBE_SYSTEM)
+        if (
+            len(bare) <= len(head) + len(tail)
+            or not bare.startswith(head)
+            or not bare.endswith(tail)
+        ):
+            return True, ""
+        default = bare[len(head) : len(bare) - len(tail)]
+        try:
+            replayed = render(default)
+        except Exception:
+            replayed = None
+        # replayed as text, a control token in the default would no longer be one.
+        carries_token = any(token in default for token in _PROBE_SPECIAL_TOKENS.values())
+        return True, (default.strip() if replayed == bare and not carries_token else None)
+    return not renders_chat, ("" if not renders_chat else None)
 
 
 def strip_current_date_update_note(text: str) -> str:
