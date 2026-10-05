@@ -9,6 +9,8 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 const FRESH = "__LOCALID_fresh0001";
 const THREAD_CHANGED_ERROR =
   /Thread changed while preparing the document upload/;
+const PERSISTENCE_UNCONFIRMED_ERROR =
+  /persistence could not be confirmed/;
 
 class ChatThreadDeletedErrorStub extends Error {
   constructor(message: string) {
@@ -178,6 +180,53 @@ test("a concurrent initializer gets a second stored-row check after a stale miss
   assert.equal(storedReads, 2);
 });
 
+test("a concurrent initializer gets a confirmed recheck after an indeterminate read", async () => {
+  const materialize = load();
+  let stateReads = 0;
+  let storedReads = 0;
+
+  const result = await materialize({
+    threadId: FRESH,
+    readCurrentThreadItem: () => ({
+      id: FRESH,
+      remoteId: stateReads++ === 0 ? undefined : FRESH,
+    }),
+    isThreadDeleted: () => false,
+    requireStoredThread: () => {
+      storedReads += 1;
+      return Promise.resolve(storedReads === 2);
+    },
+    initialize: neverInitialize(),
+  });
+
+  assert.equal(result, FRESH);
+  assert.equal(storedReads, 2);
+});
+
+test("an indeterminate concurrent-initializer recheck blocks the upload", async () => {
+  const materialize = load();
+  let stateReads = 0;
+  let storedReads = 0;
+
+  await assert.rejects(
+    materialize({
+      threadId: FRESH,
+      readCurrentThreadItem: () => ({
+        id: FRESH,
+        remoteId: stateReads++ === 0 ? undefined : FRESH,
+      }),
+      isThreadDeleted: () => false,
+      requireStoredThread: () => {
+        storedReads += 1;
+        return Promise.resolve(false);
+      },
+      initialize: neverInitialize(),
+    }),
+    PERSISTENCE_UNCONFIRMED_ERROR,
+  );
+  assert.equal(storedReads, 2);
+});
+
 test("an indeterminate concurrent-initializer recheck keeps the stale miss blocked", async () => {
   const materialize = load();
   const missing = new Error(`Thread ${FRESH} was not persisted`);
@@ -239,7 +288,22 @@ test("a tombstoned thread stays an error instead of being resurrected", async ()
       },
       initialize,
     }),
-    (error: unknown) => error === missing,
+    (error: unknown) => error instanceof ChatThreadDeletedErrorStub,
+  );
+});
+
+test("a tombstone landing during a successful read still blocks the upload", async () => {
+  const materialize = load();
+
+  await assert.rejects(
+    materialize({
+      threadId: FRESH,
+      readCurrentThreadItem: () => ({ id: FRESH, remoteId: FRESH }),
+      isThreadDeleted: () => true,
+      requireStoredThread: () => Promise.resolve(true),
+      initialize: neverInitialize(),
+    }),
+    (error: unknown) => error instanceof ChatThreadDeletedErrorStub,
   );
 });
 

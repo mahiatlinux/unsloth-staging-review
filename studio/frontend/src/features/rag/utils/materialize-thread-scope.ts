@@ -12,19 +12,56 @@ export type ThreadScopeMaterialization = {
   initialize: () => Promise<string>;
 };
 
+function assertThreadScopeActive(
+  m: ThreadScopeMaterialization,
+  threadId: string,
+): void {
+  if (m.isThreadDeleted(threadId)) {
+    throw new ChatThreadDeletedError(`Thread ${threadId} was deleted`);
+  }
+}
+
+async function initializeThreadScope(
+  m: ThreadScopeMaterialization,
+): Promise<string> {
+  const threadId = await m.initialize();
+  assertThreadScopeActive(m, threadId);
+  return threadId;
+}
+
+async function confirmConcurrentInitialization(
+  m: ThreadScopeMaterialization,
+  threadId: string,
+  missing: boolean,
+  missingError: unknown,
+): Promise<string> {
+  let confirmed = false;
+  try {
+    confirmed = await m.requireStoredThread(threadId);
+  } finally {
+    assertThreadScopeActive(m, threadId);
+  }
+  if (confirmed) {
+    return threadId;
+  }
+  if (missing) {
+    throw missingError;
+  }
+  throw new Error(`Thread ${threadId} persistence could not be confirmed`);
+}
+
 export async function materializeThreadScope(
   m: ThreadScopeMaterialization,
 ): Promise<string> {
   if (!m.threadId) {
-    return m.initialize();
+    return initializeThreadScope(m);
   }
   const initialState = m.readCurrentThreadItem();
+  let confirmed = false;
   let missing = false;
   let missingError: unknown;
   try {
-    if (await m.requireStoredThread(m.threadId)) {
-      return m.threadId;
-    }
+    confirmed = await m.requireStoredThread(m.threadId);
   } catch (error) {
     if (error instanceof ChatThreadDeletedError) {
       throw error;
@@ -32,38 +69,35 @@ export async function materializeThreadScope(
     missing = true;
     missingError = error;
   }
+  assertThreadScopeActive(m, m.threadId);
+  if (confirmed) {
+    return m.threadId;
+  }
   const state = m.readCurrentThreadItem();
-  const deleted = m.isThreadDeleted(m.threadId);
   const initialStateWasFresh =
     initialState.id === m.threadId &&
     !initialState.remoteId &&
     isAssistantLocalThreadId(m.threadId);
   if (
-    !deleted &&
     state.id === m.threadId &&
     !state.remoteId &&
     isAssistantLocalThreadId(m.threadId)
   ) {
-    return m.initialize();
+    return initializeThreadScope(m);
   }
-  if (!deleted && initialStateWasFresh && state.id !== m.threadId) {
+  if (initialStateWasFresh && state.id !== m.threadId) {
     throw new Error("Thread changed while preparing the document upload");
   }
-  if (missing) {
-    if (
-      !deleted &&
-      initialStateWasFresh &&
-      state.id === m.threadId &&
-      state.remoteId
-    ) {
-      if (await m.requireStoredThread(m.threadId)) {
-        return m.threadId;
-      }
-    }
-    throw missingError;
+  if (initialStateWasFresh && state.id === m.threadId && state.remoteId) {
+    return confirmConcurrentInitialization(
+      m,
+      m.threadId,
+      missing,
+      missingError,
+    );
   }
-  if (deleted) {
-    throw new ChatThreadDeletedError(`Thread ${m.threadId} was deleted`);
+  if (missing) {
+    throw missingError;
   }
   return m.threadId;
 }

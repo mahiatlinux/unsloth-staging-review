@@ -114,7 +114,7 @@ test("the materialization it passes is the ref-deduped initializeThreadItem", ()
   );
 });
 
-test("the clear boundary is captured in ensureThreadId, before anything can yield", () => {
+test("the clear boundary is captured and rechecked in ensureThreadId", () => {
   // Captured inside initializeThreadItem instead, the read lands AFTER an unbounded
   // getChatThread round trip, so a Clear All arriving in that window reads as no clear and the
   // row is written anyway (clear-all-chats.ts advances the boundary as its first statement).
@@ -138,8 +138,8 @@ test("the clear boundary is captured in ensureThreadId, before anything can yiel
   };
   assert.equal(
     captures(scope),
-    1,
-    "ensureThreadId must capture chatHistoryClearBoundary itself and hand it down",
+    2,
+    "ensureThreadId must capture the boundary before yielding and recheck it after probes",
   );
 });
 

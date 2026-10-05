@@ -486,7 +486,11 @@ export function ThreadDocumentsBar({
       .threadListItem()
       .initialize()
       .then(async ({ remoteId }) => {
-        await requireStoredThread(remoteId);
+        if (!(await requireStoredThread(remoteId))) {
+          throw new Error(
+            `Thread ${remoteId} persistence could not be confirmed`,
+          );
+        }
         useChatRuntimeStore
           .getState()
           .adoptPendingProjectAttachmentTarget(remoteId, claim);
@@ -520,7 +524,9 @@ export function ThreadDocumentsBar({
         const state = aui.threadListItem().getState();
         return { id: state.id, remoteId: state.remoteId };
       },
-      isThreadDeleted: isChatThreadDeleted,
+      isThreadDeleted: (threadId) =>
+        chatHistoryClearBoundary.capture() !== clearGeneration ||
+        isChatThreadDeleted(threadId),
       requireStoredThread,
       initialize: () => initializeThreadItem(clearGeneration),
     });

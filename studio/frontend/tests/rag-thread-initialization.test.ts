@@ -33,12 +33,18 @@ function harness(
     itemId?: string;
     storedIds?: string[];
     readError?: Error;
+    readErrorCount?: number;
+    clearOnStoredRead?: boolean;
   } = {},
 ) {
   let initialized = options.initialized ?? false;
   let incognito = false;
   let initializeCalls = 0;
   let nativePending = false;
+  let clearGeneration = 0;
+  let remainingReadErrors = options.readError
+    ? (options.readErrorCount ?? 1)
+    : 0;
   let cursor = 0;
   const slots: unknown[] = [];
   const effects: Array<() => void> = [];
@@ -136,15 +142,21 @@ function harness(
         readPendingAttachmentTargetClaim: () => null,
       },
       "@/features/chat": {
-        chatHistoryClearBoundary: { capture: () => 0 },
+        chatHistoryClearBoundary: { capture: () => clearGeneration },
         ChatThreadDeletedError: ChatThreadDeletedErrorStub,
         isThreadIncognito: () => incognito,
         getStoredChatThread: async () => undefined,
         ensureStoredChatThread: async (threadId: string) => {
-          if (options.readError) {
+          if (remainingReadErrors > 0) {
+            remainingReadErrors -= 1;
             throw options.readError;
           }
-          if (storedIds.has(threadId)) return { id: threadId };
+          if (storedIds.has(threadId)) {
+            if (options.clearOnStoredRead) {
+              clearGeneration += 1;
+            }
+            return { id: threadId };
+          }
           if (!initialized || options.missing) return undefined;
           await options.persist;
           return threadId === itemId ? { id: itemId } : undefined;
@@ -270,13 +282,40 @@ test("attachments still initialize a chat before its ID reaches the bar", async 
 });
 
 test("a transient stored-thread read failure cannot skip fresh chat initialization", async () => {
-  const app = harness({ readError: new Error("backend temporarily unavailable") });
+  const app = harness({
+    readError: new Error("backend temporarily unavailable"),
+  });
   app.render();
   app.pick();
   await flush();
   assert.deepEqual(app.errors, []);
   assert.equal(app.initializeCalls, 1);
   assert.equal(app.uploads[0]?.threadId, ID);
+});
+
+test("a transient post-initialization verification blocks the upload", async () => {
+  const app = harness({
+    readError: new Error("backend temporarily unavailable"),
+    readErrorCount: 2,
+  });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, [
+    `Thread ${ID} persistence could not be confirmed`,
+  ]);
+  assert.equal(app.initializeCalls, 1);
+  assert.equal(app.uploads.length, 0);
+});
+
+test("Clear All after a successful preflight still blocks the upload", async () => {
+  const app = harness({ storedIds: [ID], clearOnStoredRead: true });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, [`Thread ${ID} was deleted`]);
+  assert.equal(app.initializeCalls, 0);
+  assert.equal(app.uploads.length, 0);
 });
 
 test("a saved chat with a local ID is reused without initialization", async () => {
