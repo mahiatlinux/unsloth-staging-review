@@ -587,6 +587,8 @@ def upload_thread_document(
                 temporary is not True and get_chat_thread(thread_id) is None
             ):
                 raise HTTPException(status_code = 404, detail = "Thread not found")
+            if temporary is True:
+                folder_sync.renew_temporary_thread_scope(scope)
             stored_path, filename, content_hash = _resolve_document_upload(
                 file, native_path_lease
             )

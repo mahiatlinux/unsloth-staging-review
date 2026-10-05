@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import multiprocessing
 import os
 import sqlite3
 import threading
@@ -13,9 +14,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.rag import ingestion, store
+from core.rag import folder_sync, ingestion, job_leases, store
 from routes import chat_history, rag as rag_routes
 from storage import rag_db, studio_db
+
+
+def _hold_scope_lock_in_spawned_backend(scope, ready, acquired, release):
+    from core.rag import folder_sync as child_folder_sync
+
+    ready.set()
+    with child_folder_sync.scope_lock(scope):
+        acquired.set()
+        if not release.wait(30):
+            raise TimeoutError("parent did not release spawned scope-lock test")
 
 
 @pytest.fixture
@@ -65,6 +76,30 @@ def _document_ids(client):
     response = client.get("/api/rag/documents")
     assert response.status_code == 200, response.text
     return {doc["id"] for doc in response.json()["documents"]}
+
+
+def _temporary_scope_expiry(thread_id):
+    conn = rag_db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT expires_at FROM temporary_thread_scopes WHERE scope=?",
+            (store.thread_scope(thread_id),),
+        ).fetchone()
+        return row["expires_at"] if row is not None else None
+    finally:
+        conn.close()
+
+
+def _expire_temporary_scope(thread_id):
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE temporary_thread_scopes SET expires_at=? WHERE scope=?",
+            ("2000-01-01T00:00:00+00:00", store.thread_scope(thread_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _chunk_count(thread_id):
@@ -135,6 +170,173 @@ def test_temporary_thread_upload_does_not_require_a_stored_row(client):
     )
 
     assert _document_ids(client) == {document_id}
+    assert _temporary_scope_expiry("temporary") is not None
+
+
+def test_expired_temporary_thread_upload_is_reaped_after_session_loss(client):
+    document_id = _upload(
+        client,
+        "abandoned-temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    path = _stored_path(document_id)
+    _expire_temporary_scope("abandoned-temporary")
+
+    folder_sync._enqueue_periodic()
+
+    assert _document_ids(client) == set()
+    assert _temporary_scope_expiry("abandoned-temporary") is None
+    assert not os.path.exists(path)
+
+
+def test_saving_a_temporary_thread_promotes_its_uploads_before_expiry(client):
+    document_id = _upload(
+        client,
+        "saved-temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    path = _stored_path(document_id)
+    _create_thread(client, "saved-temporary")
+
+    folder_sync._enqueue_periodic()
+
+    assert _document_ids(client) == {document_id}
+    assert _temporary_scope_expiry("saved-temporary") is None
+    assert os.path.isfile(path)
+
+
+def test_saving_a_temporary_thread_serializes_with_expiry(client, monkeypatch):
+    document_id = _upload(
+        client,
+        "saving-temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    _expire_temporary_scope("saving-temporary")
+    save_entered = threading.Event()
+    allow_save = threading.Event()
+    reap_attempted = threading.Event()
+    reap_entered = threading.Event()
+    actual_upsert = chat_history.upsert_chat_thread
+    actual_scope_lock = folder_sync._scope_lock
+
+    def paused_upsert(thread):
+        save_entered.set()
+        assert allow_save.wait(30)
+        return actual_upsert(thread)
+
+    def observed_scope_lock(scope):
+        if threading.current_thread().name == "temporary-scope-reaper":
+            reap_attempted.set()
+        return actual_scope_lock(scope)
+
+    def thread_exists(thread_id):
+        reap_entered.set()
+        return studio_db.get_chat_thread(thread_id) is not None
+
+    monkeypatch.setattr(chat_history, "upsert_chat_thread", paused_upsert)
+    monkeypatch.setattr(folder_sync, "_scope_lock", observed_scope_lock)
+    responses = []
+    saver = threading.Thread(
+        target = lambda: responses.append(
+            client.post(
+                "/api/chat/threads",
+                json = {
+                    "id": "saving-temporary",
+                    "title": "t",
+                    "modelType": "base",
+                    "createdAt": 1,
+                },
+            )
+        )
+    )
+    saver.start()
+    assert save_entered.wait(5)
+    reaper = threading.Thread(
+        target = lambda: folder_sync._reap_expired_temporary_thread_scopes(
+            datetime.now(timezone.utc).isoformat(), thread_exists = thread_exists
+        ),
+        name = "temporary-scope-reaper",
+    )
+    reaper.start()
+    try:
+        assert reap_attempted.wait(10)
+        assert not reap_entered.wait(0.1)
+    finally:
+        allow_save.set()
+    saver.join(timeout = 10)
+    reaper.join(timeout = 10)
+
+    assert not saver.is_alive()
+    assert not reaper.is_alive()
+    assert responses[0].status_code == 200, responses[0].text
+    assert _document_ids(client) == {document_id}
+    assert _temporary_scope_expiry("saving-temporary") is None
+
+
+def test_temporary_scope_lock_excludes_a_sibling_backend(rag_home):
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    acquired = context.Event()
+    release = context.Event()
+    scope = store.thread_scope("cross-process-temporary")
+    worker = context.Process(
+        target = _hold_scope_lock_in_spawned_backend,
+        args = (scope, ready, acquired, release),
+    )
+
+    try:
+        with folder_sync.scope_lock(scope):
+            worker.start()
+            assert ready.wait(30)
+            assert not acquired.wait(0.2)
+        assert acquired.wait(30)
+    finally:
+        release.set()
+        worker.join(timeout = 30)
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout = 5)
+
+    assert worker.exitcode == 0
+
+
+def test_expired_temporary_scope_waits_for_live_ingestion(client):
+    document_id = _upload(
+        client,
+        "indexing-temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    conn = rag_db.get_connection()
+    try:
+        job = conn.execute(
+            "SELECT id FROM ingestion_jobs WHERE document_id=?", (document_id,)
+        ).fetchone()
+        conn.execute("UPDATE ingestion_jobs SET status='running' WHERE id=?", (job["id"],))
+        conn.execute(
+            "INSERT OR REPLACE INTO rag_job_leases(kind, job_id, owner_id, expires_at) "
+            "VALUES(?, ?, ?, ?)",
+            (job_leases.INGESTION, job["id"], "live-worker", "2999-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            "UPDATE temporary_thread_scopes SET expires_at=? WHERE scope=?",
+            ("2000-01-01T00:00:00+00:00", store.thread_scope("indexing-temporary")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._enqueue_periodic()
+
+    assert _document_ids(client) == {document_id}
+    assert _temporary_scope_expiry("indexing-temporary") == "2000-01-01T00:00:00+00:00"
 
 
 def test_temporary_thread_upload_is_rejected_after_deletion(client):
@@ -149,6 +351,28 @@ def test_temporary_thread_upload_is_rejected_after_deletion(client):
     assert response.status_code == 404, response.text
     assert response.json() == {"detail": "Thread not found"}
     assert _document_ids(client) == set()
+
+
+def test_deleting_a_temporary_thread_removes_its_scope_lease(client):
+    document_id = _upload(
+        client,
+        "closed-temporary-with-document",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    path = _stored_path(document_id)
+
+    response = client.request(
+        "DELETE",
+        "/api/chat/threads",
+        json = {"ids": ["closed-temporary-with-document"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _document_ids(client) == set()
+    assert _temporary_scope_expiry("closed-temporary-with-document") is None
+    assert not os.path.exists(path)
 
 
 def test_thread_cleanup_waits_for_an_upload_that_already_validated(

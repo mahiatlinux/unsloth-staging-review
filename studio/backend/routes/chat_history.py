@@ -665,7 +665,24 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return thread_from_row(upsert_chat_thread(payload.model_dump()))
+        # Promotion must serialize with Temporary Chat upload expiry. Once the durable owner row
+        # exists, remove its browser-session lease while still holding the shared scope lock.
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.thread_scope(payload.id)
+        with folder_sync.scope_lock(scope):
+            thread = thread_from_row(upsert_chat_thread(payload.model_dump()))
+            try:
+                folder_sync.forget_temporary_thread_scope(scope)
+            except Exception:
+                # The row is the source of truth. A later expiry pass sees it and promotes the
+                # documents, so unavailable optional RAG storage must not fail saving the chat.
+                logger.warning(
+                    "Could not promote the Temporary Chat scope for %s",
+                    payload.id,
+                    exc_info = True,
+                )
+            return thread
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -885,6 +902,12 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
                     )
                 except Exception:
                     logger.warning("Could not remove the uploaded documents for %s", thread_id)
+                try:
+                    folder_sync.forget_temporary_thread_scope(
+                        rag_store.thread_scope(thread_id)
+                    )
+                except Exception:
+                    logger.warning("Could not retire the Temporary Chat scope for %s", thread_id)
         except Exception:
             logger.warning("Could not remove the RAG data for %s", thread_id)
 

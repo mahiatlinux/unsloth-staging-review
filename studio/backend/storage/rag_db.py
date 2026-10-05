@@ -120,6 +120,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(scope);
         CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(scope, sha256);
 
+        CREATE TABLE IF NOT EXISTS temporary_thread_scopes (
+            scope TEXT NOT NULL PRIMARY KEY,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_temporary_thread_scopes_expiry
+            ON temporary_thread_scopes(expires_at);
+
         CREATE TABLE IF NOT EXISTS chunks (
             id TEXT NOT NULL PRIMARY KEY,
             document_id TEXT NOT NULL,
