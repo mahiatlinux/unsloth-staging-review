@@ -4,6 +4,7 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -110,6 +111,68 @@ def test_clearing_history_removes_every_threads_uploaded_documents(client):
     assert response.status_code == 200, response.text
     assert _document_ids(client) == set()
     assert not any(os.path.exists(path) for path in paths)
+
+
+def test_upload_to_missing_thread_is_rejected(client):
+    response = client.post(
+        "/api/rag/threads/missing/documents",
+        files = {"file": ("notes.txt", b"alpha bravo charlie", "text/plain")},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Thread not found"}
+    assert _document_ids(client) == set()
+
+
+def test_thread_cleanup_waits_for_an_upload_that_already_validated(
+    client, monkeypatch, tmp_path
+):
+    from core.rag import conversation_archive
+
+    _create_thread(client, "racing")
+    cleanup_attempted = threading.Event()
+    cleanup_entered = threading.Event()
+    cleanup_threads = []
+
+    monkeypatch.setattr(
+        rag_routes,
+        "_resolve_document_upload",
+        lambda *_args: (str(tmp_path / "racing.txt"), "racing.txt", "0" * 64),
+    )
+    monkeypatch.setattr(conversation_archive, "delete_for_thread", lambda *_args, **_kw: 0)
+
+    def delete_documents(*_args, **_kwargs):
+        cleanup_entered.set()
+        return 0
+
+    monkeypatch.setattr(conversation_archive, "delete_thread_documents", delete_documents)
+
+    def start_ingestion(*_args, **_kwargs):
+        cutoff = datetime.now(timezone.utc).isoformat()
+        studio_db.delete_chat_threads(["racing"])
+
+        def cleanup():
+            cleanup_attempted.set()
+            chat_history._remove_thread_rag_data(["racing"], cutoff = cutoff)
+
+        worker = threading.Thread(target = cleanup)
+        cleanup_threads.append(worker)
+        worker.start()
+        assert cleanup_attempted.wait(1)
+        assert not cleanup_entered.wait(0.1)
+        return "document", "job"
+
+    monkeypatch.setattr(ingestion, "start_ingestion", start_ingestion)
+
+    response = client.post(
+        "/api/rag/threads/racing/documents",
+        files = {"file": ("notes.txt", b"ignored", "text/plain")},
+    )
+
+    assert response.status_code == 200, response.text
+    cleanup_threads[0].join(timeout = 2)
+    assert not cleanup_threads[0].is_alive()
+    assert cleanup_entered.is_set()
 
 
 def test_deleting_a_project_removes_its_member_threads_documents(client):

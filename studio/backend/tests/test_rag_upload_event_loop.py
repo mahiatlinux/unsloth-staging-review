@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from core.rag import ingestion, store
-from storage import rag_db
+from storage import rag_db, studio_db
 from .test_rag_native_drop_upload import SECRET, _sign
 
 BLOCK_SECONDS = 0.6
@@ -111,6 +111,14 @@ def _files() -> dict:
     return {"file": ("notes.txt", PAYLOAD, "text/plain")}
 
 
+def _thread_id() -> str:
+    thread_id = "T1"
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": "Chat", "modelType": "base", "createdAt": 1}
+    )
+    return thread_id
+
+
 def _assert_loop_stayed_free(
     response,
     served: int,
@@ -132,8 +140,9 @@ def test_kb_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion):
 
 
 def test_thread_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion):
+    thread_id = _thread_id()
     response, served, worst = asyncio.run(
-        _upload_then_ping("/api/rag/threads/T1/documents", files = _files())
+        _upload_then_ping(f"/api/rag/threads/{thread_id}/documents", files = _files())
     )
     _assert_loop_stayed_free(response, served, worst, "upload")
 
@@ -151,9 +160,13 @@ def test_project_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion,
 def test_native_drop_leaves_the_event_loop_free(
     rag_home, blocking_ingestion, lease_secret, tmp_path
 ):
+    thread_id = _thread_id()
     dropped = tmp_path / "dropped.txt"
     dropped.write_bytes(PAYLOAD)
     response, served, worst = asyncio.run(
-        _upload_then_ping("/api/rag/threads/T1/documents", data = {"nativePathLease": _sign(dropped)})
+        _upload_then_ping(
+            f"/api/rag/threads/{thread_id}/documents",
+            data = {"nativePathLease": _sign(dropped)},
+        )
     )
     _assert_loop_stayed_free(response, served, worst, "drop")

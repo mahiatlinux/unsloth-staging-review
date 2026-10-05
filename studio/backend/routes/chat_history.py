@@ -856,27 +856,37 @@ def _archive_cutoff() -> str:
 def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
     """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
-        from core.rag import conversation_archive
+        from core.rag import conversation_archive, folder_sync, store as rag_store
     except Exception:
         return
     for thread_id in thread_ids or []:
-        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
-        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
-        # that instant belongs to the deleted conversation, everything after to the new one.
-        recreated = get_chat_thread(str(thread_id)) is not None
-        if recreated and not cutoff:
-            continue
-        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
+            thread_id = str(thread_id)
+            # Serialize the existence decision and document purge with uploads. A request that
+            # started before deletion finishes first and is then reaped; one that starts after the
+            # row is gone observes the miss and is rejected by the upload endpoint.
+            with folder_sync.scope_lock(rag_store.thread_scope(thread_id)):
+                # Cut at the instant the delete was accepted, not on recreation: another tab can
+                # have recreated this id. Everything before the cutoff belongs to the deleted
+                # conversation and documents created after it belong to the replacement.
+                recreated = get_chat_thread(thread_id) is not None
+                if recreated and not cutoff:
+                    continue
+                created_before = cutoff if recreated else None
+                try:
+                    conversation_archive.delete_for_thread(
+                        thread_id, created_before = created_before
+                    )
+                except Exception:
+                    logger.warning("Could not remove the conversation archive for %s", thread_id)
+                try:
+                    conversation_archive.delete_thread_documents(
+                        thread_id, created_before = created_before
+                    )
+                except Exception:
+                    logger.warning("Could not remove the uploaded documents for %s", thread_id)
         except Exception:
-            logger.warning("Could not remove the conversation archive for %s", thread_id)
-        try:
-            conversation_archive.delete_thread_documents(
-                str(thread_id), created_before = created_before
-            )
-        except Exception:
-            logger.warning("Could not remove the uploaded documents for %s", thread_id)
+            logger.warning("Could not remove the RAG data for %s", thread_id)
 
 
 def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:

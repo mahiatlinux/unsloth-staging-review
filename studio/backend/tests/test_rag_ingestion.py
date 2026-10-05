@@ -278,6 +278,9 @@ def test_upload_routes_hand_ingestion_the_digest_from_the_copy(
             conn.close()
         result = rag_routes.upload_kb_document(kb_id, **call)
     elif owner == "thread":
+        studio_db.upsert_chat_thread(
+            {"id": "T1", "title": "Chat", "modelType": "base", "createdAt": 1}
+        )
         result = rag_routes.upload_thread_document("T1", **call)
     else:
         monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})

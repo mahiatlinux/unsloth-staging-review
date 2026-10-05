@@ -573,18 +573,33 @@ def upload_thread_document(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    stored_path, filename, content_hash = _resolve_document_upload(file, native_path_lease)
-    with _rag_unavailable_as_503(stored_path):
-        document_id, job_id = ingestion.start_ingestion(
-            store.thread_scope(thread_id),
-            None,
-            thread_id,
-            filename,
-            stored_path,
-            ocr = ocr,
-            caption = caption,
-            content_hash = content_hash,
-        )
+    from storage.studio_db import get_chat_thread
+
+    scope = store.thread_scope(thread_id)
+    stored_path = None
+    try:
+        # The matching cleanup takes this lock after deleting the chat row. Whichever side wins,
+        # a missing thread is rejected or the cleanup waits and removes the document we started.
+        with folder_sync.scope_lock(scope):
+            if get_chat_thread(thread_id) is None:
+                raise HTTPException(status_code = 404, detail = "Thread not found")
+            stored_path, filename, content_hash = _resolve_document_upload(
+                file, native_path_lease
+            )
+            with _rag_unavailable_as_503(stored_path):
+                document_id, job_id = ingestion.start_ingestion(
+                    scope,
+                    None,
+                    thread_id,
+                    filename,
+                    stored_path,
+                    ocr = ocr,
+                    caption = caption,
+                    content_hash = content_hash,
+                )
+    except Exception:
+        _remove_stored_upload(stored_path)
+        raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 

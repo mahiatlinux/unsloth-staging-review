@@ -220,8 +220,12 @@ def test_a_saved_upload_is_removed_when_ingestion_cannot_start(
     # The window the gate cannot cover: the extension has loaded before, so the request
     # is admitted and the upload persisted, and start_ingestion's own connection is what
     # discovers the library has gone. 503 like everywhere else, and no orphan left.
+    from storage import studio_db
     from utils.paths import rag_uploads_root
 
+    studio_db.upsert_chat_thread(
+        {"id": "t1", "title": "test", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
     _break_extension_load(monkeypatch)
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
     with _client() as client:
