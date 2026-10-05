@@ -426,7 +426,11 @@ export function ThreadDocumentsBar({
     remove,
   } = useRagDocuments(
     effectiveThreadId && ragEnabled && ragSource.type === "thread"
-      ? { type: "thread", threadId: effectiveThreadId }
+      ? {
+          type: "thread",
+          threadId: effectiveThreadId,
+          ...(isThreadIncognito(effectiveThreadId) ? { temporary: true } : {}),
+        }
       : null,
     lister,
   );
@@ -547,10 +551,14 @@ export function ThreadDocumentsBar({
         return;
       }
       // Filter duplicates before initializing the chat.
-      void upload(items, async () => ({
-        type: "thread",
-        threadId: await ensureThreadId(),
-      }));
+      void upload(items, async () => {
+        const threadId = await ensureThreadId();
+        return {
+          type: "thread",
+          threadId,
+          ...(isThreadIncognito(threadId) ? { temporary: true } : {}),
+        };
+      });
     },
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );

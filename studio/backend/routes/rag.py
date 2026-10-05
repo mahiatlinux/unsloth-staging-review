@@ -570,10 +570,11 @@ def upload_thread_document(
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
+    temporary: bool = Form(False),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    from storage.studio_db import get_chat_thread
+    from storage.studio_db import get_chat_thread, is_chat_thread_deleted
 
     scope = store.thread_scope(thread_id)
     stored_path = None
@@ -581,7 +582,10 @@ def upload_thread_document(
         # The matching cleanup takes this lock after deleting the chat row. Whichever side wins,
         # a missing thread is rejected or the cleanup waits and removes the document we started.
         with folder_sync.scope_lock(scope):
-            if get_chat_thread(thread_id) is None:
+            # Temporary chats intentionally have no row, but deletion still leaves a tombstone.
+            if is_chat_thread_deleted(thread_id) or (
+                temporary is not True and get_chat_thread(thread_id) is None
+            ):
                 raise HTTPException(status_code = 404, detail = "Thread not found")
             stored_path, filename, content_hash = _resolve_document_upload(
                 file, native_path_lease

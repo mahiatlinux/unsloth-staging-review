@@ -47,6 +47,7 @@ function harness(
   const errors: string[] = [];
   const infos: string[] = [];
   const uploads: string[] = [];
+  const temporaryUploads: boolean[] = [];
   const uploaded = {
     documentId: "doc",
     jobId: "job",
@@ -117,8 +118,15 @@ function harness(
       },
       "./vision-overrides": { resolveVisionOverrides: async () => ({}) },
       "../api/rag-api": {
-        uploadThreadDocument: async (threadId: string) => {
+        uploadThreadDocument: async (
+          threadId: string,
+          _file: unknown,
+          _ocr: unknown,
+          _caption: unknown,
+          temporary?: boolean,
+        ) => {
           uploads.push(threadId);
+          temporaryUploads.push(Boolean(temporary));
           return uploaded;
         },
         streamJobEvents:
@@ -136,6 +144,7 @@ function harness(
     errors,
     infos,
     uploads,
+    temporaryUploads,
     setScope(next: RagDocumentScope | null) {
       scope = next;
     },
@@ -154,6 +163,20 @@ function harness(
 function report(filename = "report.pdf") {
   return new File(["report"], filename, { lastModified: 1 });
 }
+
+test("a temporary thread upload carries its ephemeral scope marker", async () => {
+  const app = harness();
+  try {
+    app.setScope({ type: "thread", threadId: "temporary", temporary: true });
+    const hook = app.render();
+    await flush();
+    await hook.upload([report()]);
+    assert.deepEqual(app.uploads, ["temporary"]);
+    assert.deepEqual(app.temporaryUploads, [true]);
+  } finally {
+    app.dispose();
+  }
+});
 
 for (const extension of [
   "pdf",

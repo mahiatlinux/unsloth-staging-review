@@ -13,7 +13,7 @@ const ID = "__LOCALID_attachment";
 const SAVED_ID = "saved-target";
 const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
-type Scope = { type: "thread"; threadId: string };
+type Scope = { type: "thread"; threadId: string; temporary?: boolean };
 
 // @/features/chat re-exports the class from @/features/chat/api/chat-api, so the
 // bar and the scope materializer it calls must share one stub or a tombstone
@@ -379,5 +379,7 @@ test("initialization tags a temporary chat before the persistence check", async 
   await flush();
   assert.deepEqual(app.errors, []);
   assert.equal(app.initializeCalls, 1);
-  assert.equal(app.uploads[0]?.threadId, ID);
+  assert.deepEqual(app.uploads, [
+    { type: "thread", threadId: ID, temporary: true },
+  ]);
 });

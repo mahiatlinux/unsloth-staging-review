@@ -79,6 +79,7 @@ async function ragUpload(
   source: UploadSource,
   ocr?: boolean,
   caption?: boolean,
+  temporary?: boolean,
 ): Promise<DocumentUploadResult> {
   const form = new FormData();
   if (source instanceof File) form.append("file", source);
@@ -86,6 +87,7 @@ async function ragUpload(
   // Per-upload overrides for the vision passes; omitted -> backend config default.
   if (ocr !== undefined) form.append("ocr", String(ocr));
   if (caption !== undefined) form.append("caption", String(caption));
+  if (temporary) form.append("temporary", "true");
   // No Content-Type: let the browser set the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
@@ -179,12 +181,14 @@ export function uploadThreadDocument(
   file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
+  temporary?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/threads/${encodeURIComponent(threadId)}/documents`,
     file,
     ocr,
     caption,
+    temporary,
   );
 }
 

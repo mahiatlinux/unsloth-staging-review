@@ -69,6 +69,34 @@ test("the error still reads as the message a toast would show", () => {
   assert.ok(err instanceof Error);
 });
 
+test("temporary thread uploads identify their ephemeral scope to the backend", async () => {
+  let uploaded: FormData | undefined;
+  setAuthFetchHandler((input, init) => {
+    assert.equal(input, "/api/rag/threads/temporary/documents");
+    uploaded = init?.body as FormData;
+    return new Response(
+      JSON.stringify({
+        documentId: "document",
+        jobId: "job",
+        filename: "notes.txt",
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  try {
+    await rag.uploadThreadDocument(
+      "temporary",
+      new File(["notes"], "notes.txt"),
+      undefined,
+      undefined,
+      true,
+    );
+    assert.equal(uploaded?.get("temporary"), "true");
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
+
 // ------------------------------------------------------- the stored attachment target
 
 const { DEFAULT_PROJECT_ATTACHMENT_TARGET, normalizeProjectAttachmentTarget } =

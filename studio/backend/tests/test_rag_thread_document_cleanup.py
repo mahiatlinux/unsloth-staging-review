@@ -35,9 +35,10 @@ def _create_thread(client, thread_id):
     assert response.status_code == 200, response.text
 
 
-def _upload(client, thread_id, name, text):
+def _upload(client, thread_id, name, text, *, temporary = False):
     response = client.post(
         f"/api/rag/threads/{thread_id}/documents",
+        data = {"temporary": "true"} if temporary else None,
         files = {"file": (name, text.encode("utf-8"), "text/plain")},
     )
     assert response.status_code == 200, response.text
@@ -116,6 +117,32 @@ def test_clearing_history_removes_every_threads_uploaded_documents(client):
 def test_upload_to_missing_thread_is_rejected(client):
     response = client.post(
         "/api/rag/threads/missing/documents",
+        files = {"file": ("notes.txt", b"alpha bravo charlie", "text/plain")},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Thread not found"}
+    assert _document_ids(client) == set()
+
+
+def test_temporary_thread_upload_does_not_require_a_stored_row(client):
+    document_id = _upload(
+        client,
+        "temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+
+    assert _document_ids(client) == {document_id}
+
+
+def test_temporary_thread_upload_is_rejected_after_deletion(client):
+    studio_db.delete_chat_threads(["closed-temporary"])
+
+    response = client.post(
+        "/api/rag/threads/closed-temporary/documents",
+        data = {"temporary": "true"},
         files = {"file": ("notes.txt", b"alpha bravo charlie", "text/plain")},
     )
 
