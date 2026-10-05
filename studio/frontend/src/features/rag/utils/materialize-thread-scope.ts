@@ -32,8 +32,9 @@ export async function materializeThreadScope(
     missingError = error;
   }
   const state = m.readCurrentThreadItem();
+  const deleted = m.isThreadDeleted(m.threadId);
   if (
-    !m.isThreadDeleted(m.threadId) &&
+    !deleted &&
     state.id === m.threadId &&
     !state.remoteId &&
     isAssistantLocalThreadId(m.threadId)
@@ -42,6 +43,9 @@ export async function materializeThreadScope(
   }
   if (missing) {
     throw missingError;
+  }
+  if (deleted) {
+    throw new ChatThreadDeletedError(`Thread ${m.threadId} was deleted`);
   }
   return m.threadId;
 }

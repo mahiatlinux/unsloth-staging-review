@@ -188,6 +188,21 @@ test("a tombstoned thread stays an error instead of being resurrected", async ()
   );
 });
 
+test("a tombstone landing during an indeterminate read blocks the upload", async () => {
+  const materialize = load();
+
+  await assert.rejects(
+    materialize({
+      threadId: FRESH,
+      readCurrentThreadItem: () => ({ id: FRESH, remoteId: undefined }),
+      isThreadDeleted: () => true,
+      requireStoredThread: () => Promise.resolve(false),
+      initialize: neverInitialize(),
+    }),
+    (error: unknown) => error instanceof ChatThreadDeletedErrorStub,
+  );
+});
+
 test("a backend-tombstoned read stays an error instead of being resurrected", async () => {
   const materialize = load();
   const deleted = new ChatThreadDeletedErrorStub(`Thread ${FRESH} was deleted`);
