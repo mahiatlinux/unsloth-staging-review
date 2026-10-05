@@ -110,7 +110,9 @@ async function requireStoredThread(threadId: string): Promise<boolean> {
   if (isThreadIncognito(threadId)) return true;
   let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
   try {
-    stored = await ensureStoredChatThread(threadId);
+    stored = await ensureStoredChatThread(threadId, undefined, {
+      bounded: true,
+    });
   } catch (error) {
     // A backend tombstone is an answer, not an indeterminate transport failure: indexing
     // against it would leave documents under a thread that can never come back.

@@ -56,8 +56,9 @@ export async function materializeThreadScope(
       state.id === m.threadId &&
       state.remoteId
     ) {
-      await m.requireStoredThread(m.threadId);
-      return m.threadId;
+      if (await m.requireStoredThread(m.threadId)) {
+        return m.threadId;
+      }
     }
     throw missingError;
   }

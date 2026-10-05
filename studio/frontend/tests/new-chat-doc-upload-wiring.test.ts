@@ -43,6 +43,20 @@ function namedCallback(name: string): ts.Node {
   return found;
 }
 
+function namedFunction(name: string): ts.FunctionDeclaration {
+  let found: ts.FunctionDeclaration | null = null;
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(found, `${name} not found in ${REL}`);
+  return found;
+}
+
 function callsTo(scope: ts.Node, callee: string): ts.CallExpression[] {
   const out: ts.CallExpression[] = [];
   const visit = (node: ts.Node): void => {
@@ -141,5 +155,25 @@ test("ensureThreadId no longer calls requireStoredThread itself", () => {
     0,
     "requireStoredThread must be reached through materializeThreadScope, which can recover " +
       "an unpersisted __LOCALID_ id, not called directly",
+  );
+});
+
+test("the stored-thread preflight has a finite deadline", () => {
+  const calls = callsTo(
+    namedFunction("requireStoredThread"),
+    "ensureStoredChatThread",
+  );
+  assert.equal(calls.length, 1);
+  const options = calls[0]?.arguments[2];
+  assert.ok(options && ts.isObjectLiteralExpression(options));
+  const bounded = options.properties.find(
+    (property): property is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(property) &&
+      ts.isIdentifier(property.name) &&
+      property.name.text === "bounded",
+  );
+  assert.ok(
+    bounded && bounded.initializer.kind === ts.SyntaxKind.TrueKeyword,
+    "the pre-initialization read must not wait forever",
   );
 });
