@@ -17,8 +17,12 @@ Object.assign(globalThis, {
 registerStoreStubResolver();
 
 const rag = await import("../src/features/rag/api/rag-api.ts");
+const { keepTemporaryThreadDocumentLeaseAlive } = await import(
+  "../src/features/rag/utils/temporary-thread-document-lease.ts"
+);
 // The auth stub fails any unexpected network access; a test opts in per call.
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 // --------------------------------------------------------------- work lease protocol
 
@@ -94,6 +98,160 @@ test("temporary thread uploads identify their ephemeral scope to the backend", a
     assert.equal(uploaded?.get("temporary"), "true");
   } finally {
     setAuthFetchHandler(null);
+  }
+});
+
+test("temporary thread heartbeats renew their document lease", async () => {
+  setAuthFetchHandler((input, init) => {
+    assert.equal(input, "/api/rag/threads/temporary/documents/lease");
+    assert.equal(init?.method, "POST");
+    return new Response(JSON.stringify({ active: true, renewAfterMs: 1000 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    assert.deepEqual(await rag.renewTemporaryThreadDocumentLease("temporary"), {
+      active: true,
+      renewAfterMs: 1000,
+    });
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
+
+test("an open temporary chat repeats and cancels its document heartbeat", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  let calls = 0;
+  setAuthFetchHandler(() => {
+    calls += 1;
+    return new Response(JSON.stringify({ active: true, renewAfterMs: 1000 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    const stop = keepTemporaryThreadDocumentLeaseAlive("temporary");
+    await flush();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(999);
+    await flush();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 2);
+    stop();
+    t.mock.timers.tick(1000);
+    await flush();
+    assert.equal(calls, 2);
+  } finally {
+    setAuthFetchHandler(null);
+    t.mock.timers.reset();
+  }
+});
+
+test("repeated heartbeat failures shrink retries within the lease budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  let calls = 0;
+  setAuthFetchHandler(() => {
+    calls += 1;
+    if (calls === 2 || calls === 3) {
+      throw new Error("transient outage");
+    }
+    return new Response(JSON.stringify({ active: true, renewAfterMs: 5000 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    const stop = keepTemporaryThreadDocumentLeaseAlive("temporary");
+    await flush();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(5000);
+    await flush();
+    assert.equal(calls, 2);
+    t.mock.timers.tick(2499);
+    await flush();
+    assert.equal(calls, 2);
+    t.mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 3);
+    t.mock.timers.tick(1249);
+    await flush();
+    assert.equal(calls, 3);
+    t.mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 4);
+    stop();
+  } finally {
+    setAuthFetchHandler(null);
+    t.mock.timers.reset();
+  }
+});
+
+test("a slow failed heartbeat is aborted and retried before expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  let calls = 0;
+  setAuthFetchHandler(() => {
+    calls += 1;
+    if (calls !== 2) {
+      return new Response(
+        JSON.stringify({ active: true, renewAfterMs: 5000 }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+    // Mirrors authFetch waiting on a token refresh that does not use the caller's
+    // signal: aborting transport alone must not block the next lease attempt.
+    return new Promise<Response>(() => undefined);
+  });
+  try {
+    const stop = keepTemporaryThreadDocumentLeaseAlive("temporary");
+    await flush();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(5000);
+    await flush();
+    assert.equal(calls, 2);
+    t.mock.timers.tick(2499);
+    await flush();
+    assert.equal(calls, 2);
+    t.mock.timers.tick(1);
+    await flush();
+    t.mock.timers.tick(1249);
+    await flush();
+    assert.equal(calls, 2);
+    t.mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 3);
+    stop();
+  } finally {
+    setAuthFetchHandler(null);
+    t.mock.timers.reset();
+  }
+});
+
+test("a terminal temporary chat heartbeat does not reschedule", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  setAuthFetchHandler(() => {
+    calls += 1;
+    return new Response(JSON.stringify({ active: false, renewAfterMs: 500 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    keepTemporaryThreadDocumentLeaseAlive("saved");
+    await flush();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(5000);
+    await flush();
+    assert.equal(calls, 1);
+  } finally {
+    setAuthFetchHandler(null);
+    t.mock.timers.reset();
   }
 });
 

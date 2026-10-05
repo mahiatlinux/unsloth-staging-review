@@ -869,14 +869,22 @@ def scope_lock(scope: str):
             yield
 
 
-def renew_temporary_thread_scope(scope: str) -> None:
+def renew_temporary_thread_scope(scope: str, *, create: bool = True) -> bool:
     expires_at = (
         datetime.now(timezone.utc)
         + timedelta(seconds = max(1.0, config.TEMPORARY_THREAD_SCOPE_TTL_S))
     ).isoformat()
     with closing(rag_db.get_connection()) as conn:
-        store.renew_temporary_thread_scope(conn, scope, expires_at)
+        renewed = store.renew_temporary_thread_scope(
+            conn, scope, expires_at, create = create
+        )
     _wake.set()
+    return renewed
+
+
+def temporary_thread_scope_renew_after_ms() -> int:
+    ttl_s = max(1.0, config.TEMPORARY_THREAD_SCOPE_TTL_S)
+    return max(250, int(min(ttl_s / 2, 60 * 60) * 1000))
 
 
 def forget_temporary_thread_scope(scope: str) -> None:

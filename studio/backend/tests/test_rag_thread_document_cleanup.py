@@ -191,6 +191,34 @@ def test_expired_temporary_thread_upload_is_reaped_after_session_loss(client):
     assert not os.path.exists(path)
 
 
+def test_live_temporary_thread_heartbeat_renews_its_upload_lease(client):
+    document_id = _upload(
+        client,
+        "live-temporary",
+        "notes.txt",
+        "alpha bravo charlie " * 50,
+        temporary = True,
+    )
+    _expire_temporary_scope("live-temporary")
+
+    response = client.post("/api/rag/threads/live-temporary/documents/lease")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["active"] is True
+    assert response.json()["renewAfterMs"] > 0
+    assert _temporary_scope_expiry("live-temporary") > datetime.now(timezone.utc).isoformat()
+    folder_sync._enqueue_periodic()
+    assert _document_ids(client) == {document_id}
+
+
+def test_temporary_thread_heartbeat_does_not_create_a_scope_lease(client):
+    response = client.post("/api/rag/threads/never-uploaded/documents/lease")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["active"] is False
+    assert _temporary_scope_expiry("never-uploaded") is None
+
+
 def test_saving_a_temporary_thread_promotes_its_uploads_before_expiry(client):
     document_id = _upload(
         client,

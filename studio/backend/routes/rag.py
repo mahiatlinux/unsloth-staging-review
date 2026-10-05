@@ -609,6 +609,33 @@ def upload_thread_document(
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
+@router.post("/threads/{thread_id}/documents/lease")
+def renew_temporary_thread_document_lease(
+    thread_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
+    """Keep rowless documents while their Temporary Chat browser session is alive."""
+    _require_rag()
+    from storage.studio_db import get_chat_thread, is_chat_thread_deleted
+
+    scope = store.thread_scope(thread_id)
+    with folder_sync.scope_lock(scope):
+        if get_chat_thread(thread_id) is not None:
+            folder_sync.forget_temporary_thread_scope(scope)
+            active = False
+        elif is_chat_thread_deleted(thread_id):
+            # Explicit cleanup normally follows the tombstone. Keep the lease if cleanup is
+            # interrupted so expiry remains a durable fallback instead of leaking the upload.
+            active = False
+        else:
+            # Heartbeats never create ownership. Only the authenticated multipart upload can
+            # establish the lease, so probing arbitrary rowless ids leaves no durable state.
+            active = folder_sync.renew_temporary_thread_scope(scope, create = False)
+    return {
+        "active": active,
+        "renewAfterMs": folder_sync.temporary_thread_scope_renew_after_ms(),
+    }
+
+
 @router.get("/threads/{thread_id}/documents")
 def list_thread_documents(thread_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()

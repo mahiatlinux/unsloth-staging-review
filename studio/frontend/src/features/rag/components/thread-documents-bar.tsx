@@ -53,6 +53,7 @@ import {
   isLinkedFolderManaged,
 } from "../types/rag";
 import { materializeThreadScope } from "../utils/materialize-thread-scope";
+import { keepTemporaryThreadDocumentLeaseAlive } from "../utils/temporary-thread-document-lease";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -341,6 +342,7 @@ export function ThreadDocumentsBar({
   onIndexingChange?: (active: boolean) => void;
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -434,6 +436,21 @@ export function ThreadDocumentsBar({
       : null,
     lister,
   );
+  // Upload is the only operation that creates a lease. Start after a real document
+  // replaces its optimistic chip, and subscribe to the live toggle so Save stops it.
+  const temporaryThreadId =
+    incognito &&
+    effectiveThreadId &&
+    isThreadIncognito(effectiveThreadId) &&
+    documents.some((document) => !document.id.startsWith("pending_"))
+      ? effectiveThreadId
+      : null;
+  useEffect(() => {
+    if (!temporaryThreadId) {
+      return;
+    }
+    return keepTemporaryThreadDocumentLeaseAlive(temporaryThreadId);
+  }, [temporaryThreadId]);
 
   // The project's shared sources, listed alongside this chat's own so a file added
   // from another chat is visible rather than silently in effect. Retrieval already

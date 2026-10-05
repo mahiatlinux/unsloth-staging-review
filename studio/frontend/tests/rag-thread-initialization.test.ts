@@ -35,10 +35,11 @@ function harness(
     readError?: Error;
     readErrorCount?: number;
     clearOnStoredRead?: boolean;
+    documents?: Array<{ id: string }>;
   } = {},
 ) {
   let initialized = options.initialized ?? false;
-  let incognito = false;
+  let incognito = Boolean(options.initialized && options.temporary);
   let initializeCalls = 0;
   let nativePending = false;
   let clearGeneration = 0;
@@ -51,10 +52,13 @@ function harness(
   const uploads: Scope[] = [];
   const errors: string[] = [];
   const adopted: string[] = [];
+  const leases: string[] = [];
+  const stoppedLeases: string[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
   const state = {
     ragEnabled: true,
+    incognito,
     ragSource: { type: "thread" },
     activeProjectId: null,
     projectAttachmentTarget: "thread",
@@ -79,6 +83,7 @@ function harness(
       await Promise.resolve();
       initialized = true;
       incognito = options.temporary ?? false;
+      state.incognito = incognito;
       return { remoteId: itemId };
     },
   };
@@ -122,13 +127,25 @@ function harness(
           ];
         },
         useCallback: (fn: unknown) => fn,
-        useEffect(effect: () => void, deps: unknown[]) {
+        useEffect(effect: () => void | (() => void), deps: unknown[]) {
           const index = cursor++;
-          const previous = slots[index] as unknown[] | undefined;
-          if (previous && deps.every((dep, i) => Object.is(dep, previous[i])))
+          const previous = slots[index] as
+            | { deps: unknown[]; cleanup?: () => void }
+            | undefined;
+          if (
+            previous &&
+            deps.every((dep, i) => Object.is(dep, previous.deps[i]))
+          )
             return;
-          slots[index] = deps;
-          effects.push(effect);
+          previous?.cleanup?.();
+          const current: { deps: unknown[]; cleanup?: () => void } = { deps };
+          slots[index] = current;
+          effects.push(() => {
+            const cleanup = effect();
+            if (typeof cleanup === "function" && slots[index] === current) {
+              current.cleanup = cleanup;
+            }
+          });
         },
       },
       "react/jsx-runtime": stubJsxRuntime(),
@@ -185,6 +202,12 @@ function harness(
           "@/features/chat/utils/thread-ids": { isAssistantLocalThreadId },
         },
       ),
+      "../utils/temporary-thread-document-lease": {
+        keepTemporaryThreadDocumentLeaseAlive: (threadId: string) => {
+          leases.push(threadId);
+          return () => stoppedLeases.push(threadId);
+        },
+      },
       "@/features/native-intents": {
         useNativeAttachmentTargetKey: () => ID,
         useNativeIntentStore: nativeStore,
@@ -200,11 +223,14 @@ function harness(
           select: (s: { isUnavailable: () => boolean }) => unknown,
         ) => select({ isUnavailable: () => false }),
       },
-      "../types/rag": { RAG_UPLOAD_ACCEPT: ".docx" },
+      "../types/rag": {
+        RAG_UPLOAD_ACCEPT: ".docx",
+        isLinkedFolderManaged: () => false,
+      },
       "./document-status-chip": {},
       "./use-rag-documents": {
         useRagDocuments: () => ({
-          documents: [],
+          documents: options.documents ?? [],
           uploading: false,
           hasIndexing: false,
           loading: false,
@@ -245,6 +271,13 @@ function harness(
     uploads,
     errors,
     adopted,
+    leases,
+    stoppedLeases,
+    save() {
+      incognito = false;
+      state.incognito = false;
+      render();
+    },
     drop() {
       nativePending = true;
       render();
@@ -254,6 +287,26 @@ function harness(
     },
   };
 }
+
+test("an open temporary chat keeps its document lease alive", () => {
+  const app = harness({
+    initialized: true,
+    temporary: true,
+    documents: [{ id: "document" }],
+  });
+  app.render();
+
+  assert.deepEqual(app.leases, [ID]);
+  app.save();
+  assert.deepEqual(app.stoppedLeases, [ID]);
+});
+
+test("a temporary chat without uploaded documents starts no lease", () => {
+  const app = harness({ initialized: true, temporary: true });
+  app.render();
+
+  assert.deepEqual(app.leases, []);
+});
 
 for (const entry of ["picker", "native drop"] as const) {
   test(`${entry} initializes an empty chat even though it already has a local ID`, async () => {

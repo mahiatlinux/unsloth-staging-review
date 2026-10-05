@@ -67,15 +67,27 @@ def _now() -> str:
 
 
 def renew_temporary_thread_scope(
-    conn, scope: str, expires_at: str, *, commit: bool = True
-) -> None:
-    conn.execute(
-        "INSERT INTO temporary_thread_scopes(scope, expires_at) VALUES(?, ?) "
-        "ON CONFLICT(scope) DO UPDATE SET expires_at=excluded.expires_at",
-        (scope, expires_at),
-    )
+    conn,
+    scope: str,
+    expires_at: str,
+    *,
+    create: bool = True,
+    commit: bool = True,
+) -> bool:
+    if create:
+        cursor = conn.execute(
+            "INSERT INTO temporary_thread_scopes(scope, expires_at) VALUES(?, ?) "
+            "ON CONFLICT(scope) DO UPDATE SET expires_at=excluded.expires_at",
+            (scope, expires_at),
+        )
+    else:
+        cursor = conn.execute(
+            "UPDATE temporary_thread_scopes SET expires_at=? WHERE scope=?",
+            (expires_at, scope),
+        )
     if commit:
         conn.commit()
+    return cursor.rowcount == 1
 
 
 def forget_temporary_thread_scope(conn, scope: str, *, commit: bool = True) -> None:

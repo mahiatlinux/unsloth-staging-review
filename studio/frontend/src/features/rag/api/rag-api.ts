@@ -176,6 +176,16 @@ export async function listThreadDocuments(
   return data.documents ?? [];
 }
 
+export function renewTemporaryThreadDocumentLease(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<{ active: boolean; renewAfterMs: number }> {
+  return ragRequest(
+    `/threads/${encodeURIComponent(threadId)}/documents/lease`,
+    { method: "POST", signal },
+  );
+}
+
 export function uploadThreadDocument(
   threadId: string,
   file: UploadSource,
