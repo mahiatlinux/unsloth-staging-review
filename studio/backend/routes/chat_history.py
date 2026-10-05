@@ -665,7 +665,24 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return thread_from_row(upsert_chat_thread(payload.model_dump()))
+        # Promotion must serialize with Temporary Chat upload expiry. Once the durable owner row
+        # exists, remove its browser-session lease while still holding the shared scope lock.
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.thread_scope(payload.id)
+        with folder_sync.scope_lock(scope):
+            thread = thread_from_row(upsert_chat_thread(payload.model_dump()))
+            try:
+                folder_sync.forget_temporary_thread_scope(scope)
+            except Exception:
+                # The row is the source of truth. A later expiry pass sees it and promotes the
+                # documents, so unavailable optional RAG storage must not fail saving the chat.
+                logger.warning(
+                    "Could not promote the Temporary Chat scope for %s",
+                    payload.id,
+                    exc_info = True,
+                )
+            return thread
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -856,27 +873,43 @@ def _archive_cutoff() -> str:
 def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
     """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
-        from core.rag import conversation_archive
+        from core.rag import conversation_archive, folder_sync, store as rag_store
     except Exception:
         return
     for thread_id in thread_ids or []:
-        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
-        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
-        # that instant belongs to the deleted conversation, everything after to the new one.
-        recreated = get_chat_thread(str(thread_id)) is not None
-        if recreated and not cutoff:
-            continue
-        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
+            thread_id = str(thread_id)
+            # Serialize the existence decision and document purge with uploads. A request that
+            # started before deletion finishes first and is then reaped; one that starts after the
+            # row is gone observes the miss and is rejected by the upload endpoint.
+            with folder_sync.scope_lock(rag_store.thread_scope(thread_id)):
+                # Cut at the instant the delete was accepted, not on recreation: another tab can
+                # have recreated this id. Everything before the cutoff belongs to the deleted
+                # conversation and documents created after it belong to the replacement.
+                recreated = get_chat_thread(thread_id) is not None
+                if recreated and not cutoff:
+                    continue
+                created_before = cutoff if recreated else None
+                try:
+                    conversation_archive.delete_for_thread(
+                        thread_id, created_before = created_before
+                    )
+                except Exception:
+                    logger.warning("Could not remove the conversation archive for %s", thread_id)
+                try:
+                    conversation_archive.delete_thread_documents(
+                        thread_id, created_before = created_before
+                    )
+                except Exception:
+                    logger.warning("Could not remove the uploaded documents for %s", thread_id)
+                try:
+                    folder_sync.forget_temporary_thread_scope(
+                        rag_store.thread_scope(thread_id)
+                    )
+                except Exception:
+                    logger.warning("Could not retire the Temporary Chat scope for %s", thread_id)
         except Exception:
-            logger.warning("Could not remove the conversation archive for %s", thread_id)
-        try:
-            conversation_archive.delete_thread_documents(
-                str(thread_id), created_before = created_before
-            )
-        except Exception:
-            logger.warning("Could not remove the uploaded documents for %s", thread_id)
+            logger.warning("Could not remove the RAG data for %s", thread_id)
 
 
 def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:

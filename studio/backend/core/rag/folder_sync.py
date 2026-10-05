@@ -21,13 +21,15 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 import weakref
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from filelock import FileLock
+
 from core.rag import account_db as rag_db
-from utils.paths import ensure_dir, rag_uploads_root
+from utils.paths import ensure_dir, rag_root, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
 from utils.paths.path_utils import is_appledouble_metadata
@@ -855,8 +857,35 @@ def scope_retired(scope: str) -> bool:
             )
 
 
-def scope_lock(scope: str) -> threading.RLock:
-    return _scope_lock(scope)
+@contextmanager
+def scope_lock(scope: str):
+    """Serialize a scope across threads and concurrently live sibling backends."""
+    # A fixed stripe set bounds persistent lock files without making every account's unrelated
+    # uploads wait on one another. The account's RAG root keeps managed tenants isolated.
+    stripe = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:2]
+    lock_path = ensure_dir(rag_root() / ".scope-locks") / f"{stripe}.lock"
+    with _scope_lock(scope):
+        with FileLock(str(lock_path)):
+            yield
+
+
+def renew_temporary_thread_scope(scope: str) -> None:
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds = max(1.0, config.TEMPORARY_THREAD_SCOPE_TTL_S))
+    ).isoformat()
+    with closing(rag_db.get_connection()) as conn:
+        store.renew_temporary_thread_scope(conn, scope, expires_at)
+    _wake.set()
+
+
+def forget_temporary_thread_scope(scope: str) -> None:
+    with closing(rag_db.get_metadata_connection()) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='temporary_thread_scopes'"
+        ).fetchone()
+        if exists is not None:
+            store.forget_temporary_thread_scope(conn, scope)
 
 
 def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
@@ -1697,6 +1726,7 @@ def _enqueue_periodic() -> None:
         _reap_orphaned_documents(conn, now)
         conn.commit()
         _prune_terminal_jobs(conn)
+    _reap_expired_temporary_thread_scopes(now)
 
 
 def _claim_job(job_id: str) -> tuple[str, str] | None:
@@ -1844,6 +1874,7 @@ def _recover_startup_state() -> None:
         ).fetchall()
         _reap_orphaned_documents(conn, now)
         conn.commit()
+    _reap_expired_temporary_thread_scopes(now)
     for job in successor_handoffs:
         _queue_successor(job["id"])
 
@@ -1876,6 +1907,84 @@ def _reap_orphaned_documents(conn, now: str) -> None:
             (job_leases.INGESTION, orphan["id"]),
         )
         conn.execute("DELETE FROM ingestion_jobs WHERE document_id=?", (orphan["id"],))
+
+
+def _reap_expired_temporary_thread_scopes(now: str, thread_exists = None) -> None:
+    """Delete attachments whose rowless Temporary Chat session can no longer be recovered."""
+    if thread_exists is None:
+        from storage.studio_db import get_chat_thread
+
+        thread_exists = lambda thread_id: get_chat_thread(thread_id) is not None
+    with closing(rag_db.get_connection()) as conn:
+        expired = [
+            row["scope"]
+            for row in conn.execute(
+                "SELECT scope FROM temporary_thread_scopes WHERE expires_at<=? ORDER BY scope",
+                (now,),
+            )
+        ]
+    for scope in expired:
+        # Upload, promotion, explicit deletion, and expiry all take the same lock before either
+        # database. A save that wins preserves the documents; expiry that wins establishes that the
+        # already-ended browser lease no longer owns them.
+        with scope_lock(scope):
+            with closing(rag_db.get_connection()) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM temporary_thread_scopes "
+                        "WHERE scope=? AND expires_at<=?",
+                        (scope, now),
+                    ).fetchone()
+                    is None
+                ):
+                    conn.rollback()
+                    continue
+                if not scope.startswith("thread_"):
+                    store.forget_temporary_thread_scope(conn, scope, commit = False)
+                    conn.commit()
+                    continue
+                try:
+                    if thread_exists(scope[len("thread_") :]):
+                        # Saving a Temporary Chat creates its durable row under the same id. Its
+                        # attachments become ordinary thread documents instead of expiring.
+                        store.forget_temporary_thread_scope(conn, scope, commit = False)
+                        conn.commit()
+                        continue
+                except Exception:
+                    conn.rollback()
+                    logger.warning(
+                        "could not verify expired Temporary Chat scope %s",
+                        scope,
+                        exc_info = True,
+                    )
+                    continue
+                active = conn.execute(
+                    "SELECT 1 FROM documents d JOIN ingestion_jobs j ON j.document_id=d.id "
+                    "JOIN rag_job_leases l ON l.kind=? AND l.job_id=j.id "
+                    "WHERE d.scope=? AND j.status IN ('pending','running') "
+                    "AND l.expires_at>? LIMIT 1",
+                    (job_leases.INGESTION, scope, now),
+                ).fetchone()
+                if active is not None:
+                    conn.rollback()
+                    continue
+                documents = conn.execute(
+                    "SELECT id, stored_path FROM documents WHERE scope=?", (scope,)
+                ).fetchall()
+                for document in documents:
+                    _remove_retired_snapshot(document["stored_path"])
+                    store.delete_document(conn, document["id"], commit = False)
+                    conn.execute(
+                        "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+                        "(SELECT id FROM ingestion_jobs WHERE document_id=?)",
+                        (job_leases.INGESTION, document["id"]),
+                    )
+                    conn.execute(
+                        "DELETE FROM ingestion_jobs WHERE document_id=?", (document["id"],)
+                    )
+                store.forget_temporary_thread_scope(conn, scope, commit = False)
+                conn.commit()
 
 
 def start_auto_sync(

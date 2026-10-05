@@ -66,6 +66,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def renew_temporary_thread_scope(
+    conn, scope: str, expires_at: str, *, commit: bool = True
+) -> None:
+    conn.execute(
+        "INSERT INTO temporary_thread_scopes(scope, expires_at) VALUES(?, ?) "
+        "ON CONFLICT(scope) DO UPDATE SET expires_at=excluded.expires_at",
+        (scope, expires_at),
+    )
+    if commit:
+        conn.commit()
+
+
+def forget_temporary_thread_scope(conn, scope: str, *, commit: bool = True) -> None:
+    conn.execute("DELETE FROM temporary_thread_scopes WHERE scope=?", (scope,))
+    if commit:
+        conn.commit()
+
+
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 # Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")

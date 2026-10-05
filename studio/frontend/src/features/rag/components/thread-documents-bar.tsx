@@ -25,6 +25,7 @@ import {
   getStoredChatThread,
   isThreadIncognito,
 } from "@/features/chat";
+import { isChatThreadDeleted } from "@/features/chat/utils/chat-thread-tombstones";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -51,6 +52,7 @@ import {
   type RagDocument,
   isLinkedFolderManaged,
 } from "../types/rag";
+import { materializeThreadScope } from "../utils/materialize-thread-scope";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -101,24 +103,28 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
 * Confirm a thread is stored before documents are indexed against it. An id reaches this
 * component before its row write lands, from a cached initialize() or from activeThreadId, and
 * upload_thread_document does not check the thread itself. A transport failure is not proof the
-* row is missing, so only a definitive miss blocks the upload.
+* row is missing, so only a definitive miss blocks the upload. False means the read was
+* indeterminate; callers can still initialize a current unsaved chat without rejecting saved ids.
 */
-async function requireStoredThread(threadId: string): Promise<void> {
-  if (isThreadIncognito(threadId)) return;
+async function requireStoredThread(threadId: string): Promise<boolean> {
+  if (isThreadIncognito(threadId)) return true;
   let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
   try {
-    stored = await ensureStoredChatThread(threadId);
+    stored = await ensureStoredChatThread(threadId, undefined, {
+      bounded: true,
+    });
   } catch (error) {
     // A backend tombstone is an answer, not an indeterminate transport failure: indexing
     // against it would leave documents under a thread that can never come back.
     if (error instanceof ChatThreadDeletedError) {
       throw error;
     }
-    return;
+    return false;
   }
   if (!stored) {
     throw new Error(`Thread ${threadId} was not persisted`);
   }
+  return true;
 }
 
 /** Read-only listing of the project's sources, shown when the Docs pill is off:
@@ -420,7 +426,11 @@ export function ThreadDocumentsBar({
     remove,
   } = useRagDocuments(
     effectiveThreadId && ragEnabled && ragSource.type === "thread"
-      ? { type: "thread", threadId: effectiveThreadId }
+      ? {
+          type: "thread",
+          threadId: effectiveThreadId,
+          ...(isThreadIncognito(effectiveThreadId) ? { temporary: true } : {}),
+        }
       : null,
     lister,
   );
@@ -460,25 +470,18 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const ensureThreadId = useCallback((): Promise<string> => {
-    // A new chat already has a local id before initialize() creates its stored row.
-    // Only initialize when that id belongs to the current uninitialized item. During
-    // navigation the saved target reaches this bar before switchToThread replaces the
-    // outgoing item; initializing then would create and attach to the wrong chat.
-    const currentItem = aui.threadListItem().getState();
-    if (
-      effectiveThreadId &&
-      (currentItem.remoteId || currentItem.id !== effectiveThreadId)
-    ) {
-      return requireStoredThread(effectiveThreadId).then(
-        () => effectiveThreadId,
-      );
-    }
+  const initializeThreadItem = useCallback((
+    clearGeneration: number,
+  ): Promise<string> => {
     const current = initPromiseRef.current;
     if (current) {
       return current;
     }
-    const clearGeneration = chatHistoryClearBoundary.capture();
+    // Captured by the caller, not here: on the recovery path this runs after an unbounded
+    // getChatThread round trip, so a clear arriving in that window would read as no clear.
+    if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+      return Promise.reject(new Error("Chat history was cleared"));
+    }
     const generation = ++initGenerationRef.current;
     // Taken before the await: this composer can be abandoned while it runs, and
     // the choice under the shared key would then be the next composer's.
@@ -487,7 +490,11 @@ export function ThreadDocumentsBar({
       .threadListItem()
       .initialize()
       .then(async ({ remoteId }) => {
-        await requireStoredThread(remoteId);
+        if (!(await requireStoredThread(remoteId))) {
+          throw new Error(
+            `Thread ${remoteId} persistence could not be confirmed`,
+          );
+        }
         useChatRuntimeStore
           .getState()
           .adoptPendingProjectAttachmentTarget(remoteId, claim);
@@ -509,7 +516,25 @@ export function ThreadDocumentsBar({
     };
     pending.then(clear, clear);
     return pending;
-  }, [aui, effectiveThreadId]);
+  }, [aui]);
+
+  const ensureThreadId = useCallback((): Promise<string> => {
+    // Before anything can yield: a late initializer must not recreate a chat a Clear All
+    // removed while the stored-thread check was in flight (clear-all-chats.ts).
+    const clearGeneration = chatHistoryClearBoundary.capture();
+    return materializeThreadScope({
+      threadId: effectiveThreadId,
+      readCurrentThreadItem: () => {
+        const state = aui.threadListItem().getState();
+        return { id: state.id, remoteId: state.remoteId };
+      },
+      isThreadDeleted: (threadId) =>
+        chatHistoryClearBoundary.capture() !== clearGeneration ||
+        isChatThreadDeleted(threadId),
+      requireStoredThread,
+      initialize: () => initializeThreadItem(clearGeneration),
+    });
+  }, [aui, effectiveThreadId, initializeThreadItem]);
 
   // One entry point for the picker and desktop drops: project files go straight
   // there, per-chat files materialize the thread first. The probe caches for 30s,
@@ -526,10 +551,14 @@ export function ThreadDocumentsBar({
         return;
       }
       // Filter duplicates before initializing the chat.
-      void upload(items, async () => ({
-        type: "thread",
-        threadId: await ensureThreadId(),
-      }));
+      void upload(items, async () => {
+        const threadId = await ensureThreadId();
+        return {
+          type: "thread",
+          threadId,
+          ...(isThreadIncognito(threadId) ? { temporary: true } : {}),
+        };
+      });
     },
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );

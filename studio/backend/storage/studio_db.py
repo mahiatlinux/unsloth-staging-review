@@ -2130,6 +2130,20 @@ class ChatThreadDeletedError(RuntimeError):
     """Raised when a stale writer tries to recreate a deleted thread id."""
 
 
+def is_chat_thread_deleted(thread_id: str) -> bool:
+    conn = get_connection()
+    try:
+        return (
+            conn.execute(
+                "SELECT 1 FROM chat_thread_tombstones WHERE id = ?",
+                (thread_id,),
+            ).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
+
+
 def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> None:
     row = conn.execute(
         "SELECT 1 FROM chat_thread_tombstones WHERE id = ?",

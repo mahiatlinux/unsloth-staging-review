@@ -13,7 +13,15 @@ const ID = "__LOCALID_attachment";
 const SAVED_ID = "saved-target";
 const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
-type Scope = { type: "thread"; threadId: string };
+type Scope = { type: "thread"; threadId: string; temporary?: boolean };
+
+// @/features/chat re-exports the class from @/features/chat/api/chat-api, so the
+// bar and the scope materializer it calls must share one stub or a tombstone
+// would fail the instanceof check in one and not the other.
+class ChatThreadDeletedErrorStub extends Error {}
+
+const isAssistantLocalThreadId = (id: string | null | undefined) =>
+  typeof id === "string" && id.startsWith("__LOCALID_");
 
 function harness(
   options: {
@@ -24,12 +32,19 @@ function harness(
     persist?: Promise<void>;
     itemId?: string;
     storedIds?: string[];
+    readError?: Error;
+    readErrorCount?: number;
+    clearOnStoredRead?: boolean;
   } = {},
 ) {
   let initialized = options.initialized ?? false;
   let incognito = false;
   let initializeCalls = 0;
   let nativePending = false;
+  let clearGeneration = 0;
+  let remainingReadErrors = options.readError
+    ? (options.readErrorCount ?? 1)
+    : 0;
   let cursor = 0;
   const slots: unknown[] = [];
   const effects: Array<() => void> = [];
@@ -127,17 +142,49 @@ function harness(
         readPendingAttachmentTargetClaim: () => null,
       },
       "@/features/chat": {
-        chatHistoryClearBoundary: { capture: () => 0 },
-        ChatThreadDeletedError: class extends Error {},
+        chatHistoryClearBoundary: { capture: () => clearGeneration },
+        ChatThreadDeletedError: ChatThreadDeletedErrorStub,
         isThreadIncognito: () => incognito,
         getStoredChatThread: async () => undefined,
         ensureStoredChatThread: async (threadId: string) => {
-          if (storedIds.has(threadId)) return { id: threadId };
+          if (remainingReadErrors > 0) {
+            remainingReadErrors -= 1;
+            throw options.readError;
+          }
+          if (storedIds.has(threadId)) {
+            if (options.clearOnStoredRead) {
+              clearGeneration += 1;
+            }
+            return { id: threadId };
+          }
           if (!initialized || options.missing) return undefined;
           await options.persist;
           return threadId === itemId ? { id: itemId } : undefined;
         },
       },
+      "@/features/chat/api/chat-api": {
+        ChatThreadDeletedError: ChatThreadDeletedErrorStub,
+      },
+      "@/features/chat/utils/thread-ids": { isAssistantLocalThreadId },
+      "@/features/chat/utils/chat-thread-tombstones": {
+        isChatThreadDeleted: () => false,
+      },
+      // The real materializer: the bar delegates to it, so stubbing it away
+      // would leave these tests asserting against code the bar never runs.
+      "../utils/materialize-thread-scope": loadWithStubs<{
+        materializeThreadScope: (m: unknown) => Promise<string>;
+      }>(
+        new URL(
+          "../src/features/rag/utils/materialize-thread-scope.ts",
+          import.meta.url,
+        ),
+        {
+          "@/features/chat/api/chat-api": {
+            ChatThreadDeletedError: ChatThreadDeletedErrorStub,
+          },
+          "@/features/chat/utils/thread-ids": { isAssistantLocalThreadId },
+        },
+      ),
       "@/features/native-intents": {
         useNativeAttachmentTargetKey: () => ID,
         useNativeIntentStore: nativeStore,
@@ -234,6 +281,43 @@ test("attachments still initialize a chat before its ID reaches the bar", async 
   assert.equal(app.uploads[0]?.threadId, ID);
 });
 
+test("a transient stored-thread read failure cannot skip fresh chat initialization", async () => {
+  const app = harness({
+    readError: new Error("backend temporarily unavailable"),
+  });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, []);
+  assert.equal(app.initializeCalls, 1);
+  assert.equal(app.uploads[0]?.threadId, ID);
+});
+
+test("a transient post-initialization verification blocks the upload", async () => {
+  const app = harness({
+    readError: new Error("backend temporarily unavailable"),
+    readErrorCount: 2,
+  });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, [
+    `Thread ${ID} persistence could not be confirmed`,
+  ]);
+  assert.equal(app.initializeCalls, 1);
+  assert.equal(app.uploads.length, 0);
+});
+
+test("Clear All after a successful preflight still blocks the upload", async () => {
+  const app = harness({ storedIds: [ID], clearOnStoredRead: true });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, [`Thread ${ID} was deleted`]);
+  assert.equal(app.initializeCalls, 0);
+  assert.equal(app.uploads.length, 0);
+});
+
 test("a saved chat with a local ID is reused without initialization", async () => {
   const app = harness({ initialized: true });
   app.render();
@@ -295,5 +379,7 @@ test("initialization tags a temporary chat before the persistence check", async 
   await flush();
   assert.deepEqual(app.errors, []);
   assert.equal(app.initializeCalls, 1);
-  assert.equal(app.uploads[0]?.threadId, ID);
+  assert.deepEqual(app.uploads, [
+    { type: "thread", threadId: ID, temporary: true },
+  ]);
 });

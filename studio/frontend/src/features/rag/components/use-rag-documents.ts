@@ -87,7 +87,7 @@ function itemSignature(item: RagUploadItem): string {
 
 export type RagDocumentScope =
   | { type: "kb"; kbId: string }
-  | { type: "thread"; threadId: string }
+  | { type: "thread"; threadId: string; temporary?: boolean }
   | { type: "project"; projectId: string };
 
 type Lister = () => Promise<RagDocument[]>;
@@ -548,6 +548,7 @@ export function useRagDocuments(
                   file,
                   ocr,
                   caption,
+                  activeScope.temporary,
                 );
         if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
