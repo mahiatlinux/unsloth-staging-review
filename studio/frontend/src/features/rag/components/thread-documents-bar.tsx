@@ -103,10 +103,11 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
 * Confirm a thread is stored before documents are indexed against it. An id reaches this
 * component before its row write lands, from a cached initialize() or from activeThreadId, and
 * upload_thread_document does not check the thread itself. A transport failure is not proof the
-* row is missing, so only a definitive miss blocks the upload.
+* row is missing, so only a definitive miss blocks the upload. False means the read was
+* indeterminate; callers can still initialize a current unsaved chat without rejecting saved ids.
 */
-async function requireStoredThread(threadId: string): Promise<void> {
-  if (isThreadIncognito(threadId)) return;
+async function requireStoredThread(threadId: string): Promise<boolean> {
+  if (isThreadIncognito(threadId)) return true;
   let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
   try {
     stored = await ensureStoredChatThread(threadId);
@@ -116,11 +117,12 @@ async function requireStoredThread(threadId: string): Promise<void> {
     if (error instanceof ChatThreadDeletedError) {
       throw error;
     }
-    return;
+    return false;
   }
   if (!stored) {
     throw new Error(`Thread ${threadId} was not persisted`);
   }
+  return true;
 }
 
 /** Read-only listing of the project's sources, shown when the Docs pill is off:

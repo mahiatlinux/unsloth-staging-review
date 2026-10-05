@@ -32,6 +32,7 @@ function harness(
     persist?: Promise<void>;
     itemId?: string;
     storedIds?: string[];
+    readError?: Error;
   } = {},
 ) {
   let initialized = options.initialized ?? false;
@@ -140,6 +141,9 @@ function harness(
         isThreadIncognito: () => incognito,
         getStoredChatThread: async () => undefined,
         ensureStoredChatThread: async (threadId: string) => {
+          if (options.readError) {
+            throw options.readError;
+          }
           if (storedIds.has(threadId)) return { id: threadId };
           if (!initialized || options.missing) return undefined;
           await options.persist;
@@ -257,6 +261,16 @@ for (const entry of ["picker", "native drop"] as const) {
 
 test("attachments still initialize a chat before its ID reaches the bar", async () => {
   const app = harness({ propId: null });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, []);
+  assert.equal(app.initializeCalls, 1);
+  assert.equal(app.uploads[0]?.threadId, ID);
+});
+
+test("a transient stored-thread read failure cannot skip fresh chat initialization", async () => {
+  const app = harness({ readError: new Error("backend temporarily unavailable") });
   app.render();
   app.pick();
   await flush();

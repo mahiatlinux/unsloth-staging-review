@@ -3,8 +3,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadWithStubs } from "./helpers/module-stubs.ts";
 import type { ThreadScopeMaterialization } from "../src/features/rag/utils/materialize-thread-scope";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const FRESH = "__LOCALID_fresh0001";
 
@@ -38,15 +38,18 @@ function load() {
 
 function deferredWriteStore() {
   const store = { resolvable: false };
-  const requireStoredThread = (threadId: string): Promise<void> =>
-    store.resolvable
-      ? Promise.resolve()
+  let reads = 0;
+  const requireStoredThread = (threadId: string): Promise<boolean> => {
+    reads += 1;
+    return store.resolvable
+      ? Promise.resolve(true)
       : Promise.reject(new Error(`Thread ${threadId} was not persisted`));
+  };
   const initialize = () => {
     store.resolvable = true;
     return requireStoredThread(FRESH).then(() => FRESH);
   };
-  return { requireStoredThread, initialize };
+  return { requireStoredThread, initialize, readCount: () => reads };
 }
 
 function neverInitialize(): () => Promise<string> {
@@ -56,9 +59,9 @@ function neverInitialize(): () => Promise<string> {
   return initialize;
 }
 
-test("a brand-new chat whose __LOCALID_ id reads unpersisted materializes the row", async () => {
+test("a brand-new chat whose __LOCALID_ is missing materializes the row", async () => {
   const materialize = load();
-  const { requireStoredThread, initialize } = deferredWriteStore();
+  const { requireStoredThread, initialize, readCount } = deferredWriteStore();
 
   const result = await materialize({
     threadId: FRESH,
@@ -69,6 +72,30 @@ test("a brand-new chat whose __LOCALID_ id reads unpersisted materializes the ro
   });
 
   assert.equal(result, FRESH);
+  assert.equal(
+    readCount(),
+    2,
+    "the initialized row is confirmed after the miss",
+  );
+});
+
+test("a brand-new chat still materializes when its stored-thread read is indeterminate", async () => {
+  const materialize = load();
+  let initialized = 0;
+
+  const result = await materialize({
+    threadId: FRESH,
+    readCurrentThreadItem: () => ({ id: FRESH, remoteId: undefined }),
+    isThreadDeleted: () => false,
+    requireStoredThread: () => Promise.resolve(false),
+    initialize: () => {
+      initialized += 1;
+      return Promise.resolve(FRESH);
+    },
+  });
+
+  assert.equal(result, FRESH);
+  assert.equal(initialized, 1);
 });
 
 test("an id-less composer materializes the thread immediately", async () => {
@@ -79,7 +106,7 @@ test("an id-less composer materializes the thread immediately", async () => {
     threadId: null,
     readCurrentThreadItem: () => ({ id: FRESH, remoteId: undefined }),
     isThreadDeleted: () => false,
-    requireStoredThread: () => Promise.resolve(),
+    requireStoredThread: () => Promise.resolve(true),
     initialize: () => {
       initialized += 1;
       return Promise.resolve(FRESH);
@@ -107,6 +134,20 @@ test("a saved chat (remoteId set) that reads missing is an error, never re-initi
     }),
     (error: unknown) => error === missing,
   );
+});
+
+test("a saved chat is reused when its stored-thread read is indeterminate", async () => {
+  const materialize = load();
+
+  const result = await materialize({
+    threadId: FRESH,
+    readCurrentThreadItem: () => ({ id: FRESH, remoteId: FRESH }),
+    isThreadDeleted: () => false,
+    requireStoredThread: () => Promise.resolve(false),
+    initialize: neverInitialize(),
+  });
+
+  assert.equal(result, FRESH);
 });
 
 test("a real (non-__LOCALID_) id that reads missing stays an error", async () => {
