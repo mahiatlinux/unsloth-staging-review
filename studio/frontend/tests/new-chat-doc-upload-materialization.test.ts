@@ -150,6 +150,30 @@ test("a saved chat is reused when its stored-thread read is indeterminate", asyn
   assert.equal(result, FRESH);
 });
 
+test("a concurrent initializer gets a second stored-row check after a stale miss", async () => {
+  const materialize = load();
+  const missing = new Error(`Thread ${FRESH} was not persisted`);
+  let stateReads = 0;
+  let storedReads = 0;
+
+  const result = await materialize({
+    threadId: FRESH,
+    readCurrentThreadItem: () => ({
+      id: FRESH,
+      remoteId: stateReads++ === 0 ? undefined : FRESH,
+    }),
+    isThreadDeleted: () => false,
+    requireStoredThread: () => {
+      storedReads += 1;
+      return storedReads === 1 ? Promise.reject(missing) : Promise.resolve(true);
+    },
+    initialize: neverInitialize(),
+  });
+
+  assert.equal(result, FRESH);
+  assert.equal(storedReads, 2);
+});
+
 test("a real (non-__LOCALID_) id that reads missing stays an error", async () => {
   const materialize = load();
   const missing = new Error("Thread chat_001 was not persisted");

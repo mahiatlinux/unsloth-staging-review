@@ -18,6 +18,7 @@ export async function materializeThreadScope(
   if (!m.threadId) {
     return m.initialize();
   }
+  const initialState = m.readCurrentThreadItem();
   let missing = false;
   let missingError: unknown;
   try {
@@ -42,6 +43,16 @@ export async function materializeThreadScope(
     return m.initialize();
   }
   if (missing) {
+    if (
+      !deleted &&
+      initialState.id === m.threadId &&
+      !initialState.remoteId &&
+      state.id === m.threadId &&
+      state.remoteId
+    ) {
+      await m.requireStoredThread(m.threadId);
+      return m.threadId;
+    }
     throw missingError;
   }
   if (deleted) {
