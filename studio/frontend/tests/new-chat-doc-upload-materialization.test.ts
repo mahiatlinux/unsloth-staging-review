@@ -7,6 +7,8 @@ import type { ThreadScopeMaterialization } from "../src/features/rag/utils/mater
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const FRESH = "__LOCALID_fresh0001";
+const THREAD_CHANGED_ERROR =
+  /Thread changed while preparing the document upload/;
 
 class ChatThreadDeletedErrorStub extends Error {
   constructor(message: string) {
@@ -165,7 +167,9 @@ test("a concurrent initializer gets a second stored-row check after a stale miss
     isThreadDeleted: () => false,
     requireStoredThread: () => {
       storedReads += 1;
-      return storedReads === 1 ? Promise.reject(missing) : Promise.resolve(true);
+      return storedReads === 1
+        ? Promise.reject(missing)
+        : Promise.resolve(true);
     },
     initialize: neverInitialize(),
   });
@@ -265,5 +269,24 @@ test("a thread switch while the stored check waits is an error, not a recovery",
       initialize,
     }),
     (error: unknown) => error === missing,
+  );
+});
+
+test("a thread switch during an indeterminate read blocks the upload", async () => {
+  const materialize = load();
+  let stateReads = 0;
+
+  await assert.rejects(
+    materialize({
+      threadId: FRESH,
+      readCurrentThreadItem: () => ({
+        id: stateReads++ === 0 ? FRESH : "__LOCALID_other",
+        remoteId: undefined,
+      }),
+      isThreadDeleted: () => false,
+      requireStoredThread: () => Promise.resolve(false),
+      initialize: neverInitialize(),
+    }),
+    THREAD_CHANGED_ERROR,
   );
 });

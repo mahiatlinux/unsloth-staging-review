@@ -34,6 +34,10 @@ export async function materializeThreadScope(
   }
   const state = m.readCurrentThreadItem();
   const deleted = m.isThreadDeleted(m.threadId);
+  const initialStateWasFresh =
+    initialState.id === m.threadId &&
+    !initialState.remoteId &&
+    isAssistantLocalThreadId(m.threadId);
   if (
     !deleted &&
     state.id === m.threadId &&
@@ -42,11 +46,13 @@ export async function materializeThreadScope(
   ) {
     return m.initialize();
   }
+  if (!deleted && initialStateWasFresh && state.id !== m.threadId) {
+    throw new Error("Thread changed while preparing the document upload");
+  }
   if (missing) {
     if (
       !deleted &&
-      initialState.id === m.threadId &&
-      !initialState.remoteId &&
+      initialStateWasFresh &&
       state.id === m.threadId &&
       state.remoteId
     ) {
