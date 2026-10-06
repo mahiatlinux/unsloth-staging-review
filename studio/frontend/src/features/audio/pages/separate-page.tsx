@@ -35,6 +35,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { STEM_SEND_TARGETS } from "../send-targets";
 import {
   SEPARATE_MAX_SECONDS,
   separatePresentation,
@@ -282,7 +283,7 @@ function saveBlob(blob: Blob, name: string) {
 
 async function downloadGroup(group: SeparationGroup) {
   try {
-    // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
+    // fetch each stem lazily so a long song never holds every stem in memory.
     const files = group.stems.map((clip) => ({
       name: stemFileName(group.title, stemLabel(clip.role ?? "")),
       blob: () => fetchAudioBlob(clip.url),
@@ -293,12 +294,7 @@ async function downloadGroup(group: SeparationGroup) {
   }
 }
 
-const SEND_TARGETS: readonly SendTarget[] = [
-  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
-];
-
-/** Keyed by group so each one starts from its own clock. */
+/** keyed by group so each mixer starts from its own clock. */
 function SelectedSeparation({
   group,
   autoFocus,
@@ -343,7 +339,7 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
-        sendTargets={SEND_TARGETS}
+        sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];
