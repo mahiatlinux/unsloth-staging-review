@@ -638,6 +638,84 @@ test("training exports split when a later run clears its instructions", async ()
   );
 });
 
+test("an imported prompt-clear marker starts an instruction-free epoch", async () => {
+  const imported: ThreadRecord = {
+    id: "imported-clear",
+    title: "Imported clear",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 3,
+  };
+  const messages: MessageRecord[] = [
+    {
+      id: "imported-clear-system-a",
+      threadId: imported.id,
+      parentId: null,
+      role: "system",
+      content: [{ type: "text", text: "Prompt A" }],
+      createdAt: 10,
+    },
+    {
+      id: "imported-clear-u1",
+      threadId: imported.id,
+      parentId: "imported-clear-system-a",
+      role: "user",
+      content: [{ type: "text", text: "First question" }],
+      createdAt: 11,
+    },
+    {
+      id: "imported-clear-a1",
+      threadId: imported.id,
+      parentId: "imported-clear-u1",
+      role: "assistant",
+      content: [{ type: "text", text: "First answer" }],
+      createdAt: 12,
+    },
+    {
+      id: "imported-clear-system-empty",
+      threadId: imported.id,
+      parentId: "imported-clear-a1",
+      role: "system",
+      content: [],
+      createdAt: 13,
+    },
+    {
+      id: "imported-clear-u2",
+      threadId: imported.id,
+      parentId: "imported-clear-system-empty",
+      role: "user",
+      content: [{ type: "text", text: "Second question" }],
+      createdAt: 14,
+    },
+    {
+      id: "imported-clear-a2",
+      threadId: imported.id,
+      parentId: "imported-clear-u2",
+      role: "assistant",
+      content: [{ type: "text", text: "Second answer" }],
+      createdAt: 15,
+    },
+  ];
+  const exporters = loadExporters([imported.id], [], [], {
+    threads: [imported],
+    listStoredChatMessages: async () => messages,
+    getChatSettings: async () => ({
+      inferenceParams: { systemPrompt: "Current global prompt" },
+    }),
+  });
+
+  const result = await exporters.buildFineTuneJsonl("openai");
+  const records = result.lines.map((line) => JSON.parse(line).messages);
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0][0].content, "Prompt A");
+  assert.ok(
+    records[1].every((message: { role: string }) => message.role !== "system"),
+  );
+  assert.equal(records[1].at(-1).content, "Second answer");
+});
+
 test("fine-tuning data keeps earlier turns as context across instruction changes", async () => {
   const thread: ThreadRecord = {
     id: "changing",

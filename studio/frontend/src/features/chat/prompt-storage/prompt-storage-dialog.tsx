@@ -367,6 +367,18 @@ function partitionByRunInstructions(
   let pending: MessageRecord[] = [];
 
   for (const message of messages) {
+    if (
+      message.role === "system" &&
+      completed.some((item) => item.role === "assistant")
+    ) {
+      completed.push(...pending);
+      pending = [];
+      segments.push({ instructions, messages: completed });
+      completed = [];
+      // A stored system turn carries the next epoch itself, including an
+      // intentionally empty turn exported as a prompt-clear marker.
+      instructions = "";
+    }
     pending.push(message);
     if (message.role !== "assistant") continue;
     const captured = capturedRunInstructions(message);
@@ -467,6 +479,9 @@ function trainingEpochMessages(
   const priorMessages: MessageRecord[] = [];
   return segments.map((segment, index) => {
     const context = exportTrainingContextTurn(threadId, priorMessages, index);
+    const priorSystems = hasStoredSystemTurn(segment.messages)
+      ? []
+      : storedSystemTurns(priorMessages);
     const messages = [
       ...(segment.instructions
         ? [
@@ -478,7 +493,7 @@ function trainingEpochMessages(
             ),
           ]
         : []),
-      ...storedSystemTurns(priorMessages),
+      ...priorSystems,
       ...(context ? [context] : []),
       ...segment.messages,
     ];
@@ -1354,6 +1369,9 @@ export async function buildFineTuneJsonl(
     const priorMessages: MessageRecord[] = [];
     for (const [index, segment] of segments.entries()) {
       const priorContext = fineTuneContextText(priorMessages);
+      const priorSystems = hasStoredSystemTurn(segment.messages)
+        ? []
+        : storedSystemTurns(priorMessages);
       const context =
         format === "alpaca"
           ? null
@@ -1369,7 +1387,7 @@ export async function buildFineTuneJsonl(
               ),
             ]
           : []),
-        ...storedSystemTurns(priorMessages),
+        ...priorSystems,
         ...(context ? [context] : []),
         ...segment.messages,
       ];
