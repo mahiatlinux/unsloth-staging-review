@@ -285,6 +285,7 @@ export function GeneralTab() {
         submittedTokenRevisionRef.current !== tokenEditRevisionRef.current &&
         draftRef.current.trim() !== current
       ) {
+        submittedTokenRevisionRef.current = null;
         return;
       }
       tokenEditedRef.current = false;
@@ -528,18 +529,11 @@ export function GeneralTab() {
                   const value = e.target.value;
                   const matchesCurrentToken =
                     value.trim() === (hfToken ?? "");
-                  const preservesSubmittedToken =
-                    submittedTokenRevisionRef.current !== null &&
-                    matchesCurrentToken;
+                  const hasSubmittedToken =
+                    submittedTokenRevisionRef.current !== null;
                   tokenEditRevisionRef.current += 1;
                   tokenEditedRef.current =
-                    !matchesCurrentToken || preservesSubmittedToken;
-                  if (preservesSubmittedToken) {
-                    submittedTokenRevisionRef.current =
-                      tokenEditRevisionRef.current;
-                  } else {
-                    submittedTokenRevisionRef.current = null;
-                  }
+                    !matchesCurrentToken || hasSubmittedToken;
                   draftRef.current = value;
                   setDraftToken(value);
                 }}

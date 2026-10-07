@@ -404,6 +404,10 @@ test("matching edits keep an in-flight token retryable if its save fails", () =>
   (input.props.onBlur as () => void)();
   input = tokenInput(tab.render());
   (input.props.onChange as (event: { target: { value: string } }) => void)({
+    target: { value: "hf_other" },
+  });
+  input = tokenInput(tab.render());
+  (input.props.onChange as (event: { target: { value: string } }) => void)({
     target: { value: "hf_local " },
   });
   input = tokenInput(tab.render());
