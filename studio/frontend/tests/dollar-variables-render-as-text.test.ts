@@ -181,6 +181,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The result is $velocity(t) = distance $", ["velocity(t) = distance "]],
   ["The probability is $softmax(x) $", ["softmax(x) "]],
   ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
+  ["Segments $AB, CD $are congruent.", ["AB, CD "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],

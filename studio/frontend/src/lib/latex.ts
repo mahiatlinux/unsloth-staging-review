@@ -50,6 +50,7 @@ const WORD_MATH_BODY_RE =
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
+const COMMA_MATH_BODY_RE = /^(?:[A-Z]{1,2}\s*,\s*)+[A-Z]{1,2}\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})/g;
@@ -71,7 +72,8 @@ function looksLikeVariableProse(body: string, prefix: string): boolean {
   if (
     WORD_MATH_BODY_RE.test(body) ||
     OPERATOR_MATH_BODY_RE.test(body) ||
-    FUNCTION_MATH_BODY_RE.test(body)
+    FUNCTION_MATH_BODY_RE.test(body) ||
+    COMMA_MATH_BODY_RE.test(body)
   ) {
     return false;
   }
