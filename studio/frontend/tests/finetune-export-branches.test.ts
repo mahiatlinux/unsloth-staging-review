@@ -75,6 +75,11 @@ function loadBuilder(chats: Record<string, StoredMessage[]>) {
     listStoredChatThreads: async () =>
       Object.keys(chats).map((id) => ({ id })),
     listStoredChatMessages: async (id: string) => chats[id],
+    getStoredChatThread: async () => undefined,
+    settleThreadScopedSettingsForCopy: async () => {},
+    flushPendingChatSettings: async () => {},
+    getChatSettings: async () => ({}),
+    resolveChatInstructions: async () => "",
     ...liveThreadHead,
     orderByParentChain,
     unwrapPastedTextContent,

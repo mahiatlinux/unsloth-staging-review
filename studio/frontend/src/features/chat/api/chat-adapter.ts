@@ -2250,24 +2250,34 @@ async function resolveUseAdapter(
 async function resolveProjectInstructions(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  strictProjectRead = false,
+  projectInstructionsCache?: Map<string, Promise<string>>,
 ): Promise<string> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
   if (!projectId) {
     return "";
   }
 
-  const project = await getStoredChatProject(projectId).catch(() => null);
-  if (!project || project.archived) {
-    return "";
+  let instructionsRequest = projectInstructionsCache?.get(projectId);
+  if (!instructionsRequest) {
+    instructionsRequest = getStoredChatProject(projectId).then((project) => {
+      if (!project || project.archived) return "";
+      return project.instructions?.trim() ?? "";
+    });
+    projectInstructionsCache?.set(projectId, instructionsRequest);
   }
-  return project.instructions?.trim() ?? "";
+  return strictProjectRead
+    ? instructionsRequest
+    : instructionsRequest.catch(() => "");
 }
 
-async function resolveChatInstructions(
+export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  strictProjectRead = false,
+  projectInstructionsCache?: Map<string, Promise<string>>,
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2279,6 +2289,8 @@ async function resolveChatInstructions(
   const projectInstructions = await resolveProjectInstructions(
     threadId,
     readThreadRecord,
+    strictProjectRead,
+    projectInstructionsCache,
   );
   return [
     projectInstructions
@@ -4739,6 +4751,7 @@ export function createOpenAIStreamAdapter(
                   researchRun: run,
                   serverManaged: true,
                   serverRevision: run.lastEventSeq,
+                  resolvedInstructions: researchInstructions,
                 },
               },
             };
@@ -5200,12 +5213,15 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
-        params.systemPrompt,
-        params.systemVariables,
-        readThreadRecord,
-      );
+      const combinedSystemPrompt =
+        continuation?.resolvedInstructions ??
+        (await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+          readThreadRecord,
+        ));
+      let effectiveResolvedInstructions = combinedSystemPrompt;
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -5497,6 +5513,9 @@ export function createOpenAIStreamAdapter(
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
+            metadata: {
+              custom: { resolvedInstructions: combinedSystemPrompt },
+            },
           };
 
           const result = await generateAudio(
@@ -5527,6 +5546,9 @@ export function createOpenAIStreamAdapter(
                 text: `<audio-player src="${audioUrl}" />`,
               },
             ],
+            metadata: {
+              custom: { resolvedInstructions: combinedSystemPrompt },
+            },
           };
         } catch (err) {
           if (!runSignal.aborted) {
@@ -5705,6 +5727,7 @@ export function createOpenAIStreamAdapter(
           ),
         },
         ...generationCustom(),
+        resolvedInstructions: effectiveResolvedInstructions,
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
@@ -6472,6 +6495,7 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
+              studio_resolved_instructions: combinedSystemPrompt,
               ...(providerSupportsPreserveThinking(externalProvider?.providerType)
                 ? { preserve_thinking: runtime.preserveThinking }
                 : {}),
@@ -6682,6 +6706,7 @@ export function createOpenAIStreamAdapter(
           return {
             model: params.checkpoint,
             messages: outboundMessages,
+            studio_resolved_instructions: combinedSystemPrompt,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
             ...studioToolHistoryRequestFieldsAfterReplay(
@@ -6873,6 +6898,7 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        resolvedInstructions: combinedSystemPrompt,
                       },
                       runSignal,
                     );
@@ -6978,6 +7004,10 @@ export function createOpenAIStreamAdapter(
             const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
+              if (typeof chunk._resolvedInstructions === "string") {
+                effectiveResolvedInstructions = chunk._resolvedInstructions;
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -8474,6 +8504,7 @@ export function createOpenAIStreamAdapter(
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
               ...generationCustom(),
+              resolvedInstructions: effectiveResolvedInstructions,
             },
           },
         };
@@ -8649,6 +8680,7 @@ export function createOpenAIStreamAdapter(
                 },
                 timing: partialTiming,
                 ...generationCustom(),
+                resolvedInstructions: effectiveResolvedInstructions,
               },
             },
           };

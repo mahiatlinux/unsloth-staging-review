@@ -88,6 +88,7 @@ class CreateChatGenerationRun(BaseModel):
     userMessageId: str = Field(min_length = 1, max_length = 256)
     assistantMessageId: str = Field(min_length = 1, max_length = 256)
     requestPayload: dict[str, Any]
+    resolvedInstructions: str = ""
 
 
 def _normalized_key(key: object) -> str:
@@ -335,6 +336,7 @@ async def create_chat_generation_run(
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 request_payload = sanitized,
+                resolved_instructions = payload.resolvedInstructions,
             )
         except db.ChatGenerationConflictError as exc:
             raise HTTPException(status_code = 409, detail = str(exc)) from exc

@@ -362,6 +362,7 @@ def canonical_request(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    resolved_instructions: str = "",
 ) -> tuple[str, str]:
     request_json = json.dumps(
         request_payload,
@@ -374,6 +375,7 @@ def canonical_request(
             "threadId": thread_id,
             "userMessageId": user_message_id,
             "assistantMessageId": assistant_message_id,
+            "resolvedInstructions": resolved_instructions,
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
@@ -419,8 +421,16 @@ def _append_events_locked(
     seq = int(row["last_event_seq"])
     batch_created = now_ms()
     sequences: list[int] = []
+    resolved_instructions: str | None = None
     for event in events:
         event_type, payload = event[:2]
+        if (
+            event_type == "chunk"
+            and isinstance(payload, dict)
+            and payload.get("type") == "resolved_instructions"
+            and isinstance(payload.get("content"), str)
+        ):
+            resolved_instructions = payload["content"]
         created = event[2] if len(event) == 3 else batch_created
         seq += 1
         conn.execute(
@@ -441,6 +451,8 @@ def _append_events_locked(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",
             (seq, batch_created, run_id),
         )
+    if resolved_instructions is not None:
+        _sync_assistant_resolved_instructions_locked(conn, run_id, resolved_instructions)
     return sequences
 
 
@@ -532,6 +544,30 @@ def _sync_assistant_status_locked(
     )
 
 
+def _sync_assistant_resolved_instructions_locked(
+    conn: sqlite3.Connection,
+    run_id: str,
+    resolved_instructions: str,
+) -> None:
+    row = conn.execute(
+        """SELECT r.assistant_message_id, m.metadata_json
+           FROM chat_generation_runs r
+           LEFT JOIN chat_messages m ON m.id=r.assistant_message_id
+           WHERE r.id=?""",
+        (run_id,),
+    ).fetchone()
+    if row is None or row["metadata_json"] is None:
+        return
+    metadata = _loads(row["metadata_json"], {})
+    if not isinstance(metadata, dict) or metadata.get("generationRunId") not in (None, run_id):
+        return
+    metadata["resolvedInstructions"] = resolved_instructions
+    conn.execute(
+        "UPDATE chat_messages SET metadata_json=? WHERE id=?",
+        (json.dumps(metadata, ensure_ascii = False), row["assistant_message_id"]),
+    )
+
+
 def create_run(
     *,
     run_id: str,
@@ -540,12 +576,14 @@ def create_run(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    resolved_instructions: str = "",
 ) -> tuple[dict[str, Any], bool]:
     request_json, request_hash = canonical_request(
         thread_id = thread_id,
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
         request_payload = request_payload,
+        resolved_instructions = resolved_instructions,
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
@@ -597,6 +635,7 @@ def create_run(
             "generationSeq": 0,
             "generationStatus": "queued",
             "serverManaged": True,
+            "resolvedInstructions": resolved_instructions,
         }
         assistant = conn.execute(
             "SELECT * FROM chat_messages WHERE id=?",

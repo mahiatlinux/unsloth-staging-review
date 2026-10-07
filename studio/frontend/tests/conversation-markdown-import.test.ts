@@ -28,6 +28,25 @@ test("round-trips a single exported conversation", () => {
   );
 });
 
+test("round-trips an empty system turn that clears earlier instructions", () => {
+  const messages = [
+    { role: "system", content: "Prompt A" },
+    { role: "user", content: "First question" },
+    { role: "assistant", content: "First answer" },
+    { role: "system", content: "" },
+    { role: "user", content: "Question without instructions" },
+    { role: "assistant", content: "Answer without instructions" },
+  ];
+  const exported = buildConversationMarkdown(messages, {
+    includeImportMetadata: true,
+  });
+
+  assert.deepEqual(parseConversationMarkdownMessages(exported), messages);
+  assert.deepEqual(parseConversationMarkdownDocument(exported, "chat"), [
+    { title: "chat", messages },
+  ]);
+});
+
 test("parses real combined bulk exports with titles and separators", async () => {
   const conversations = [
     { id: "first", title: "First chat" },

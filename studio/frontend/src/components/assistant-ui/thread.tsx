@@ -173,6 +173,7 @@ import {
   type ContinuationRequest,
   incompleteLabel,
   incompleteRemedy,
+  instructionContinuationFields,
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
@@ -7507,6 +7508,7 @@ function useContinuation() {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
+      ...instructionContinuationFields(metadata),
       ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({

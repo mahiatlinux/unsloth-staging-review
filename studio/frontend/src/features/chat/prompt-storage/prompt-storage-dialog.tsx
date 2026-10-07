@@ -76,9 +76,17 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import {
+  getChatSettings,
+  type PersistedInferenceParams,
+} from "../api/chat-settings-api";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  flushPendingChatSettings,
+  settleThreadScopedSettingsForCopy,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -226,37 +234,344 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
+type ChatExportInstructionContext = {
+  threads: ReadonlyMap<string, ThreadRecord>;
+  loadDefaults: (() => Promise<PersistedInferenceParams | undefined>) | undefined;
+  projectInstructions: Map<string, Promise<string>>;
+};
+
 async function loadConversationMessages(
   threadId: string,
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
+    instructionContext?: ChatExportInstructionContext;
   } = {},
 ) {
+  const segments = await loadConversationMessageSegments(threadId, options);
+  if (!segments) return null;
+  return options.includeInstructions === false
+    ? segments.flatMap((segment) => segment.messages)
+    : messagesFromInstructionSegments(threadId, segments);
+}
+
+async function loadConversationMessageSegments(
+  threadId: string,
+  options: {
+    emptyMessage?: string;
+    includeSiblings?: boolean;
+    includeInstructions?: boolean;
+    instructionContext?: ChatExportInstructionContext;
+  } = {},
+): Promise<ChatInstructionSegment[] | null> {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
+    instructionContext,
   } = options;
-  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  // read before awaiting storage because switching chats would target another thread.
   const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
-  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
+  // parentless messages are legacy flat threads sorted by DB createdAt; chain walking reverses them.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
-  const headId = liveBranchHeadId(liveBranch, raw);
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  const ordered = hasParentIds
+    ? (orderByParentChain(raw, {
+        includeSiblings,
+        headId: liveBranchHeadId(liveBranch, raw),
+      }) as typeof raw)
+    : raw;
+  // Imported conversations and captured assistant runs already carry the
+  // instructions that produced them. Resolve today's fallback only when the
+  // first exported epoch still needs it; otherwise a transient project/default
+  // read must not make a fully snapshotted conversation unexportable.
+  const instructions =
+    includeInstructions && needsFallbackInstructions(ordered)
+      ? await chatInstructionsTurn(threadId, instructionContext)
+      : [];
+  return includeInstructions
+    ? partitionByRunInstructions(ordered, instructionText(instructions))
+    : [{ instructions: "", messages: ordered }];
 }
 
-// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+function hasStoredSystemTurn(messages: MessageRecord[]): boolean {
+  return messages.some((message) => message.role === "system");
+}
+
+function storedSystemTurns(messages: MessageRecord[]): MessageRecord[] {
+  return messages.filter((message) => message.role === "system");
+}
+
+async function chatInstructionsTurn(
+  threadId: string,
+  context?: ChatExportInstructionContext,
+): Promise<MessageRecord[]> {
+  if (!context) await settleThreadScopedSettingsForCopy(threadId);
+  const thread =
+    context?.threads.get(threadId) ?? (await getStoredChatThread(threadId));
+  if (!thread) return [];
+  let systemPrompt = thread.settings?.systemPrompt;
+  let systemVariables = thread.settings?.systemVariables;
+  if (systemPrompt === undefined || systemVariables === undefined) {
+    let defaults: PersistedInferenceParams | undefined;
+    if (context) {
+      defaults = await context.loadDefaults?.();
+    } else {
+      await flushPendingChatSettings();
+      defaults = (await getChatSettings()).inferenceParams;
+    }
+    systemPrompt ??= defaults?.systemPrompt;
+    systemVariables ??= defaults?.systemVariables;
+  }
+  const text = await resolveChatInstructions(
+    threadId,
+    systemPrompt,
+    systemVariables,
+    async () => thread,
+    true,
+    context?.projectInstructions,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
+}
+
+type ChatInstructionSegment = {
+  instructions: string;
+  messages: MessageRecord[];
+};
+
+function capturedRunInstructions(message: MessageRecord): string | undefined {
+  if (message.role !== "assistant") return undefined;
+  const value = message.metadata?.resolvedInstructions;
+  return typeof value === "string" ? value : undefined;
+}
+
+function needsFallbackInstructions(messages: MessageRecord[]): boolean {
+  if (hasStoredSystemTurn(messages)) return false;
+  const firstAssistant = messages.find((message) => message.role === "assistant");
+  return !firstAssistant || capturedRunInstructions(firstAssistant) === undefined;
+}
+
+function partitionByRunInstructions(
+  messages: MessageRecord[],
+  fallbackInstructions: string,
+): ChatInstructionSegment[] {
+  const segments: ChatInstructionSegment[] = [];
+  let instructions = fallbackInstructions;
+  let completed: MessageRecord[] = [];
+  let pending: MessageRecord[] = [];
+
+  for (const message of messages) {
+    if (
+      message.role === "system" &&
+      completed.some((item) => item.role === "assistant")
+    ) {
+      completed.push(...pending);
+      pending = [];
+      segments.push({ instructions, messages: completed });
+      completed = [];
+      // A stored system turn carries the next epoch itself, including an
+      // intentionally empty turn exported as a prompt-clear marker.
+      instructions = "";
+    }
+    pending.push(message);
+    if (message.role !== "assistant") continue;
+    const captured = capturedRunInstructions(message);
+    const nextInstructions = captured ?? instructions;
+    if (
+      nextInstructions !== instructions &&
+      completed.some((item) => item.role === "assistant")
+    ) {
+      segments.push({ instructions, messages: completed });
+      completed = [];
+    }
+    instructions = nextInstructions;
+    completed.push(...pending);
+    pending = [];
+  }
+
+  completed.push(...pending);
+  if (completed.length > 0) segments.push({ instructions, messages: completed });
+  return segments;
+}
+
+function instructionText(instructions: MessageRecord[]): string {
+  return instructions.length > 0
+    ? contentBlocksToText(instructions[0]?.content)
+    : "";
+}
+
+function systemInstructionTurn(
+  threadId: string,
+  text: string,
+  segment: number,
+  createdAt: number,
+): MessageRecord {
+  return {
+    id: `${threadId}-instructions-${segment}`,
+    threadId,
+    role: "system",
+    content: [{ type: "text", text }],
+    createdAt,
+  };
+}
+
+function fineTuneContextTurn(
+  threadId: string,
+  messages: MessageRecord[],
+  segment: number,
+): MessageRecord | null {
+  const text = fineTuneContextText(messages);
+  if (!text) return null;
+  return {
+    id: `${threadId}-training-context-${segment}`,
+    threadId,
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `<conversation_context>\n${text}\n</conversation_context>`,
+      },
+    ],
+    createdAt: messages[0]?.createdAt ?? Date.now(),
+  };
+}
+
+function fineTuneContextText(messages: MessageRecord[]): string {
+  const turns = messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") return [];
+    const content = messageToPlainText(message);
+    if (!content) return [];
+    const role = message.role === "user" ? "User" : "Assistant";
+    return [`${role}: ${content}`];
+  });
+  return turns.join("\n\n");
+}
+
+function messagesFromInstructionSegments(
+  threadId: string,
+  segments: ChatInstructionSegment[],
+): MessageRecord[] {
+  return segments.flatMap((segment, index) => [
+    ...((segment.instructions ||
+      (index > 0 && !hasStoredSystemTurn(segment.messages)))
+      ? [
+          systemInstructionTurn(
+            threadId,
+            segment.instructions,
+            index,
+            segment.messages[0]?.createdAt ?? Date.now(),
+          ),
+        ]
+      : []),
+    ...segment.messages,
+  ]);
+}
+
+function trainingEpochMessages(
+  threadId: string,
+  segments: ChatInstructionSegment[],
+): MessageRecord[][] {
+  const priorMessages: MessageRecord[] = [];
+  return segments.map((segment, index) => {
+    const context = exportTrainingContextTurn(threadId, priorMessages, index);
+    const priorSystems = hasStoredSystemTurn(segment.messages)
+      ? []
+      : storedSystemTurns(priorMessages);
+    const messages = [
+      ...(segment.instructions
+        ? [
+            systemInstructionTurn(
+              threadId,
+              segment.instructions,
+              index,
+              segment.messages[0]?.createdAt ?? Date.now(),
+            ),
+          ]
+        : []),
+      ...priorSystems,
+      ...(context ? [context] : []),
+      ...segment.messages,
+    ];
+    priorMessages.push(...segment.messages);
+    return messages;
+  });
+}
+
+function exportTrainingContextTurn(
+  threadId: string,
+  messages: MessageRecord[],
+  segment: number,
+): MessageRecord | null {
+  const turns = messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") return [];
+    const content = messageToText(message).trim();
+    if (!content) return [];
+    const role = message.role === "user" ? "User" : "Assistant";
+    return [`${role}: ${content}`];
+  });
+  if (turns.length === 0) return null;
+  return {
+    id: `${threadId}-export-context-${segment}`,
+    threadId,
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `<conversation_context>\n${turns.join("\n\n")}\n</conversation_context>`,
+      },
+    ],
+    createdAt: messages[0]?.createdAt ?? Date.now(),
+  };
+}
+
+async function chatExportInstructionContext(
+  threadIds: readonly string[],
+): Promise<ChatExportInstructionContext> {
+  await Promise.all(threadIds.map(settleThreadScopedSettingsForCopy));
+  const threads = await listStoredChatThreads({ includeArchived: true });
+  const wanted = new Set(threadIds);
+  const selectedThreads = threads.filter((thread) => wanted.has(thread.id));
+  const needsDefaults = selectedThreads.some(
+    (thread) =>
+      thread.settings?.systemPrompt === undefined ||
+      thread.settings?.systemVariables === undefined,
+  );
+  if (needsDefaults) await flushPendingChatSettings();
+  let defaultsPromise: Promise<PersistedInferenceParams | undefined> | undefined;
+  return {
+    threads: new Map(
+      selectedThreads.map((thread) => [thread.id, thread]),
+    ),
+    loadDefaults: needsDefaults
+      ? () =>
+          (defaultsPromise ??= getChatSettings().then(
+            (settings) => settings.inferenceParams,
+          ))
+      : undefined,
+    projectInstructions: new Map(),
+  };
+}
+
+// use the visible branch's newest saved turn because an unstored reply may replace the newest leaf.
 function liveBranchHeadId(
   liveBranch: string[] | null,
   raw: Array<{ id: string }>,
 ): string | null | undefined {
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  // treat an empty list as no opinion because chat switching sets remoteId before history reloads.
   if (!liveBranch?.length) return undefined;
   const storedIds = new Set(raw.map((m) => m.id));
   return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
@@ -419,29 +734,39 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
   if (!hasNonText) {
     const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
-    return text ? [{ role: role as "user" | "system", content: text }] : [];
+    return text || role === "system"
+      ? [{ role: role as "user" | "system", content: text }]
+      : [];
   }
   return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
 }
 
 // ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId, {
+  const segments = await loadConversationMessageSegments(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
   });
-  if (!messages) return;
+  if (!segments) return;
 
-  const conversations: Array<{ from: string; value: string }> = [];
-  for (const msg of messages) {
-    const role = msg.role as string;
-    const from = role === "user" ? "human" : role === "system" ? "system" : "gpt";
-    const value = messageToText(msg);
-    if (value.trim()) conversations.push({ from, value });
-  }
+  const records = trainingEpochMessages(threadId, segments).flatMap(
+    (messages) => {
+      const conversations: Array<{ from: string; value: string }> = [];
+      for (const msg of messages) {
+        const role = msg.role as string;
+        const from =
+          role === "user" ? "human" : role === "system" ? "system" : "gpt";
+        const value = messageToText(msg);
+        if (value.trim()) conversations.push({ from, value });
+      }
+      return conversations.length > 0
+        ? [JSON.stringify({ conversations })]
+        : [];
+    },
+  );
 
-  if (conversations.length === 0) { toast.info("No exportable content."); return; }
+  if (records.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    ndjsonBody([JSON.stringify({ conversations })]),
+    ndjsonBody(records),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -460,10 +785,30 @@ async function exportConversationJsonl(
   threadId: string,
   layout: ConversationJsonlLayout,
 ): Promise<void> {
+  if (layout === "training") {
+    const segments = await loadConversationMessageSegments(threadId, {
+      includeSiblings: exportFormatIncludesSiblings("jsonl-raw"),
+    });
+    if (!segments) return;
+    const records = trainingEpochMessages(threadId, segments).flatMap(
+      (messages) => {
+        const oaiMsgs = messages.flatMap((msg) => messageToOpenAI(msg));
+        return oaiMsgs.length > 0
+          ? [conversationJsonlBody(oaiMsgs, "training")]
+          : [];
+      },
+    );
+    if (records.length === 0) { toast.info("No exportable content."); return; }
+    await downloadBlob(
+      ndjsonBody(records),
+      `conversation-${exportTs()}.jsonl`,
+      "application/x-ndjson",
+    );
+    return;
+  }
+
   const messages = await loadConversationMessages(threadId, {
-    includeSiblings: exportFormatIncludesSiblings(
-      layout === "training" ? "jsonl-raw" : "jsonl-messages",
-    ),
+    includeSiblings: exportFormatIncludesSiblings("jsonl-messages"),
   });
   if (!messages) return;
 
@@ -471,7 +816,7 @@ async function exportConversationJsonl(
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
     ndjsonBody([conversationJsonlBody(oaiMsgs, layout)]),
-    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
+    `conversation-messages-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -483,7 +828,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   const rows = ["role,content"];
   for (const msg of messages) {
     const content = messageToText(msg);
-    if (!content.trim()) continue;
+    if (!content.trim() && msg.role !== "system") continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
 
@@ -495,13 +840,17 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
-// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+// markdown exports use the displayed branch while callers retain their empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: {
+    emptyMessage?: string;
+    includeInstructions?: boolean;
+    instructionContext?: ChatExportInstructionContext;
+  } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
-/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+/** matches downloaded markdown for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
     loadMessages: loadDisplayedBranchMessages,
@@ -516,7 +865,7 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   notifyNoContent: () => toast.info("No exportable content."),
 });
 
-// "skipped" is an empty conversation, which has already said so and must not stop the rest of a pair; "failed" has toasted a reason, so stop there rather than stack a second one.
+// "skipped" continues a pair after an empty-conversation notice; "failed" stops to avoid a second toast.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
 
 async function saveConversationAsProjectSource(
@@ -526,12 +875,13 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      // As the markdown exporter does: a project source is retrieved back into context, so the renderer's tokens must not be saved as prose.
+      // project sources return to context, so do not save renderer tokens as prose.
       content: stripSearchImageTokens(messageToMarkdown(msg)),
     })),
   );
@@ -612,40 +962,74 @@ export const COMBINED_EXPORT_FORMATS_LIST = EXPORT_FORMATS_LIST.filter(
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
+  instructionContext?: ChatExportInstructionContext,
 ): Promise<string | null> {
+  if (format === "jsonl-raw" || format === "sharegpt") {
+    const segments = await loadConversationMessageSegments(threadId, {
+      includeSiblings: exportFormatIncludesSiblings(format),
+      instructionContext,
+    });
+    if (!segments) return null;
+    const epochs = trainingEpochMessages(threadId, segments);
+    if (format === "jsonl-raw") {
+      const records = epochs.flatMap((messages) => {
+        const oaiMsgs = messages.flatMap((msg) => messageToOpenAI(msg));
+        return oaiMsgs.length > 0
+          ? [conversationJsonlBody(oaiMsgs, "training")]
+          : [];
+      });
+      return records.length > 0 ? records.join("\n") : null;
+    }
+    const records = epochs.flatMap((messages) => {
+      const conversations: Array<{ from: string; value: string }> = [];
+      for (const msg of messages) {
+        const role = msg.role as string;
+        const value = messageToText(msg);
+        if (value.trim()) {
+          conversations.push({
+            from:
+              role === "user"
+                ? "human"
+                : role === "system"
+                  ? "system"
+                  : "gpt",
+            value,
+          });
+        }
+      }
+      return conversations.length > 0
+        ? [JSON.stringify({ conversations })]
+        : [];
+    });
+    return records.length > 0 ? records.join("\n") : null;
+  }
+
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings(format),
+    instructionContext,
   });
   if (!messages) return null;
 
-  if (format === "jsonl-raw" || format === "jsonl-messages") {
+  if (format === "jsonl-messages") {
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
-    return conversationJsonlBody(
-      oaiMsgs,
-      format === "jsonl-messages" ? "messages" : "training",
-    );
-  }
-
-  if (format === "sharegpt") {
-    const conversations: Array<{ from: string; value: string }> = [];
-    for (const msg of messages) {
-      const role = msg.role as string;
-      const value = messageToText(msg);
-      if (value.trim()) conversations.push({ from: role === "user" ? "human" : role === "system" ? "system" : "gpt", value });
-    }
-    if (conversations.length === 0) return null;
-    return JSON.stringify({ conversations });
+    return conversationJsonlBody(oaiMsgs, "messages");
   }
 
   if (format === "markdown") {
-    return await buildConversationMarkdownForThread(threadId);
+    return buildConversationMarkdown(
+      messages.map((message) => ({
+        role: String(message.role ?? ""),
+        content: stripSearchImageTokens(messageToMarkdown(message)),
+      })),
+      { includeImportMetadata: true },
+    );
   }
 
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
-    if (!content.trim()) continue;
+    if (!content.trim() && msg.role !== "system") continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
   return rows.length > 0 ? rows.join("\n") : null;
@@ -677,12 +1061,13 @@ export async function exportBulkConversationsMerged(
     toast.info("Message JSONL is available per chat.");
     return;
   }
+  const instructionContext = await chatExportInstructionContext(threadIds);
 
   if (format === "markdown" && threadIds.length > 1) {
     const conversations: Array<{ id: string; title: string }> = [];
     const pairs = new Map<string, ThreadRecord[]>();
     for (const id of threadIds) {
-      const thread = await getStoredChatThread(id);
+      const thread = instructionContext.threads.get(id);
       conversations.push({ id, title: thread?.title?.trim() || id });
       if (thread?.pairId) {
         const halves = pairs.get(thread.pairId) ?? [];
@@ -702,9 +1087,14 @@ export async function exportBulkConversationsMerged(
     for (const conversation of conversations) {
       conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
     }
+    const buildMarkdown = createConversationMarkdownBuilder<MessageRecord>({
+      loadMessages: (id) =>
+        loadDisplayedBranchMessages(id, { instructionContext }),
+      renderMessage: messageToMarkdown,
+    });
     const body = await buildNamedConversationsMarkdown(
       conversations,
-      buildConversationMarkdownForThread,
+      buildMarkdown,
     );
     if (!body) { toast.info("No exportable content."); return; }
     await downloadBlob(
@@ -719,7 +1109,7 @@ export async function exportBulkConversationsMerged(
   const header = csvHeader(format);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format);
+    const content = await buildThreadContent(id, format, instructionContext);
     if (content) parts.push(content);
   }
 
@@ -749,9 +1139,10 @@ export async function exportBulkConversationsSeparate(
   const ext = exportExt(format);
   const header = csvHeader(format);
   const files: Record<string, Uint8Array> = {};
+  const instructionContext = await chatExportInstructionContext(threadIds);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format);
+    const content = await buildThreadContent(id, format, instructionContext);
     if (!content) continue;
     const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
@@ -908,6 +1299,7 @@ const SHAREGPT_FROM: Record<FineTuneMessage["role"], string> = {
 function turnsToFineTuneLines(
   turns: FineTuneMessage[],
   format: FineTuneFormat,
+  priorContext = "",
 ): string[] {
   if (format === "sharegpt") {
     return [
@@ -921,7 +1313,7 @@ function turnsToFineTuneLines(
   }
   if (format === "alpaca") {
     const lines: string[] = [];
-    const context: string[] = [];
+    const context: string[] = priorContext ? [priorContext] : [];
     let system = "";
     let pendingUser: string | null = null;
     for (const t of turns) {
@@ -952,35 +1344,80 @@ function turnsToFineTuneLines(
   return [JSON.stringify({ messages: turns })];
 }
 
-/** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
 export async function buildFineTuneJsonl(
   format: FineTuneFormat = "openai",
 ): Promise<FineTuneExportResult> {
   const threads = await listStoredChatThreads({ includeArchived: false });
   const ids = [...new Set(threads.map((t) => t.id))];
+  const instructionContext = await chatExportInstructionContext(ids);
   const lines: string[] = [];
   let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
     const raw = await listStoredChatMessages(id);
+    if (raw.length === 0) {
+      skipped += 1;
+      continue;
+    }
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
-    // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
+    // keep one parent chain because sibling retries would corrupt the training targets.
     const ordered = hasParentIds
       ? (orderByParentChain(raw, {
           includeSiblings: false,
           headId: liveBranchHeadId(liveBranch, raw),
         }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
-    const converted = turns ? turnsToFineTuneLines(turns, format) : [];
-    if (converted.length === 0) {
+    const instructions = needsFallbackInstructions(ordered)
+      ? await chatInstructionsTurn(id, instructionContext)
+      : [];
+    let convertedConversations = 0;
+    const converted: string[] = [];
+    const segments = partitionByRunInstructions(
+      ordered,
+      instructionText(instructions),
+    );
+    const priorMessages: MessageRecord[] = [];
+    for (const [index, segment] of segments.entries()) {
+      const priorContext = fineTuneContextText(priorMessages);
+      const priorSystems = hasStoredSystemTurn(segment.messages)
+        ? []
+        : storedSystemTurns(priorMessages);
+      const context =
+        format === "alpaca"
+          ? null
+          : fineTuneContextTurn(id, priorMessages, index);
+      const messages = [
+        ...(segment.instructions
+          ? [
+              systemInstructionTurn(
+                id,
+                segment.instructions,
+                index,
+                segment.messages[0]?.createdAt ?? Date.now(),
+              ),
+            ]
+          : []),
+        ...priorSystems,
+        ...(context ? [context] : []),
+        ...segment.messages,
+      ];
+      const turns = messagesToFineTuneTurns(messages);
+      const segmentLines = turns
+        ? turnsToFineTuneLines(turns, format, priorContext)
+        : [];
+      priorMessages.push(...segment.messages);
+      if (segmentLines.length === 0) continue;
+      convertedConversations += 1;
+      converted.push(...segmentLines);
+    }
+    if (convertedConversations === 0) {
       skipped += 1;
       continue;
     }
-    conversations += 1;
+    conversations += convertedConversations;
     lines.push(...converted);
   }
   return { lines, conversations, skipped };

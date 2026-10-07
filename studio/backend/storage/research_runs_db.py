@@ -145,6 +145,7 @@ def _bind_assistant_locked(
     assistant_message_id: str | None,
     plan_revision: int,
     created: int,
+    resolved_instructions: str,
 ) -> None:
     if not assistant_message_id:
         return
@@ -156,6 +157,7 @@ def _bind_assistant_locked(
         "researchStatus": "planning",
         "researchPlanRevision": plan_revision,
         "serverManaged": True,
+        "resolvedInstructions": resolved_instructions,
     }
     if message is None:
         conn.execute(
@@ -255,6 +257,7 @@ def create_run(
             assistant_message_id = assistant_message_id,
             plan_revision = 0,
             created = created,
+            resolved_instructions = str(config.get("instructions") or ""),
         )
         conn.execute(
             """
@@ -300,7 +303,12 @@ def _unbind_assistant_locked(
     metadata = _loads(row["metadata_json"], {})
     if not isinstance(metadata, dict):
         return
-    for key in ("researchRunId", "researchStatus", "researchPlanRevision", "serverManaged"):
+    for key in (
+        "researchRunId",
+        "researchStatus",
+        "researchPlanRevision",
+        "serverManaged",
+    ):
         metadata.pop(key, None)
     conn.execute(
         "UPDATE chat_messages SET metadata_json=? WHERE id=?",
@@ -375,6 +383,7 @@ def rebind_cancelled(
             assistant_message_id = assistant_message_id,
             plan_revision = revision,
             created = now,
+            resolved_instructions = str(config.get("instructions") or ""),
         )
         # retry_count is the attempt epoch every event is stamped with, and a new question is a new attempt: without
         # the bump its report would carry the stopped question's reasoning, since get_reasoning_text joins every event
@@ -615,11 +624,15 @@ def create_and_bind_terminal_fallback(
                     "researchRunId": run_id,
                 }
             )
+        config = _loads(run["config_json"], {})
         metadata = {
             "researchRunId": run_id,
             "researchStatus": status,
             "researchPlanRevision": int(run["plan_revision"]),
             "serverManaged": True,
+            "resolvedInstructions": str(
+                config.get("instructions") or "" if isinstance(config, dict) else ""
+            ),
         }
         created = now_ms()
         conn.execute(

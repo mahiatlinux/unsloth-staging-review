@@ -139,7 +139,7 @@ function messagesFromNodes(
     const contentEnd = next ? next.start - 2 : end;
     const content = text.slice(contentStart, contentEnd);
     const value = next ? content : content.replace(/\n$/, "");
-    return value.trim() ? [{ role, content: value }] : [];
+    return value.trim() || role === "system" ? [{ role, content: value }] : [];
   });
 }
 
