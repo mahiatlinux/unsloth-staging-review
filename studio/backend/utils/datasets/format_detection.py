@@ -109,6 +109,11 @@ def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> di
         if inspected and inspected["format"] in {"sharegpt", "chatml"}:
             structural_candidates.append(inspected)
 
+    if {"prompt", "completion"} <= column_name_set and any(
+        candidate["chat_column"] in ("prompt", "completion") for candidate in structural_candidates
+    ):
+        return unknown_exact
+
     trace_candidates = [
         candidate
         for candidate in structural_candidates
