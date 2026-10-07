@@ -39,16 +39,19 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*[^}\s]*\})[\w\s.,;:!?'"()/*~`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
-const TRAILING_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|\{(?:#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?::?[-+=?]|[#%]{1,2}|\/{1,2})[^}\s]*|\^{1,2}|,{1,2}|@[A-Za-z])?)\})[\w\s.,;:!?'"()/*~`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+const TRAILING_SHELL_NAME_RE =
+  /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
 const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
+const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
-const BRACED_PARAMETER_RE = /\$\{[A-Za-z_]\w*[^}\r\n]*\}/g;
+const BRACED_PARAMETER_RE =
+  /\$\{(?:#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?::?[-+=?]|[#%]{1,2}|\/{1,2})[^}\s]*|\^{1,2}|,{1,2}|@[A-Za-z])?)\}/g;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
@@ -58,7 +61,11 @@ function looksLikeVariableProse(body: string): boolean {
     return false;
   }
   if (TRAILING_SHELL_PATH_RE.test(body)) return true;
-  if (WORD_MATH_BODY_RE.test(body) || OPERATOR_MATH_BODY_RE.test(body)) {
+  if (
+    WORD_MATH_BODY_RE.test(body) ||
+    OPERATOR_MATH_BODY_RE.test(body) ||
+    FUNCTION_MATH_BODY_RE.test(body)
+  ) {
     return false;
   }
   return (

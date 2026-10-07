@@ -65,6 +65,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["Run echo $PATH $HOME", ["$PATH $HOME"]],
   ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
   ["cp $HOME/src $PATH/bin", ["$HOME/src", "$PATH/bin"]],
+  ["cp $src $dst", ["$src", "$dst"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -152,12 +153,22 @@ const MATH_REPLIES: Array<[string, string[]]> = [
     ["velocity = distance / time "],
   ],
   ["The result is $velocity(t) = distance $", ["velocity(t) = distance "]],
+  ["The probability is $softmax(x) $", ["softmax(x) "]],
+  ["Product ${a*b}$.", ["{a*b}"]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 
 test("real maths still renders", () => {
   for (const [source, expected] of MATH_REPLIES) {
     assert.deepEqual(renderedMath(render(source)), expected, source);
+  }
+});
+
+test("braced maths is not rewritten as shell parameter markup", () => {
+  for (const source of ["${a*b}$", "\\(${a*b}\\)"]) {
+    const preprocessed = preprocessLaTeX(source);
+    assert.ok(preprocessed.includes("a*b"), source);
+    assert.ok(!preprocessed.includes("&#42;"), source);
   }
 });
 
