@@ -236,7 +236,7 @@ function contentBlocksToText(content: unknown): string {
 
 type ChatExportInstructionContext = {
   threads: ReadonlyMap<string, ThreadRecord>;
-  defaults: PersistedInferenceParams | undefined;
+  loadDefaults: (() => Promise<PersistedInferenceParams | undefined>) | undefined;
   projectInstructions: Map<string, Promise<string>>;
 };
 
@@ -257,12 +257,13 @@ async function loadConversationMessages(
   } = options;
   // read before awaiting storage because switching chats would target another thread.
   const liveBranch = liveThreadBranch(threadId);
-  const [raw, instructions] = await Promise.all([
-    listStoredChatMessages(threadId),
-    includeInstructions
-      ? chatInstructionsTurn(threadId, instructionContext)
-      : [],
-  ]);
+  const raw = await listStoredChatMessages(threadId);
+  // Imported conversations already carry their own system turn. Treat it as
+  // the initial instruction snapshot instead of consulting today's defaults.
+  const instructions =
+    includeInstructions && !hasStoredSystemTurn(raw)
+      ? await chatInstructionsTurn(threadId, instructionContext)
+      : [];
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
@@ -280,6 +281,10 @@ async function loadConversationMessages(
     : ordered;
 }
 
+function hasStoredSystemTurn(messages: MessageRecord[]): boolean {
+  return messages.some((message) => message.role === "system");
+}
+
 async function chatInstructionsTurn(
   threadId: string,
   context?: ChatExportInstructionContext,
@@ -291,8 +296,10 @@ async function chatInstructionsTurn(
   let systemPrompt = thread.settings?.systemPrompt;
   let systemVariables = thread.settings?.systemVariables;
   if (systemPrompt === undefined || systemVariables === undefined) {
-    let defaults = context?.defaults;
-    if (!context) {
+    let defaults: PersistedInferenceParams | undefined;
+    if (context) {
+      defaults = await context.loadDefaults?.();
+    } else {
       await flushPendingChatSettings();
       defaults = (await getChatSettings()).inferenceParams;
     }
@@ -435,19 +442,26 @@ async function chatExportInstructionContext(
   threadIds: readonly string[],
 ): Promise<ChatExportInstructionContext> {
   await Promise.all(threadIds.map(settleThreadScopedSettingsForCopy));
-  await flushPendingChatSettings();
-  const [threads, settings] = await Promise.all([
-    listStoredChatThreads({ includeArchived: true }),
-    getChatSettings(),
-  ]);
+  const threads = await listStoredChatThreads({ includeArchived: true });
   const wanted = new Set(threadIds);
+  const selectedThreads = threads.filter((thread) => wanted.has(thread.id));
+  const needsDefaults = selectedThreads.some(
+    (thread) =>
+      thread.settings?.systemPrompt === undefined ||
+      thread.settings?.systemVariables === undefined,
+  );
+  if (needsDefaults) await flushPendingChatSettings();
+  let defaultsPromise: Promise<PersistedInferenceParams | undefined> | undefined;
   return {
     threads: new Map(
-      threads
-        .filter((thread) => wanted.has(thread.id))
-        .map((thread) => [thread.id, thread]),
+      selectedThreads.map((thread) => [thread.id, thread]),
     ),
-    defaults: settings.inferenceParams,
+    loadDefaults: needsDefaults
+      ? () =>
+          (defaultsPromise ??= getChatSettings().then(
+            (settings) => settings.inferenceParams,
+          ))
+      : undefined,
     projectInstructions: new Map(),
   };
 }
@@ -1184,10 +1198,10 @@ export async function buildFineTuneJsonl(
   let skipped = 0;
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
-    const [raw, instructions] = await Promise.all([
-      listStoredChatMessages(id),
-      chatInstructionsTurn(id, instructionContext),
-    ]);
+    const raw = await listStoredChatMessages(id);
+    const instructions = hasStoredSystemTurn(raw)
+      ? []
+      : await chatInstructionsTurn(id, instructionContext);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );

@@ -341,6 +341,68 @@ test("a chat without a settings snapshot inherits the global system prompt", asy
   });
 });
 
+test("an imported system turn is not replaced or duplicated by current defaults", async () => {
+  const downloads: string[] = [];
+  let settingsReads = 0;
+  const imported: ThreadRecord = {
+    id: "imported",
+    title: "Imported",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 4,
+  };
+  const messages = [
+    {
+      id: "imported-system",
+      threadId: imported.id,
+      parentId: null,
+      role: "system",
+      content: [{ type: "text", text: "Original imported prompt" }],
+      createdAt: 10,
+    },
+    {
+      id: "imported-user",
+      threadId: imported.id,
+      parentId: "imported-system",
+      role: "user",
+      content: [{ type: "text", text: "Imported question" }],
+      createdAt: 11,
+    },
+    {
+      id: "imported-assistant",
+      threadId: imported.id,
+      parentId: "imported-user",
+      role: "assistant",
+      content: [{ type: "text", text: "Imported answer" }],
+      createdAt: 12,
+    },
+  ] as MessageRecord[];
+  const exporters = loadExporters([imported.id], downloads, [], {
+    threads: [imported],
+    listStoredChatMessages: async () => messages,
+    getChatSettings: async () => {
+      settingsReads += 1;
+      return { inferenceParams: { systemPrompt: "Current global prompt" } };
+    },
+  });
+
+  await exporters.exportConversationRawJsonl(imported.id);
+  const training = await exporters.buildFineTuneJsonl("openai");
+
+  assert.deepEqual(JSON.parse(downloads[0]).messages, [
+    { role: "system", content: "Original imported prompt" },
+    { role: "user", content: "Imported question" },
+    { role: "assistant", content: "Imported answer" },
+  ]);
+  assert.deepEqual(JSON.parse(training.lines[0]).messages, [
+    { role: "system", content: "Original imported prompt" },
+    { role: "user", content: "Imported question" },
+    { role: "assistant", content: "Imported answer" },
+  ]);
+  assert.equal(settingsReads, 0);
+});
+
 test("chat exports preserve instruction changes at their run boundaries", async () => {
   const downloads: string[] = [];
   const captured: ThreadRecord = {
@@ -511,6 +573,32 @@ test("bulk training export reads inherited global prompt settings once", async (
   for (const line of result.lines) {
     assert.equal(JSON.parse(line).messages[0].content, "One shared prompt");
   }
+});
+
+test("bulk training export skips global settings for complete snapshots", async () => {
+  let settingsReads = 0;
+  const complete: ThreadRecord = {
+    id: "complete",
+    title: "Complete",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 12,
+    settings: { systemPrompt: "Saved prompt", systemVariables: "" },
+  };
+  const exporters = loadExporters([complete.id], [], [], {
+    threads: [complete],
+    getChatSettings: async () => {
+      settingsReads += 1;
+      throw new Error("global settings unavailable");
+    },
+  });
+
+  const result = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(result.lines.length, 1);
+  assert.equal(JSON.parse(result.lines[0]).messages[0].content, "Saved prompt");
+  assert.equal(settingsReads, 0);
 });
 
 test("bulk training export reads each project's instructions once", async () => {
