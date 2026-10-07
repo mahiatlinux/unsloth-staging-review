@@ -61,6 +61,8 @@ const SHELL_PID_CONTEXT_RE =
   /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/;
 const SHELL_PID_PROSE_CONTEXT_RE =
   /\b(?:Bash|shell|PID|process(?:\s+ID)?|subshell)\b[^$]*$/i;
+const SHELL_PID_PAIR_BODY_RE =
+  /^\s*(?:is|means|expands(?:\s+to)?)\b[\s\S]*\b(?:PID|process|subshell)\b/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
 const SHELL_PARAMETER_CONTEXT_RE =
@@ -761,10 +763,36 @@ function protectParameterExpansionMarkup(content: string): string {
     bracketMathRegions.push([bracketMatch.index, end]);
   }
   const skipRegions = mergeRegions(baseSkipRegions, bracketMathRegions);
+  const isDisplayMathDelimiter = (offset: number): boolean => {
+    const pairIsMath = (open: number, close: number): boolean => {
+      if (
+        content[open - 1] === "\\" ||
+        content[close - 1] === "\\" ||
+        isInRegion(open, skipRegions) ||
+        isInRegion(close, skipRegions)
+      )
+        return false;
+      const lineStart = content.lastIndexOf("\n", open - 1) + 1;
+      const prefix = content.slice(lineStart, open);
+      const body = content.slice(open + 2, close);
+      return (
+        !SHELL_PID_CONTEXT_RE.test(prefix) &&
+        !SHELL_PID_PAIR_BODY_RE.test(body)
+      );
+    };
+
+    const next = content.indexOf("$$", offset + 2);
+    if (next !== -1 && pairIsMath(offset, next)) return true;
+    const previous = content.lastIndexOf("$$", offset - 1);
+    return previous !== -1 && pairIsMath(previous, offset);
+  };
   SHELL_MARKUP_RE.lastIndex = 0;
   return content.replace(SHELL_MARKUP_RE, (match, offset) => {
     if (isInRegion(offset, skipRegions)) return match;
     if (match === "$*" && hasInlineMathCloser(content, offset, [])) {
+      return match;
+    }
+    if (match === "$_" && /^\$_\{[^}\r\n]+\}\$/.test(content.slice(offset))) {
       return match;
     }
     if (match.startsWith("${") && content[offset + match.length] === "$") {
@@ -778,6 +806,7 @@ function protectParameterExpansionMarkup(content: string): string {
         return match;
     }
     if (match === "$$") {
+      if (isDisplayMathDelimiter(offset)) return match;
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
       const prefix = content.slice(lineStart, offset);
       const next = content[offset + 2] ?? "";

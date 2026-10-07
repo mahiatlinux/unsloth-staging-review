@@ -162,6 +162,7 @@ test("shell variables never flash as maths while a reply streams", () => {
 
 const MATH_REPLIES: Array<[string, string[]]> = [
   ["$x$", ["x"]],
+  ["Water is H$_{2}$O and the term is x$_{i}$.", ["_{2}", "_{i}"]],
   ["In triangle $ABC$, the side $AB = 5$.", ["ABC", "AB = 5"]],
   ["The slope is $dy/dx$ and the line is $ax + b$.", ["dy/dx", "ax + b"]],
   ["Use $\\alpha + 1$ and $\\alpha$.", ["\\alpha + 1", "\\alpha"]],
@@ -225,6 +226,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The factors are $x y $", ["x y "]],
   ["Compute $ABC and DEF $", ["ABC and DEF "]],
   ["Compute $alpha or beta $", ["alpha or beta "]],
+  ["The process is modeled by $$ x + y $$", ["x + y"]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],
