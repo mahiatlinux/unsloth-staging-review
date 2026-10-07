@@ -41,27 +41,16 @@ const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
 const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
 const INLINE_CODE_ASTERISK_CONTEXT = "`a *b* c`\n\n";
 const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
-// The one context that is deliberately UNBALANCED, because the fact it carries is an open region
-// rather than a marker behind the boundary. remend has no other way to enter the state: `\(` is the
-// only transition into inline LaTeX. The blank line after it is load bearing twice over: it keeps
-// the opener off the tail's first line, which every line-oriented repair would otherwise read as
-// part of that line, and it puts a newline between the tail and the `(`, which is where remend's
-// backwards scan for a link destination stops. The region survives it, since remend's math scan has
-// no newline rule. There is deliberately no `\[` twin; see `hasUncarriableMath`.
+// unbalanced `\(` survives because remend's math scan crosses newlines and link scanning stops.
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-// Marked's `def` label, `[^\]]+`: a miss is committed away and Marked emits no
-// token for a label it has already seen, so err toward a false positive, which
-// only costs retention. `\n` is in the class because Marked normalises label
-// whitespace, `\\[\s\S]` because `.` rejected a label whose line ends in a
-// backslash, `u` because without it `{1,999}` bounds 499 emoji. 999 is
-// CommonMark's cap; unbounded would make every `[` an O(n) start position.
-const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
-// Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
+// match Marked labels across escaped newlines; CommonMark's 999-character cap bounds scans.
+const LINK_DEFINITION_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+// allow 999 escaped astral characters plus the opening bracket in UTF-16.
 const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 
-// Odd backslash run: `[a\]b]:` keeps its escaped `]` in the label, `[a]b]:` does not.
+// an odd backslash run keeps `]` inside the label.
 function isEscaped(text: string, index: number): boolean {
   let slashes = 0;
   for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
@@ -69,13 +58,7 @@ function isEscaped(text: string, index: number): boolean {
   }
   return slashes % 2 === 1;
 }
-// Same predicate as the regex over the whole reply (it has no anchor or lookaround), scanned from
-// the rare `]:` rather than from every `[` (unslothai/unsloth#10529). Two bounds keep each
-// terminator cheap: a match opens with `[`, and its label admits no bare `]`, so the window starts
-// after the last unescaped one. Both cursors only advance and their lookaheads are CACHED --
-// re-asking `indexOf` past -1 rescans the tail while advancing nothing, measured slower than no
-// skip at all (282ms -> 881ms), and `lastIndexOf` is unbounded backwards. Per 500k reply:
-// `]: ` 289ms -> 3.6ms, `[]: ` 338ms -> 7.1ms.
+// scan rare `]:` terminators with bounded cursors to avoid quadratic rescans.
 function hasLinkDefinition(text: string): boolean {
   let bracket = text.indexOf("[");
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
@@ -129,12 +112,9 @@ const LINK_DEFINITION_KEY_RE = new RegExp(
     `(?:[ \\t]+${LINK_DEFINITION_TITLE}|[ \\t]*\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
-// The two block shapes whose body is literal code: an opening fence, and an indent that
-// reaches column four -- four spaces, or a tab, which advances to the same column.
+// code blocks start with a fence or indentation to column four, including tabs.
 const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
-// A backtick opener may not carry a backtick in its info string, or it is not a fence at all
-// and the line is ordinary prose -- which is where a reference can still be waiting. Tilde
-// openers have no such rule, so their info string is left alone.
+// backtick fence info cannot contain backticks, while tilde fence info can.
 const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
 
 function isCodeBlock(block: string): boolean {
@@ -144,14 +124,230 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
-// Must admit exactly what `LINK_DEFINITION_RE` admits: a label resolves only when BOTH ends
-// carry it, so a narrower cap here made the wider one there unreachable (unslothai/unsloth#9540).
+const LINK_DEFINITION_LABEL_RE = new RegExp(
+  LINK_DEFINITION_LINE_RE.source,
+  `g${LINK_DEFINITION_LINE_RE.flags}`,
+);
+const BACKTICK_RUN_RE = /`+/g;
+const BLANK_LINE_RE = /\n[ \t]*\n/g;
+
+// find closers from the right so unmatched openers do not rescan the paragraph.
+function codeSpanRegions(text: string): [number, number][] {
+  const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
+  const runs: { start: number; end: number; paragraph: number }[] = [];
+  let paragraph = 0;
+  for (const match of text.matchAll(BACKTICK_RUN_RE)) {
+    while (paragraph < breaks.length && breaks[paragraph] < match.index) {
+      paragraph += 1;
+    }
+    runs.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      paragraph,
+    });
+  }
+  const closers = new Array<number>(runs.length).fill(-1);
+  const nearest = new Map<number, number>();
+  for (let i = runs.length - 1; i >= 0; i -= 1) {
+    if (i + 1 < runs.length && runs[i + 1].paragraph !== runs[i].paragraph) {
+      nearest.clear();
+    }
+    const width = runs[i].end - runs[i].start;
+    closers[i] = nearest.get(width) ?? -1;
+    nearest.set(width, i);
+  }
+  const regions: [number, number][] = [];
+  for (let i = 0; i < runs.length; i += 1) {
+    const closer = closers[i];
+    if (closer < 0 || isEscaped(text, runs[i].start)) {
+      continue;
+    }
+    regions.push([runs[i].start, runs[closer].end]);
+    i = closer;
+  }
+  return regions;
+}
+
+const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const NON_LINE_ENDING_RE = /[^\n]/g;
+
+function isAsciiControl(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code <= 0x1f || code === 0x7f;
+}
+
+function skipInlineWhitespace(text: string, from: number): number {
+  let at = from;
+  while (text[at] === " " || text[at] === "\t") {
+    at += 1;
+  }
+  if (text[at] !== "\n") {
+    return at;
+  }
+  at += 1;
+  while (text[at] === " " || text[at] === "\t") {
+    at += 1;
+  }
+  return text[at] === "\n" ? -1 : at;
+}
+
+function angleDestinationEnd(text: string, from: number): number {
+  for (let at = from + 1; at < text.length; at += 1) {
+    if (text[at] === "\n" || text[at] === "<") {
+      return -1;
+    }
+    if (text[at] === "\\") {
+      if (text[at + 1] === "\n" || text[at + 1] === undefined) {
+        return -1;
+      }
+      at += 1;
+    } else if (text[at] === ">") {
+      return at + 1;
+    }
+  }
+  return -1;
+}
+
+function bareDestinationEnd(
+  text: string,
+  from: number,
+): [number, number] {
+  let depth = 0;
+  for (let at = from; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === "\\") {
+      const next = text[at + 1];
+      if (next === undefined || next === " " || isAsciiControl(next)) {
+        return [-1, -1];
+      }
+      at += 1;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      if (depth === 0) {
+        return [at, at + 1];
+      }
+      depth -= 1;
+    } else if (char === " " || char === "\t" || char === "\n") {
+      return depth === 0 ? [at, -1] : [-1, -1];
+    } else if (isAsciiControl(char)) {
+      return [-1, -1];
+    }
+  }
+  return depth === 0 ? [text.length, -1] : [-1, -1];
+}
+
+function inlineTitleEnd(text: string, from: number): number {
+  let at = from;
+  const opener = text[at];
+  const closer = opener === "(" ? ")" : opener;
+  if (opener !== '"' && opener !== "'" && opener !== "(") {
+    return -1;
+  }
+  at += 1;
+  for (; at < text.length; at += 1) {
+    if (text[at] === "\\") {
+      if (text[at + 1] === undefined || text[at + 1] === "\n") {
+        return -1;
+      }
+      at += 1;
+    } else if (text[at] === closer) {
+      at = skipInlineWhitespace(text, at + 1);
+      return at >= 0 && text[at] === ")" ? at + 1 : -1;
+    } else if (text[at] === "\n") {
+      let next = at + 1;
+      while (text[next] === " " || text[next] === "\t") {
+        next += 1;
+      }
+      if (text[next] === "\n") {
+        return -1;
+      }
+    }
+  }
+  return -1;
+}
+
+function inlineLinkEnd(text: string, from: number): number {
+  if (text[from] !== "(") {
+    return -1;
+  }
+  let at = skipInlineWhitespace(text, from + 1);
+  if (at < 0) {
+    return -1;
+  }
+
+  let linkEnd = -1;
+  if (text[at] === "<") {
+    at = angleDestinationEnd(text, at);
+  } else {
+    [at, linkEnd] = bareDestinationEnd(text, at);
+  }
+  if (linkEnd >= 0 || at < 0) {
+    return linkEnd;
+  }
+
+  at = skipInlineWhitespace(text, at);
+  if (at < 0) {
+    return -1;
+  }
+  return text[at] === ")" ? at + 1 : inlineTitleEnd(text, at);
+}
+
+// micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  definitions: string,
+  references: string,
+): boolean {
+  const labels = new Set<string>();
+  for (const [, label] of definitions.matchAll(LINK_DEFINITION_LABEL_RE)) {
+    const normalized = normalizeLabel(label);
+    if (normalized !== "" && label[0] !== "^") {
+      labels.add(normalized);
+    }
+  }
+  if (labels.size === 0) {
+    return false;
+  }
+  const uses = references.replace(LINK_DEFINITION_KEY_RE, (definition) =>
+    definition.replace(NON_LINE_ENDING_RE, " "),
+  );
+  const code = codeSpanRegions(uses);
+  let codeIndex = 0;
+  let inlineEnd = -1;
+  for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
+    if (match.index < inlineEnd) continue;
+    while (codeIndex < code.length && code[codeIndex][1] <= match.index) {
+      codeIndex += 1;
+    }
+    if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
+      continue;
+    }
+    if (
+      match[1][0] !== "^" &&
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      inlineEnd = inlineLinkEnd(uses, match.index + match[0].length);
+      if (inlineEnd >= 0) continue;
+      return true;
+    }
+  }
+  return false;
+}
+// matches `LINK_DEFINITION_RE`; a narrower cap prevents accepted labels from resolving (#9540).
 const LINK_REFERENCE_RE =
   /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
-// Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
+// allows `[` and optional `!` on the label side; the reference side has no `!`.
 const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
-// The `[` at the seam restarts escape parity, so the reference label is ONE candidate: the text
-// up to the first unescaped `]`. Tested once here instead of from every `[` in the window.
+// the seam `[` resets escape parity, so test only through the first unescaped `]`.
 const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
 
 function unescapedClose(text: string, from: number): number {
@@ -243,21 +439,18 @@ function blocksOf(markdown: string): readonly string[] {
 // is the answer rather than something to re-derive. A fenced or indented block is code; anything
 // else is prose, and a definition line anywhere in the prose counts.
 //
-// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
-// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
-// `document` when blocks would have done only costs that reply its per-code-block Copy and
-// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
-// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
-// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
-// not, so the scope would otherwise follow the reply's line ending. NOT for
-// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
-// a normalised copy misses it and costs a CRLF reply two splits per render.
-// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
-// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
-// the shape that separates them.
+// false negatives lose links; false positives only disable per-block Copy and Download controls.
+// normalize here, but not in `blocksOf`, to preserve its memoized split for CRLF replies.
+// check definitions first because `][` without `]:` is common and the reference scan costs more.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
+  if (
+    !hasLinkDefinition(normalized) ||
+    !(
+      hasLinkReference(normalized) ||
+      hasShortcutReference(normalized, normalized)
+    )
+  ) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -265,7 +458,8 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) || hasShortcutReference(prose, prose))
     ? prose
     : null;
 }
