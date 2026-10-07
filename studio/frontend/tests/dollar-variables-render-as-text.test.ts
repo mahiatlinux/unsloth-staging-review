@@ -61,6 +61,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     ["$CUDA_HOME and $LD_LIBRARY_PATH"],
   ],
   ["Run echo $PATH\nthen echo $HOME", ["$PATH", "$HOME"]],
+  ["Run echo $PATH $HOME", ["$PATH $HOME"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -133,6 +134,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["# Cost in $\nThe $n$th row and the $m$th column.", ["n", "m"]],
   ["- Ends with $\n- The $n$th row and the $m$th column", ["n", "m"]],
   ["We have $sin theta $ and $AB / CD $ here.", ["sin theta ", "AB / CD "]],
+  ["The form $sin theta $is useful.", ["sin theta "]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 

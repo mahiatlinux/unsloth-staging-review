@@ -37,10 +37,23 @@ const BLOCK_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+const TRAILING_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
+const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
+const WORD_MATH_BODY_RE =
+  /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
+
+function looksLikeVariableProse(body: string): boolean {
+  if (!VARIABLE_PROSE_RE.test(body) || WORD_MATH_BODY_RE.test(body)) {
+    return false;
+  }
+  return (
+    !SINGLE_TRAILING_WORD_RE.test(body) || TRAILING_SHELL_NAME_RE.test(body)
+  );
+}
 
 /** merges ascending spans; overlaps merge and non-ascending spans drop. */
 function mergeRegions(
@@ -684,7 +697,7 @@ export function preprocessLaTeX(content: string): string {
       !currency &&
       next !== -1 &&
       (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
-      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
+      looksLikeVariableProse(text.slice(offset + 1, next))
     ) {
       return VARIABLE_DOLLAR;
     }
