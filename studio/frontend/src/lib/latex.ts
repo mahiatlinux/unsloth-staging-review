@@ -54,11 +54,11 @@ const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})/g;
 const SHELL_PID_CONTEXT_RE =
-  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:run\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/i;
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
 const SHELL_PARAMETER_CONTEXT_RE =
-  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:run\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/i;
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
@@ -97,6 +97,10 @@ function looksLikeVariableProse(
   if (!VARIABLE_PROSE_RE.test(body)) {
     return false;
   }
+  const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
+  if (/\s$/.test(body) && /^[a-z]/.test(afterCloser) && !shellContext) {
+    return false;
+  }
   if (TRAILING_SHELL_PATH_RE.test(body)) return true;
   if (
     WORD_MATH_BODY_RE.test(body) ||
@@ -109,7 +113,7 @@ function looksLikeVariableProse(
   if (!SINGLE_TRAILING_WORD_RE.test(body)) return true;
   if (!TRAILING_SHELL_NAME_RE.test(body)) return false;
   return (
-    SHELL_PARAMETER_CONTEXT_RE.test(prefix) ||
+    shellContext ||
     (TRAILING_UPPER_SHELL_NAME_RE.test(body) &&
       /^[A-Z_]/.test(afterCloser))
   );
