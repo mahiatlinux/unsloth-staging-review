@@ -39,7 +39,7 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=*_~\[—–…，。；：！？-]|[\s(]["'(`])$/u;
+  /^(?:[A-Za-z]\w*|_\w*|[?@!#*\-]|\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=*_~\[—–…，。；：！？-]|[\s(]["'(`])$/u;
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]*|[A-Z_][A-Z0-9_]*)\s+$/;
 const TRAILING_UPPER_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]*\s+$/;
@@ -51,12 +51,12 @@ const WORD_MATH_BODY_RE =
 const NAMED_SEQUENCE_MATH_BODY_RE =
   /^[a-z]+(?:\s+(?!(?:and|or|then)(?:\s|$))(?:[A-Z]+|[a-z]+))+\s+$/;
 const OPERATOR_MATH_BODY_RE =
-  /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
+  /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]+\s+(?:(?:log|ln)\s+[A-Za-z]+|(?:and|or)\s+[A-Za-z]+))\s*$/;
 const COMMA_MATH_BODY_RE =
   /^(?:(?:[A-Z]+\s*,\s*)+[A-Z]+|(?:[a-z]+(?:\/[a-z]+)?\s*,\s*)+[a-z]+(?:\/[a-z]+)?)\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
-  /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})/g;
+  /(?<!\\)(?:\$\$|\$\*(?!\*)|\$_(?!\w)|\$\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})/g;
 const SHELL_PID_CONTEXT_RE =
   /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/;
 const SHELL_PID_PROSE_CONTEXT_RE =
@@ -68,6 +68,7 @@ const SHELL_PARAMETER_CONTEXT_RE =
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
+const MARKDOWN_UNDERSCORE = "&#95;";
 
 function looksLikeFunctionMath(body: string): boolean {
   const value = body.trimEnd();
@@ -734,6 +735,7 @@ function protectParameterExpansionMarkup(content: string): string {
   if (
     !content.includes("${") &&
     !content.includes("$*") &&
+    !content.includes("$_") &&
     !content.includes("$$")
   )
     return content;
@@ -790,9 +792,12 @@ function protectParameterExpansionMarkup(content: string): string {
         return match;
       }
     }
-    return match
+    const protectedMatch = match
       .replaceAll("$", VARIABLE_DOLLAR)
       .replaceAll("*", MARKDOWN_ASTERISK);
+    return match === "$_"
+      ? protectedMatch.replace("_", MARKDOWN_UNDERSCORE)
+      : protectedMatch;
   });
 }
 
