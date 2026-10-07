@@ -110,6 +110,9 @@ function loadExporters(
     listStoredChatMessages: async () => stored,
     getStoredChatThread: async (id: string) =>
       threads.find((thread) => thread.id === id),
+    settleThreadScopedSettingsForCopy: async () => {},
+    flushPendingChatSettings: async () => {},
+    getChatSettings: async () => ({}),
     resolveChatInstructions: async () => "",
     buildNamedConversationsMarkdown,
     CONVERSATION_MARKDOWN_MIME_TYPE,

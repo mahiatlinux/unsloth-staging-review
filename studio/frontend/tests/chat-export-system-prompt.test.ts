@@ -50,6 +50,16 @@ type Exporters = {
   ) => Promise<string>;
 };
 
+type ExportHarnessOptions = {
+  threads?: ThreadRecord[];
+  getStoredChatThread?: (id: string) => Promise<ThreadRecord | undefined>;
+  globalInferenceParams?: {
+    systemPrompt?: string;
+    systemVariables?: string;
+  };
+  settleThreadScopedSettingsForCopy?: (id: string) => Promise<void>;
+};
+
 const DIALOG = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
@@ -112,6 +122,7 @@ function loadExporters(
   threadIds: string[],
   downloads: string[],
   sources: string[] = [],
+  options: ExportHarnessOptions = {},
 ) {
   const javascript = ts.transpileModule(
     [
@@ -135,8 +146,16 @@ function loadExporters(
     toast: { info: () => {}, success: () => {} },
     listStoredChatThreads: async () => threadIds.map((id) => ({ id })),
     listStoredChatMessages: async (id: string) => turns(id),
-    getStoredChatThread: async (id: string) =>
-      THREADS.find((thread) => thread.id === id),
+    getStoredChatThread:
+      options.getStoredChatThread ??
+      (async (id: string) =>
+        (options.threads ?? THREADS).find((thread) => thread.id === id)),
+    getChatSettings: async () => ({
+      inferenceParams: options.globalInferenceParams,
+    }),
+    flushPendingChatSettings: async () => {},
+    settleThreadScopedSettingsForCopy:
+      options.settleThreadScopedSettingsForCopy ?? (async () => {}),
     getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
@@ -251,6 +270,63 @@ test("a chat with no system prompt exports only its own turns", async () => {
   assert.ok(!downloads[2].includes('"system"'));
   assert.ok(!downloads[3].includes("## System"));
   assert.ok(!downloads.join("").includes("French"));
+});
+
+test("a chat without a settings snapshot inherits the global system prompt", async () => {
+  const downloads: string[] = [];
+  const inherited: ThreadRecord = {
+    id: "inherited",
+    title: "Inherited",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 3,
+  };
+  const exporters = loadExporters([inherited.id], downloads, [], {
+    threads: [inherited],
+    globalInferenceParams: {
+      systemPrompt: "Answer for the {{team}} team.",
+      systemVariables: '{"team":"Billing"}',
+    },
+  });
+
+  await exporters.exportConversationRawJsonl(inherited.id);
+
+  assert.deepEqual(JSON.parse(downloads[0]).messages[0], {
+    role: "system",
+    content: "Answer for the Billing team.",
+  });
+});
+
+test("export waits for a pending thread prompt write before reading settings", async () => {
+  const downloads: string[] = [];
+  let prompt = "Old prompt";
+  let settled = false;
+  const pending: Omit<ThreadRecord, "settings"> = {
+    id: "pending",
+    title: "Pending",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 4,
+  };
+  const exporters = loadExporters([pending.id], downloads, [], {
+    settleThreadScopedSettingsForCopy: async (id) => {
+      assert.equal(id, pending.id);
+      prompt = "New prompt";
+      settled = true;
+    },
+    getStoredChatThread: async (id) => {
+      assert.equal(id, pending.id);
+      assert.equal(settled, true);
+      return { ...pending, settings: { systemPrompt: prompt, systemVariables: "" } };
+    },
+  });
+
+  await exporters.exportConversationMarkdown(pending.id);
+
+  assert.ok(downloads[0].includes("New prompt"));
+  assert.ok(!downloads[0].includes("Old prompt"));
 });
 
 test("saving a chat to project sources leaves its system prompt out", async () => {

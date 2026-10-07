@@ -84,6 +84,9 @@ function loadExporters(
       return stored;
     },
     getStoredChatThread: async () => undefined,
+    settleThreadScopedSettingsForCopy: async () => {},
+    flushPendingChatSettings: async () => {},
+    getChatSettings: async () => ({}),
     ...liveThreadHead,
     orderByParentChain,
     exportFormatIncludesSiblings,

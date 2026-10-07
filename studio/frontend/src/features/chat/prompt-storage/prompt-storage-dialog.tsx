@@ -76,9 +76,14 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
+import { getChatSettings } from "../api/chat-settings-api";
 import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  flushPendingChatSettings,
+  settleThreadScopedSettingsForCopy,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -260,12 +265,21 @@ async function loadConversationMessages(
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  await settleThreadScopedSettingsForCopy(threadId);
   const thread = await getStoredChatThread(threadId);
   if (!thread) return [];
+  let systemPrompt = thread.settings?.systemPrompt;
+  let systemVariables = thread.settings?.systemVariables;
+  if (systemPrompt === undefined || systemVariables === undefined) {
+    await flushPendingChatSettings();
+    const defaults = (await getChatSettings()).inferenceParams;
+    systemPrompt ??= defaults?.systemPrompt;
+    systemVariables ??= defaults?.systemVariables;
+  }
   const text = await resolveChatInstructions(
     threadId,
-    thread.settings?.systemPrompt,
-    thread.settings?.systemVariables,
+    systemPrompt,
+    systemVariables,
     async () => thread,
   );
   if (!text) return [];
