@@ -48,6 +48,8 @@ const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
+const NAMED_PAIR_MATH_BODY_RE =
+  /^[a-z]{2,}\s+(?!(?:and|or|then)\s*$)(?:[A-Z]{1,2}|[a-z]{2,})\s+$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const COMMA_MATH_BODY_RE = /^(?:[A-Z]{1,2}\s*,\s*)+[A-Z]{1,2}\s+$/;
@@ -106,6 +108,7 @@ function looksLikeVariableProse(
   if (TRAILING_SHELL_PATH_RE.test(body)) return true;
   if (
     WORD_MATH_BODY_RE.test(body) ||
+    NAMED_PAIR_MATH_BODY_RE.test(body) ||
     OPERATOR_MATH_BODY_RE.test(body) ||
     looksLikeFunctionMath(body) ||
     COMMA_MATH_BODY_RE.test(body)

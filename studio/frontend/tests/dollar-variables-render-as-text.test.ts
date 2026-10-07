@@ -195,6 +195,8 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Export $radius $as CSV.", ["radius "]],
   ["The result is $det A $for this matrix.", ["det A "]],
   ["The product is $theta phi $in the basis.", ["theta phi "]],
+  ["The result is $det A $", ["det A "]],
+  ["The product is $theta phi $", ["theta phi "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],
