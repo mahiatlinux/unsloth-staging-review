@@ -64,8 +64,18 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["echo $PATH\n| sed 's/bin/sbin/'\necho $HOME", ["$PATH", "$HOME"]],
   ["Run echo $PATH $HOME", ["$PATH $HOME"]],
   ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
+  [
+    "Use $PATH or [the docs](https://example.com), then $HOME",
+    ["$PATH", "$HOME"],
+  ],
   ["cp $HOME/src $PATH/bin", ["$HOME/src", "$PATH/bin"]],
   ["cp $src $dst", ["$src", "$dst"]],
+  ["Status is $?; home is $HOME", ["$?", "$HOME"]],
+  ["Count is $#; home is $HOME", ["$#", "$HOME"]],
+  ["Args are $@; home is $HOME", ["$@", "$HOME"]],
+  ["PID is $!; home is $HOME", ["$!", "$HOME"]],
+  ["All args are $*; home is $HOME", ["$*", "$HOME"]],
+  ["Flags are $-; home is $HOME", ["$-", "$HOME"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -78,6 +88,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     "Use ${HOME%/*}, ${PATH#*/}, and ${value/pat/repl}; then ${USER%/*}",
     ["${HOME%/*}", "${PATH#*/}", "${value/pat/repl}", "${USER%/*}"],
   ],
+  ["echo ${FOO:-$HOME} then ${BAR:+$PATH}", ["${FOO:-$HOME}", "${BAR:+$PATH}"]],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
   ["Use $PATH\n***\nthen $HOME and $USER", ["$PATH", "$HOME and $USER"]],
@@ -100,6 +111,11 @@ test("shell variables in a reply render as text, not maths", () => {
       assert.ok(html.includes(text), `${source} lost ${text}`);
     }
   }
+  assert.ok(
+    render("Use $PATH or [the docs](https://example.com), then $HOME").includes(
+      'data-streamdown="link"',
+    ),
+  );
 });
 
 test("shell variables never flash as maths while a reply streams", () => {
