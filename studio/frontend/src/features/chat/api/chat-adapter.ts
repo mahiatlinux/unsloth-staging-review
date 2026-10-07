@@ -5510,6 +5510,9 @@ export function createOpenAIStreamAdapter(
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
+            metadata: {
+              custom: { resolvedInstructions: combinedSystemPrompt },
+            },
           };
 
           const result = await generateAudio(

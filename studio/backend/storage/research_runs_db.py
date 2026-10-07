@@ -625,11 +625,15 @@ def create_and_bind_terminal_fallback(
                     "researchRunId": run_id,
                 }
             )
+        config = _loads(run["config_json"], {})
         metadata = {
             "researchRunId": run_id,
             "researchStatus": status,
             "researchPlanRevision": int(run["plan_revision"]),
             "serverManaged": True,
+            "resolvedInstructions": str(
+                config.get("instructions") or "" if isinstance(config, dict) else ""
+            ),
         }
         created = now_ms()
         conn.execute(

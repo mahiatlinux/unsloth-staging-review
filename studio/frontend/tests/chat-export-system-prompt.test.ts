@@ -244,6 +244,11 @@ test("chat training data starts with the system prompt the chat ran with", async
 });
 
 test("terminal stream yields retain the run's resolved instructions", () => {
+  const audioProgress = slice(
+    ADAPTER,
+    'text: "Generating audio..."',
+    "const result = await generateAudio(",
+  );
   const success = slice(
     ADAPTER,
     "const finalIncompleteReason =",
@@ -255,6 +260,7 @@ test("terminal stream yields retain the run's resolved instructions", () => {
     "throw err;",
   );
 
+  assert.match(audioProgress, /resolvedInstructions: combinedSystemPrompt/);
   assert.match(success, /resolvedInstructions: combinedSystemPrompt/);
   assert.match(failure, /resolvedInstructions: combinedSystemPrompt/);
 });
