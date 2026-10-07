@@ -25,3 +25,35 @@ export class SttDownloadTrackers {
     stop?.();
   }
 }
+
+export type SttReplacementAction = "track" | "retry" | "ignore";
+
+/** Decide a confirmed replacement without letting an older response displace a newer one. */
+export function sttReplacementAction(
+  hasTracker: boolean,
+  currentDownloadId: string | null | undefined,
+  previousDownloadId: string,
+  candidateDownloadId: string,
+  backendDownloadId: string | null | undefined,
+  candidateCompleted: boolean,
+): SttReplacementAction {
+  if (
+    candidateCompleted &&
+    currentDownloadId &&
+    currentDownloadId === backendDownloadId &&
+    currentDownloadId !== candidateDownloadId
+  )
+    return "ignore";
+  if (!hasTracker || currentDownloadId === previousDownloadId) return "track";
+  if (currentDownloadId === candidateDownloadId || candidateCompleted)
+    return "ignore";
+  return "retry";
+}
+
+/** A failed confirmation still needs another status check if no poller owns the candidate. */
+export function shouldRecheckSttReplacement(
+  currentDownloadId: string | null | undefined,
+  candidateDownloadId: string,
+): boolean {
+  return currentDownloadId !== candidateDownloadId;
+}
