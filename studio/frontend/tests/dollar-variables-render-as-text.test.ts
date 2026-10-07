@@ -184,6 +184,10 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Segments $AB, CD $are congruent.", ["AB, CD "]],
   ["In triangle $ABC $is acute.", ["ABC "]],
   ["Use $softmax(x), sigmoid(x) $for the logits.", ["softmax(x), sigmoid(x) "]],
+  [
+    "The map $softmax(sigmoid(x)) $is continuous.",
+    ["softmax(sigmoid(x)) "],
+  ],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],

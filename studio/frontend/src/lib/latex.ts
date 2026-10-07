@@ -49,8 +49,6 @@ const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
-const FUNCTION_MATH_BODY_RE =
-  /^[A-Za-z]\w*\([^()\s]*\)(?:\s*,\s*[A-Za-z]\w*\([^()\s]*\))*\s*$/;
 const COMMA_MATH_BODY_RE = /^(?:[A-Z]{1,2}\s*,\s*)+[A-Z]{1,2}\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
@@ -65,6 +63,32 @@ const SHELL_PARAMETER_CONTEXT_RE =
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
 
+function looksLikeFunctionMath(body: string): boolean {
+  const value = body.trimEnd();
+  let offset = 0;
+  let calls = 0;
+  while (offset < value.length) {
+    if (!/[A-Za-z]/.test(value[offset])) return false;
+    offset += 1;
+    while (offset < value.length && /\w/.test(value[offset])) offset += 1;
+    if (value[offset] !== "(") return false;
+    let depth = 0;
+    do {
+      if (value[offset] === "(") depth += 1;
+      if (value[offset] === ")") depth -= 1;
+      offset += 1;
+    } while (offset < value.length && depth > 0);
+    if (depth !== 0) return false;
+    calls += 1;
+    while (offset < value.length && /\s/.test(value[offset])) offset += 1;
+    if (offset === value.length) return calls > 0;
+    if (value[offset] !== ",") return false;
+    offset += 1;
+    while (offset < value.length && /\s/.test(value[offset])) offset += 1;
+  }
+  return false;
+}
+
 function looksLikeVariableProse(
   body: string,
   prefix: string,
@@ -77,7 +101,7 @@ function looksLikeVariableProse(
   if (
     WORD_MATH_BODY_RE.test(body) ||
     OPERATOR_MATH_BODY_RE.test(body) ||
-    FUNCTION_MATH_BODY_RE.test(body) ||
+    looksLikeFunctionMath(body) ||
     COMMA_MATH_BODY_RE.test(body)
   ) {
     return false;
