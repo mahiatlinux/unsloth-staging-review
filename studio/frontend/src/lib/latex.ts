@@ -53,11 +53,11 @@ const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\}/g;
 const SHELL_PID_CONTEXT_RE =
-  /(?:\b(?:echo|printf|kill|wait)\b[^$]*|(?:^|[\s;&|])(?:PID|PPID)\s*=)$/i;
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:run\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
 const SHELL_PARAMETER_CONTEXT_RE =
-  /\b(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/i;
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:run\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/i;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";

@@ -193,12 +193,22 @@ test("real maths still renders", () => {
 });
 
 test("braced maths is not rewritten as shell parameter markup", () => {
-  for (const source of ["${a*b}$", "\\(${a*b}\\)"]) {
+  for (const [source, expected] of [
+    ["${a*b}$", "a*b"],
+    ["\\(${a*b}\\)", "a*b"],
+    ["The `export` example leaves ${x}$ unchanged.", "{x}"],
+    ["The export example leaves ${x}$ unchanged.", "{x}"],
+  ]) {
     const preprocessed = preprocessLaTeX(source);
-    assert.ok(preprocessed.includes("a*b"), source);
+    assert.ok(preprocessed.includes(expected), source);
     assert.ok(!preprocessed.includes("&#42;"), source);
+    assert.ok(!preprocessed.includes("&#36;"), source);
   }
   assert.equal(preprocessLaTeX("Display $$x$$."), "Display $$x$$.");
+  assert.equal(
+    preprocessLaTeX("After a short wait, $$\nx^2\n$$"),
+    "After a short wait, $$\nx^2\n$$",
+  );
 });
 
 test("maths and currency next to shell variables keep rendering", () => {
