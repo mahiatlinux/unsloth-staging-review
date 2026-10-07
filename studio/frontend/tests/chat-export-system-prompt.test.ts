@@ -243,6 +243,22 @@ test("chat training data starts with the system prompt the chat ran with", async
   assert.equal(alpaca[1].input, "");
 });
 
+test("terminal stream yields retain the run's resolved instructions", () => {
+  const success = slice(
+    ADAPTER,
+    "const finalIncompleteReason =",
+    "} catch (err) {",
+  );
+  const failure = slice(
+    ADAPTER,
+    "if (!abortSignal.aborted || generationStopRequested) {",
+    "throw err;",
+  );
+
+  assert.match(success, /resolvedInstructions: combinedSystemPrompt/);
+  assert.match(failure, /resolvedInstructions: combinedSystemPrompt/);
+});
+
 test("every chat export format starts with the chat's system prompt", async () => {
   const downloads: string[] = [];
   const exporters = loadExporters(["support"], downloads);

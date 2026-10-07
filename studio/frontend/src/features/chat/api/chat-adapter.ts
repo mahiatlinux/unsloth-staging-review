@@ -8492,6 +8492,7 @@ export function createOpenAIStreamAdapter(
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
               ...generationCustom(),
+              resolvedInstructions: combinedSystemPrompt,
             },
           },
         };
@@ -8667,6 +8668,7 @@ export function createOpenAIStreamAdapter(
                 },
                 timing: partialTiming,
                 ...generationCustom(),
+                resolvedInstructions: combinedSystemPrompt,
               },
             },
           };
