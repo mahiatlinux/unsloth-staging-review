@@ -386,6 +386,35 @@ test("a failed save retains the edited draft and retries it on close", () => {
   tab.render();
 
   tab.settleSave("hf_old", "Could not save the token.");
+  tab.render();
+  const tree = tab.render();
+
+  assert.equal(tokenInput(tree).props.value, "hf_local");
+  tab.unmount();
+  assert.deepEqual(tab.writes, ["hf_local", "hf_local"]);
+});
+
+test("matching edits keep an in-flight token retryable if its save fails", () => {
+  const tab = generalTab("hf_old");
+  let input = tokenInput(tab.render());
+  (input.props.onChange as (event: { target: { value: string } }) => void)({
+    target: { value: "hf_local" },
+  });
+  input = tokenInput(tab.render());
+  (input.props.onBlur as () => void)();
+  input = tokenInput(tab.render());
+  (input.props.onChange as (event: { target: { value: string } }) => void)({
+    target: { value: "hf_local " },
+  });
+  input = tokenInput(tab.render());
+  (input.props.onChange as (event: { target: { value: string } }) => void)({
+    target: { value: "hf_local  " },
+  });
+  input = tokenInput(tab.render());
+  (input.props.onBlur as () => void)();
+
+  tab.settleSave("hf_old", "Could not save the token.");
+  tab.render();
   const tree = tab.render();
 
   assert.equal(tokenInput(tree).props.value, "hf_local");

@@ -301,8 +301,9 @@ export function GeneralTab() {
     if (trimmed !== draftToken) setDraftToken(trimmed);
     const current = useChatRuntimeStore.getState().hfToken;
     if (trimmed === current) {
-      tokenEditedRef.current = false;
-      submittedTokenRevisionRef.current = null;
+      if (submittedTokenRevisionRef.current === null) {
+        tokenEditedRef.current = false;
+      }
       return;
     }
     submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
@@ -525,9 +526,20 @@ export function GeneralTab() {
                 value={draftToken}
                 onChange={(e) => {
                   const value = e.target.value;
+                  const matchesCurrentToken =
+                    value.trim() === (hfToken ?? "");
+                  const preservesSubmittedToken =
+                    submittedTokenRevisionRef.current !== null &&
+                    matchesCurrentToken;
                   tokenEditRevisionRef.current += 1;
-                  tokenEditedRef.current = value.trim() !== (hfToken ?? "");
-                  submittedTokenRevisionRef.current = null;
+                  tokenEditedRef.current =
+                    !matchesCurrentToken || preservesSubmittedToken;
+                  if (preservesSubmittedToken) {
+                    submittedTokenRevisionRef.current =
+                      tokenEditRevisionRef.current;
+                  } else {
+                    submittedTokenRevisionRef.current = null;
+                  }
                   draftRef.current = value;
                   setDraftToken(value);
                 }}
