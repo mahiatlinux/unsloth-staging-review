@@ -33,7 +33,9 @@ const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
 const TABLE_ROW_RE = /[ \t]*\|/y;
 const BLOCK_BREAK_RE =
-  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
+  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|>|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
+const TABLE_DELIMITER_BREAK_RE =
+  /\n[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*(?=\r?(?:\n|$))/;
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
@@ -42,12 +44,18 @@ const TRAILING_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
+const SHORT_MATH_BODY_RE =
+  /^(?:[A-Za-z]{1,2}(?:\s*[=+\-<>/*]\s*[A-Za-z]{1,2})+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 
 function looksLikeVariableProse(body: string): boolean {
-  if (!VARIABLE_PROSE_RE.test(body) || WORD_MATH_BODY_RE.test(body)) {
+  if (
+    !VARIABLE_PROSE_RE.test(body) ||
+    WORD_MATH_BODY_RE.test(body) ||
+    SHORT_MATH_BODY_RE.test(body)
+  ) {
     return false;
   }
   return (
@@ -546,7 +554,8 @@ function findInlineMathCloser(
   }
   if (i === -1) return -1;
   const body = content.slice(offset + 1, i);
-  if (BLOCK_BREAK_RE.test(body)) return -1;
+  if (BLOCK_BREAK_RE.test(body) || TABLE_DELIMITER_BREAK_RE.test(body))
+    return -1;
   HEADING_LINE_RE.lastIndex = lineStart;
   if (HEADING_LINE_RE.test(content) && body.includes("\n")) return -1;
   TABLE_ROW_RE.lastIndex = lineStart;
