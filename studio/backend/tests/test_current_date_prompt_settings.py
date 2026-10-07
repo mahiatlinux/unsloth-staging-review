@@ -100,6 +100,35 @@ class TestCurrentDatePromptLine:
         prompt = "The current date is 2026-08-15.\n\nBASE"
         assert inference._apply_current_date_prompt(prompt) == prompt
 
+    def test_studio_continuation_keeps_its_original_date_epoch(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        original = "The current date is 2026-08-14.\n\nBASE"
+        payload = _types.SimpleNamespace(
+            studio_resolved_instructions = original,
+            continue_final_message = True,
+            messages = [{"role": "assistant", "content": "partial reply"}],
+        )
+
+        preserve = inference._studio_continuation_preserves_date(payload)
+        effective = inference._apply_current_date_prompt(
+            original,
+            preserve_stated_date = preserve,
+        )
+
+        assert effective == original
+        assert inference._studio_resolved_instructions_snapshot(
+            payload,
+            None,
+            effective,
+            original,
+        ) == original
+
     def test_studio_snapshot_adds_the_server_date_without_imported_system_history(
         self, monkeypatch
     ):
@@ -249,6 +278,17 @@ class TestExternalProviderMessages:
         )
         assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
         assert out[1] == {"role": "user", "content": "hi"}
+
+    def test_continuation_keeps_an_existing_system_date(self):
+        import routes.inference as inference
+
+        original = "The current date is 2026-08-14.\n\nBe terse."
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "system", "content": original}, {"role": "assistant", "content": "part"}],
+            preserve_stated_date = True,
+        )
+
+        assert out[0]["content"] == original
 
     def test_system_turn_is_created_when_absent(self):
         out = self._prepend([{"role": "user", "content": "hi"}])

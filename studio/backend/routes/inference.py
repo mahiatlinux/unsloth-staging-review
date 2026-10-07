@@ -502,6 +502,13 @@ def _continue_final_message(payload, *, thought: bool = False) -> bool:
     return isinstance(reasoning, str) and bool(reasoning.strip())
 
 
+def _studio_continuation_preserves_date(payload) -> bool:
+    """Keep the original prompt epoch when Studio resumes a partial response."""
+    return isinstance(getattr(payload, "studio_resolved_instructions", None), str) and (
+        _continue_final_message(payload, thought = True)
+    )
+
+
 def _reject_unresumable_thought(payload, llama_backend, reject) -> None:
     """An older llama-server would treat the thought as finished and answer after it."""
     if (
@@ -1099,6 +1106,8 @@ def _studio_resolved_instructions_snapshot(
     client_snapshot = getattr(payload, "studio_resolved_instructions", None)
     if not isinstance(client_snapshot, str):
         return effective_instructions
+    if _studio_continuation_preserves_date(payload):
+        return client_snapshot
     if _date_gate_blocks(request, include_api_key = False):
         return client_snapshot
     date_line = current_date_prompt_line(request = request)
@@ -6857,6 +6866,7 @@ def _apply_current_date_prompt(
     image: bool = False,
     tools: bool = False,
     controls: tuple = (),
+    preserve_stated_date: bool = False,
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
@@ -6870,7 +6880,7 @@ def _apply_current_date_prompt(
         return system_prompt
     refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
     if stated:
-        return refreshed_prompt
+        return system_prompt if preserve_stated_date else refreshed_prompt
     if not system_prompt:
         from datetime import date
 
@@ -6908,6 +6918,7 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
+    preserve_stated_date: bool = False,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
@@ -6929,6 +6940,8 @@ def _prepend_current_date_to_messages(
             continue
         content, content_stated, changed = _refresh_stated_date(msg.get("content"), date_line)
         stated = stated or content_stated
+        if content_stated and preserve_stated_date:
+            continue
         if changed:
             msg["content"] = content
             refreshed = True
@@ -28316,6 +28329,7 @@ async def _proxy_to_external_provider(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
         _codex_resolved_instructions = _studio_resolved_instructions_snapshot(
             payload,
@@ -28709,6 +28723,7 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
+        preserve_stated_date = _studio_continuation_preserves_date(payload),
     )
     _external_resolved_instructions = _studio_resolved_instructions_snapshot(
         payload,
@@ -31011,7 +31026,11 @@ async def produce_openai_chat_completions(
     )
     _date_controls = _template_controls(payload)
     system_prompt = _apply_current_date_prompt(
-        system_prompt, request, image = _renders_media, controls = _date_controls
+        system_prompt,
+        request,
+        image = _renders_media,
+        controls = _date_controls,
+        preserve_stated_date = _studio_continuation_preserves_date(payload),
     )
     _resolved_instructions = _studio_resolved_instructions_snapshot(
         payload,
@@ -31249,6 +31268,7 @@ async def produce_openai_chat_completions(
                 template_default = False,
                 tools = True,
                 controls = _date_controls,
+                preserve_stated_date = _studio_continuation_preserves_date(payload),
             )
             _resolved_instructions = _studio_resolved_instructions_snapshot(
                 payload,
@@ -33422,6 +33442,7 @@ async def produce_openai_chat_completions(
             image = _sf_has_any_image or _video_clip is not None,
             tools = True,
             controls = _date_controls,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
         _sf_tool_resolved_instructions = _studio_resolved_instructions_snapshot(
             payload,
@@ -34107,6 +34128,7 @@ async def produce_openai_chat_completions(
             image = _sf_has_any_image or _video_clip is not None,
             tools = bool(_sf_client_catalog),
             controls = _date_controls,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
         _resolved_instructions = _studio_resolved_instructions_snapshot(
             payload,
@@ -40360,7 +40382,11 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     _date_controls = _template_controls(payload)
     if request is not None:
         system_prompt = _apply_current_date_prompt(
-            system_prompt, request, image = _renders_media, controls = _date_controls
+            system_prompt,
+            request,
+            image = _renders_media,
+            controls = _date_controls,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
@@ -40485,6 +40511,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 image = _renders_media,
                 tools = bool(_tools_to_use),
                 controls = _date_controls,
+                preserve_stated_date = _studio_continuation_preserves_date(payload),
             )
         messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
@@ -40551,6 +40578,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 image = _renders_media,
                 tools = True,
                 controls = _date_controls,
+                preserve_stated_date = _studio_continuation_preserves_date(payload),
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -40759,7 +40787,10 @@ async def chat_count_tokens(
     _date_controls = _template_controls(payload)
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(
-            _system_prompt, request, controls = _date_controls
+            _system_prompt,
+            request,
+            controls = _date_controls,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
@@ -40835,6 +40866,7 @@ async def chat_count_tokens(
                     template_default = False,
                     tools = True,
                     controls = _date_controls,
+                    preserve_stated_date = _studio_continuation_preserves_date(payload),
                 ),
             )
             _count_nudge = await _apply_rag_nudge(
@@ -41083,6 +41115,7 @@ async def anthropic_count_tokens(
             openai_messages,
             request,
             include_api_key = _count_server_tools,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
     if _count_server_tools:
         openai_tools = _count_selected_server_tools
@@ -41481,6 +41514,7 @@ async def anthropic_messages(
             openai_messages,
             request,
             include_api_key = server_tools,
+            preserve_stated_date = _studio_continuation_preserves_date(payload),
         )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
