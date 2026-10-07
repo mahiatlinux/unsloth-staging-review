@@ -74,6 +74,7 @@ import {
   sttModelName,
   sttModelSize,
   sttModelVariant,
+  sttListedQuantDownloaded,
   sttShownVariant,
   withSttVariant,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
@@ -582,8 +583,14 @@ test("every Settings dictation path carries the saved quant", () => {
   // Ready means the pinned quant is the resident one, not merely the row.
   assert.match(voiceTab, /\(!sttVariant \|\| engineStatus\.loaded_variant === sttVariant\)/);
   // Status only knows rows; the listing says whether the pinned quant is on disk.
-  assert.match(voiceTab, /\(variant\) => variant\.quant === sttVariant,/);
-  assert.match(voiceTab, /pinnedSttVariant\?\.downloaded === false\s*\?\s*"missing"/);
+  assert.match(
+    voiceTab,
+    /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*sttDownload\?\.error\s*\?\s*"error"\s*:\s*"missing"/,
+  );
+  // The Select is bound to the pin, so picking the quant that runs now still saves it.
+  assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
+  assert.match(voiceTab, /setSttGgufVariant\(next\);\s*if \(next === shownSttVariant\) return;/);
+  assert.match(voiceTab, /<SelectValue placeholder=\{shownSttLabel\}>/);
 
   // The prompt fetches the quant its requester pinned, not whatever Voice settings say now.
   const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
@@ -593,7 +600,8 @@ test("every Settings dictation path carries the saved quant", () => {
   assert.match(prompt, /candidate\.quant === \(variant \?\? listing\.default_variant\)/);
   assert.match(adapter, /requestSttDownload\(sessionModel, \{ ggufVariant: sessionVariant \}\)/);
   const offer = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
-  assert.match(offer, /ggufVariant: sttModelVariant\(sttModel, sttGgufVariant\),/);
+  assert.match(offer, /const ggufVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
+  assert.match(offer, /requestSttDownload\(sttModel, \{ selectLocalEngine: true, ggufVariant \}\)/);
 
   const mirror = readSrc("features/settings/lib/stt-download-mirror.ts");
   // A stopped download of a second quant must not read as complete: the row is already listed.
@@ -601,6 +609,14 @@ test("every Settings dictation path carries the saved quant", () => {
   const erroredAt = mirror.indexOf("if (download?.error)");
   const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
   assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
+  // A quant picked while another one downloads is not warmed when the first lands.
+  // An adopted download's quant is unknown: warm it only for an unpinned row.
+  assert.match(
+    mirror,
+    /\(tracked === undefined \? variant === null : tracked === variant\)/,
+  );
+  assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
+  assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
   assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
 
@@ -610,11 +626,17 @@ test("every Settings dictation path carries the saved quant", () => {
   for (const holder of ["target", "source", "failed\\.snapshot"]) {
     assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
   }
-  // Upload readiness: a row with another quant cached is not ready for a pinned, missing one.
-  assert.match(upload, /listGgufVariants\(targetModel, hfApiToken\(getHfToken\(\)\), \{/);
+  // Status lists a row once any quant is cached; a pinned quant needs its own listing row.
+  assert.match(adapter, /return !listing \|\| sttListedQuantDownloaded\(listing, ggufVariant\);/);
+  // Upload readiness and the no-speech-service switch both require the pinned quant on disk.
+  assert.match(upload, /sttQuantDownloaded\(\s*targetModel,\s*target\.ggufVariant,\s*signal,\s*\)/);
   assert.match(
     upload,
-    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*!quantMissing\s*\?\s*"ready"/,
+    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*quantDownloaded\s*\?\s*"ready"/,
+  );
+  assert.match(
+    offer,
+    /engine\?\.downloaded_models\.includes\(sttModel\) &&\s*\(await sttQuantDownloaded\(sttModel, ggufVariant\)\)/,
   );
 
   const reference = readSrc("features/audio/hooks/use-reference-transcribe.ts");
@@ -623,7 +645,7 @@ test("every Settings dictation path carries the saved quant", () => {
 
 test("the quant Select appears for package folders with more than one quant", () => {
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
-  assert.match(voiceTab, /\{sttVariants\.length > 1 \? \(\s*<Select/);
+  assert.match(voiceTab, /\{sttVariants\.length > 1 \? \([\s\S]{0,200}?<Select\s/);
   assert.match(voiceTab, /if \(!isLocalEngine \|\| !isAudioCppFolderId\(sttModel\)\) return;/);
   assert.match(voiceTab, /aria-label=\{t\("settings\.voice\.dictation\.sttQuantLabel"\)\}/);
 });
@@ -893,4 +915,25 @@ test("the quant Select shows the quant a dictation would actually run", () => {
   assert.equal(sttShownVariant(null, "Q8_0", null), "Q8_0");
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);
+});
+
+test("only the pinned quant's own listing row can say it is not on disk", () => {
+  const online = {
+    variants: [
+      { quant: "multilingual-ctc/F16", downloaded: true },
+      { quant: "v3-ctc/F16", downloaded: false },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(online, "multilingual-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded(online, "v3-ctc/F16"), false);
+  // A cache-only listing keys cached files by what tells them apart, so a pinned key it leaves out
+  // may still be cached (the backend matches it on load): defer instead of calling it missing.
+  const offline = {
+    variants: [
+      { quant: "ctc/F16", downloaded: true },
+      { quant: "rnnt/F16", downloaded: true },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), true);
 });

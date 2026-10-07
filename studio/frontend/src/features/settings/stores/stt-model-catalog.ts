@@ -209,6 +209,19 @@ export function sttShownVariant(
   );
 }
 
+/** Whether a listing leaves the pinned quant possibly on disk. Only the row with that exact key can
+ *  say no: a cache-only (offline) listing keys cached files by what tells them apart ("ctc/F16" for
+ *  "v3-ctc/F16"), so a key it leaves out may still be cached; the backend matches it on load. */
+export function sttListedQuantDownloaded(
+  listing: { variants: readonly { quant: string; downloaded?: boolean }[] },
+  pinned: string,
+): boolean {
+  return (
+    listing.variants.find((variant) => variant.quant === pinned)?.downloaded !==
+    false
+  );
+}
+
 export function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }
