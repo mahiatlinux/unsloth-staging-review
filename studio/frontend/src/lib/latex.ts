@@ -39,7 +39,7 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?::?[-+=?]|[#%]{1,2}|\/{1,2})[^}\s]*|\^{1,2}|,{1,2}|@[A-Za-z])?)\})[\w\s.,;:!?'"()\[\]/*~`|&<>=@#-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})[\w\s.,;:!?'"()\[\]/*~`|&<>=@#-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
 const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
@@ -50,8 +50,11 @@ const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
-const SHELL_PARAMETER_RE =
-  /\$\*(?!\*)|\$\{(?:#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?::?[-+=?]|[#%]{1,2}|\/{1,2})[^}\s]*|\^{1,2}|,{1,2}|@[A-Za-z])?)\}/g;
+const SHELL_MARKUP_RE =
+  /\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\}/g;
+const SHELL_PID_CONTEXT_RE =
+  /(?:\b(?:echo|printf|kill|wait)\b[^$]*|(?:^|[\s;&|])(?:PID|PPID)\s*=)$/i;
+const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
@@ -677,7 +680,12 @@ function convertLatexDelimiters(content: string): {
 }
 
 function protectParameterExpansionMarkup(content: string): string {
-  if (!content.includes("${") && !content.includes("$*")) return content;
+  if (
+    !content.includes("${") &&
+    !content.includes("$*") &&
+    !content.includes("$$")
+  )
+    return content;
   const skipRegions = mergeRegions(
     findCodeBlockRegions(content),
     mergeRegions(
@@ -685,14 +693,24 @@ function protectParameterExpansionMarkup(content: string): string {
       findAutolinkRegions(content),
     ),
   );
-  SHELL_PARAMETER_RE.lastIndex = 0;
-  return content.replace(SHELL_PARAMETER_RE, (match, offset) =>
-    isInRegion(offset, skipRegions)
-      ? match
-      : match
-          .replaceAll("$", VARIABLE_DOLLAR)
-          .replaceAll("*", MARKDOWN_ASTERISK),
-  );
+  SHELL_MARKUP_RE.lastIndex = 0;
+  return content.replace(SHELL_MARKUP_RE, (match, offset) => {
+    if (isInRegion(offset, skipRegions)) return match;
+    if (match === "$$") {
+      const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
+      const prefix = content.slice(lineStart, offset);
+      const next = content[offset + 2] ?? "";
+      if (
+        !SHELL_PID_CONTEXT_RE.test(prefix) ||
+        (next && !SHELL_PID_FOLLOW_RE.test(next))
+      ) {
+        return match;
+      }
+    }
+    return match
+      .replaceAll("$", VARIABLE_DOLLAR)
+      .replaceAll("*", MARKDOWN_ASTERISK);
+  });
 }
 
 /** converts bracketed LaTeX and protects currency or shell variables from single-dollar math. */

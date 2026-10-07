@@ -76,6 +76,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["PID is $!; home is $HOME", ["$!", "$HOME"]],
   ["All args are $*; home is $HOME", ["$*", "$HOME"]],
   ["Flags are $-; home is $HOME", ["$-", "$HOME"]],
+  ["echo $$; kill $$", ["$$", "$$"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -89,6 +90,10 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     ["${HOME%/*}", "${PATH#*/}", "${value/pat/repl}", "${USER%/*}"],
   ],
   ["echo ${FOO:-$HOME} then ${BAR:+$PATH}", ["${FOO:-$HOME}", "${BAR:+$PATH}"]],
+  [
+    "Use ${!prefix*}, ${value:1:3}, and ${array[0]}; then $HOME",
+    ["${!prefix*}", "${value:1:3}", "${array[0]}", "$HOME"],
+  ],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
   ["Use $PATH\n***\nthen $HOME and $USER", ["$PATH", "$HOME and $USER"]],
@@ -186,6 +191,7 @@ test("braced maths is not rewritten as shell parameter markup", () => {
     assert.ok(preprocessed.includes("a*b"), source);
     assert.ok(!preprocessed.includes("&#42;"), source);
   }
+  assert.equal(preprocessLaTeX("Display $$x$$."), "Display $$x$$.");
 });
 
 test("maths and currency next to shell variables keep rendering", () => {
