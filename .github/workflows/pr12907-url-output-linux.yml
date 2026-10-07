@@ -76,4 +76,3 @@ jobs:
           grep -Fx /workspace /tmp/pr12907-local.log
           test ! -e /tmp/pr12907-local-case/kernel-pwd.txt
           printf '%s\n' 'PASS: base discards URL outputs; head persists them with host ownership; local runs retain /workspace'
-

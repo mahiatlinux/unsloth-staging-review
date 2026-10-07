@@ -36,4 +36,3 @@ jobs:
         run: |
           /bin/bash -n docker/run.sh
           python -m pytest -q --tb=short tests/python/test_docker_run_url_keeps_outputs.py tests/python/test_docker_run_output_publish.py
-
