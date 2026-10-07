@@ -64,7 +64,11 @@ const SHELL_PARAMETER_CONTEXT_RE =
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
 
-function looksLikeVariableProse(body: string, prefix: string): boolean {
+function looksLikeVariableProse(
+  body: string,
+  prefix: string,
+  afterCloser: string,
+): boolean {
   if (!VARIABLE_PROSE_RE.test(body)) {
     return false;
   }
@@ -80,8 +84,9 @@ function looksLikeVariableProse(body: string, prefix: string): boolean {
   if (!SINGLE_TRAILING_WORD_RE.test(body)) return true;
   if (!TRAILING_SHELL_NAME_RE.test(body)) return false;
   return (
-    TRAILING_UPPER_SHELL_NAME_RE.test(body) ||
-    SHELL_PARAMETER_CONTEXT_RE.test(prefix)
+    SHELL_PARAMETER_CONTEXT_RE.test(prefix) ||
+    (TRAILING_UPPER_SHELL_NAME_RE.test(body) &&
+      /^[A-Z_]/.test(afterCloser))
   );
 }
 
@@ -695,13 +700,28 @@ function protectParameterExpansionMarkup(content: string): string {
     !content.includes("$$")
   )
     return content;
-  const skipRegions = mergeRegions(
+  const baseSkipRegions = mergeRegions(
     findCodeBlockRegions(content),
     mergeRegions(
       findLinkDestinationRegions(content),
       findAutolinkRegions(content),
     ),
   );
+  const bracketMathRegions: Array<[number, number]> = [];
+  CONVERT_LATEX_DELIM_RE.lastIndex = 0;
+  let bracketMatch: RegExpExecArray | null;
+  while ((bracketMatch = CONVERT_LATEX_DELIM_RE.exec(content)) !== null) {
+    const end = bracketMatch.index + bracketMatch[0].length;
+    if (
+      isInRegion(bracketMatch.index, baseSkipRegions) ||
+      isInRegion(end - 1, baseSkipRegions)
+    ) {
+      CONVERT_LATEX_DELIM_RE.lastIndex = bracketMatch.index + 1;
+      continue;
+    }
+    bracketMathRegions.push([bracketMatch.index, end]);
+  }
+  const skipRegions = mergeRegions(baseSkipRegions, bracketMathRegions);
   SHELL_MARKUP_RE.lastIndex = 0;
   return content.replace(SHELL_MARKUP_RE, (match, offset) => {
     if (isInRegion(offset, skipRegions)) return match;
@@ -780,6 +800,7 @@ export function preprocessLaTeX(content: string): string {
       looksLikeVariableProse(
         text.slice(offset + 1, next),
         text.slice(lineStart, offset),
+        text[next + 1] ?? "",
       )
     ) {
       return VARIABLE_DOLLAR;
