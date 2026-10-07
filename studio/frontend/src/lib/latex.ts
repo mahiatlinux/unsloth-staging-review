@@ -55,6 +55,9 @@ const SHELL_MARKUP_RE =
 const SHELL_PID_CONTEXT_RE =
   /(?:\b(?:echo|printf|kill|wait)\b[^$]*|(?:^|[\s;&|])(?:PID|PPID)\s*=)$/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
+const SHELL_CONCAT_START_RE = /[A-Z_{]/;
+const SHELL_PARAMETER_CONTEXT_RE =
+  /\b(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/i;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
@@ -696,6 +699,16 @@ function protectParameterExpansionMarkup(content: string): string {
   SHELL_MARKUP_RE.lastIndex = 0;
   return content.replace(SHELL_MARKUP_RE, (match, offset) => {
     if (isInRegion(offset, skipRegions)) return match;
+    if (match.startsWith("${") && content[offset + match.length] === "$") {
+      const afterCloser = content[offset + match.length + 1] ?? "";
+      const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
+      const prefix = content.slice(lineStart, offset);
+      if (
+        !SHELL_CONCAT_START_RE.test(afterCloser) &&
+        !SHELL_PARAMETER_CONTEXT_RE.test(prefix)
+      )
+        return match;
+    }
     if (match === "$$") {
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
       const prefix = content.slice(lineStart, offset);

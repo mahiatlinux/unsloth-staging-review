@@ -90,6 +90,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     ["${HOME%/*}", "${PATH#*/}", "${value/pat/repl}", "${USER%/*}"],
   ],
   ["echo ${FOO:-$HOME} then ${BAR:+$PATH}", ["${FOO:-$HOME}", "${BAR:+$PATH}"]],
+  ["echo ${HOME}$PATH", ["${HOME}$PATH"]],
   [
     "Use ${!prefix*}, ${value:1:3}, and ${array[0]}; then $HOME",
     ["${!prefix*}", "${value:1:3}", "${array[0]}", "$HOME"],
@@ -176,6 +177,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The result is $velocity(t) = distance $", ["velocity(t) = distance "]],
   ["The probability is $softmax(x) $", ["softmax(x) "]],
   ["Product ${a*b}$.", ["{a*b}"]],
+  ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 
