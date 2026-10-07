@@ -102,6 +102,10 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     "Use ${!prefix*}, ${value:1:3}, and ${array[0]}; then $HOME",
     ["${!prefix*}", "${value:1:3}", "${array[0]}", "$HOME"],
   ],
+  [
+    "echo ${!name} ${#array[@]} ${!array[*]}",
+    ["${!name}", "${#array[@]}", "${!array[*]}"],
+  ],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
   ["Use $PATH\n***\nthen $HOME and $USER", ["$PATH", "$HOME and $USER"]],
