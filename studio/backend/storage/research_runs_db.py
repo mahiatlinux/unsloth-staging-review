@@ -308,7 +308,6 @@ def _unbind_assistant_locked(
         "researchStatus",
         "researchPlanRevision",
         "serverManaged",
-        "resolvedInstructions",
     ):
         metadata.pop(key, None)
     conn.execute(

@@ -4195,7 +4195,7 @@ def test_route_still_refuses_a_second_run_while_one_is_going(research_home):
 
 
 def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
-    _create()
+    _create(instructions = "Prompt A")
     _cancel_run()
     studio_db.upsert_chat_message(
         {
@@ -4215,6 +4215,7 @@ def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
     # Both replies pointing at one run would render its live card twice.
     stale = studio_db.get_chat_message("thread-1", "assistant-1")
     assert "researchRunId" not in (stale.get("metadata") or {})
+    assert stale["metadata"]["resolvedInstructions"] == "Prompt A"
     fresh = studio_db.get_chat_message("thread-1", "assistant-2")
     assert fresh["metadata"]["researchRunId"] == "run-1"
 
