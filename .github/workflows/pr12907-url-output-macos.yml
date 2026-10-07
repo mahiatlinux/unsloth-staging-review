@@ -1,0 +1,39 @@
+# Disposable repro workflow. Delete after validation.
+
+name: "PR 12907 URL output macOS"
+
+on:
+  push:
+    branches:
+      - "pr-12907-url-output-repro-ci"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: "Targeted repro"
+    runs-on: "macos-latest"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.11"
+
+      - name: "Confirm native Bash and install pytest"
+        shell: bash
+        run: |
+          /bin/bash --version | head -n 1
+          python -m pip install --disable-pip-version-check pytest==9.0.3
+
+      - name: "Run focused macOS contract"
+        shell: bash
+        run: |
+          /bin/bash -n docker/run.sh
+          python -m pytest -q --tb=short tests/python/test_docker_run_url_keeps_outputs.py tests/python/test_docker_run_output_publish.py
+

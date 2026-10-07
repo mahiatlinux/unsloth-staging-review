@@ -1,0 +1,79 @@
+# Disposable repro workflow. Delete after validation.
+
+name: "PR 12907 URL output Linux"
+
+on:
+  push:
+    branches:
+      - "pr-12907-url-output-repro-ci"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: "Targeted repro"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.11"
+
+      - name: "Install focused test dependency"
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.0.3
+
+      - name: "Run focused and regression tests"
+        shell: bash
+        run: |
+          python -m pytest -q --tb=short tests/python/test_docker_run_url_keeps_outputs.py tests/python/test_docker_run_output_publish.py tests/python/test_docker_run_pin_scan.py tests/python/test_docker_nb_compat_pre_run_cell.py tests/python/test_docker_nb_view_ownership.py
+
+      - name: "Run real Docker A/B integration"
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=0aaea8b585b080a590bfa632d37d5d563064327f
+          git fetch --no-tags --depth=1 https://github.com/unslothai/unsloth.git "$BASE"
+          rm -rf /tmp/pr12907-base-image /tmp/pr12907-head-image /tmp/pr12907-serve /tmp/pr12907-base-case /tmp/pr12907-head-case /tmp/pr12907-local-case /tmp/pr12907-home
+          mkdir -p /tmp/pr12907-base-image /tmp/pr12907-head-image /tmp/pr12907-serve /tmp/pr12907-base-case /tmp/pr12907-head-case /tmp/pr12907-local-case /tmp/pr12907-home
+          git show "${BASE}:docker/unsloth_run.py" > /tmp/pr12907-base-image/unsloth_run.py
+          git show "${BASE}:docker/unsloth_nb_compat.py" > /tmp/pr12907-base-image/unsloth_nb_compat.py
+          git show "${BASE}:docker/run.sh" > /tmp/pr12907-base-run.sh
+          chmod +x /tmp/pr12907-base-run.sh
+          cp docker/unsloth_run.py docker/unsloth_nb_compat.py /tmp/pr12907-head-image/
+          for ctx in /tmp/pr12907-base-image /tmp/pr12907-head-image; do
+            printf '%s\n' '#!/bin/sh' 'set -eu' 'pwd | tee kernel-pwd.txt' 'mkdir -p lora_model' 'printf kept > lora_model/adapter_model.safetensors' > "$ctx/jupyter-stub"
+            chmod +x "$ctx/jupyter-stub"
+            printf '%s\n' 'FROM python:3.11.15-slim-bookworm' 'WORKDIR /workspace' 'COPY unsloth_run.py unsloth_nb_compat.py /usr/local/bin/' 'COPY jupyter-stub /opt/unsloth-venv/bin/jupyter' 'RUN ln -s /usr/local/bin/python /opt/unsloth-venv/bin/python && chmod +x /usr/local/bin/unsloth_run.py /opt/unsloth-venv/bin/jupyter && ln -s /usr/local/bin/unsloth_run.py /usr/local/bin/unsloth-run' > "$ctx/Dockerfile"
+          done
+          printf '%s\n' '{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}' > /tmp/pr12907-serve/Notebook.ipynb
+          docker build -q -t pr12907-base /tmp/pr12907-base-image
+          docker build -q -t pr12907-head /tmp/pr12907-head-image
+          python -m http.server 49155 --bind 0.0.0.0 --directory /tmp/pr12907-serve >/tmp/pr12907-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+          URL="http://${GATEWAY}:49155/Notebook.ipynb"
+          COMMON=(UNSLOTH_GPUS=none UNSLOTH_ALLOW_CPU=1 UNSLOTH_STUDIO_VOLUME= UNSLOTH_LMSTUDIO_DIR=none UNSLOTH_OLLAMA_DIR=none UNSLOTH_HERMES_DIR=none HOME=/tmp/pr12907-home)
+          ( cd /tmp/pr12907-base-case && env "${COMMON[@]}" UNSLOTH_IMAGE=pr12907-base bash /tmp/pr12907-base-run.sh unsloth-run "$URL" )
+          test ! -e /tmp/pr12907-base-case/Notebook.ipynb
+          test ! -e /tmp/pr12907-base-case/lora_model/adapter_model.safetensors
+          ( cd /tmp/pr12907-head-case && env "${COMMON[@]}" UNSLOTH_IMAGE=pr12907-head bash "$GITHUB_WORKSPACE/docker/run.sh" unsloth-run "$URL" ) | tee /tmp/pr12907-head.log
+          test -f /tmp/pr12907-head-case/Notebook.ipynb
+          test -f /tmp/pr12907-head-case/lora_model/adapter_model.safetensors
+          test "$(cat /tmp/pr12907-head-case/kernel-pwd.txt)" = /workspace/host
+          test "$(stat -c %u /tmp/pr12907-head-case/Notebook.ipynb)" = "$(stat -c %u /tmp/pr12907-head-case)"
+          cp /tmp/pr12907-serve/Notebook.ipynb /tmp/pr12907-local-case/Notebook.ipynb
+          ( cd /tmp/pr12907-local-case && env "${COMMON[@]}" UNSLOTH_IMAGE=pr12907-head bash "$GITHUB_WORKSPACE/docker/run.sh" unsloth-run /workspace/host/Notebook.ipynb ) | tee /tmp/pr12907-local.log
+          grep -Fx /workspace /tmp/pr12907-local.log
+          test ! -e /tmp/pr12907-local-case/kernel-pwd.txt
+          printf '%s\n' 'PASS: base discards URL outputs; head persists them with host ownership; local runs retain /workspace'
+
