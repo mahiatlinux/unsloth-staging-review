@@ -63,10 +63,15 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["Run echo $PATH\nthen echo $HOME", ["$PATH", "$HOME"]],
   ["echo $PATH\n| sed 's/bin/sbin/'\necho $HOME", ["$PATH", "$HOME"]],
   ["Run echo $PATH $HOME", ["$PATH $HOME"]],
+  ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
   ["Use ${HOME} and ${PATH} in scripts.", ["${HOME} and ${PATH}"]],
+  [
+    "Use ${HOME:-/tmp}, then ${PATH:-/usr/bin}",
+    ["${HOME:-/tmp}", "${PATH:-/usr/bin}"],
+  ],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
   ["Use $PATH\n***\nthen $HOME and $USER", ["$PATH", "$HOME and $USER"]],
@@ -137,6 +142,10 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["We have $sin theta $ and $AB / CD $ here.", ["sin theta ", "AB / CD "]],
   ["The form $sin theta $is useful.", ["sin theta "]],
   ["The ratio $AB / CD $is useful.", ["AB / CD "]],
+  [
+    "The relation $velocity = distance / time $is useful.",
+    ["velocity = distance / time "],
+  ],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 

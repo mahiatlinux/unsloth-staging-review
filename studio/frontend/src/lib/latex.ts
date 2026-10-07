@@ -39,13 +39,13 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*(?::[-+=?][^}\s]*)?\})[\w\s.,;:!?'"()/*~`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
 const TRAILING_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
-const SHORT_MATH_BODY_RE =
-  /^(?:[A-Za-z]{1,2}(?:\s*[=+\-<>/*]\s*[A-Za-z]{1,2})+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
+const OPERATOR_MATH_BODY_RE =
+  /^(?:[A-Za-z]\w*(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
@@ -54,7 +54,7 @@ function looksLikeVariableProse(body: string): boolean {
   if (
     !VARIABLE_PROSE_RE.test(body) ||
     WORD_MATH_BODY_RE.test(body) ||
-    SHORT_MATH_BODY_RE.test(body)
+    OPERATOR_MATH_BODY_RE.test(body)
   ) {
     return false;
   }
