@@ -212,7 +212,7 @@ function oaiMessagesToRecords(
       content = oaiContentToParts(msg.content);
     }
 
-    if (content.length === 0) continue;
+    if (content.length === 0 && role !== "system" && role !== "developer") continue;
 
     records.push({
       id,
@@ -284,8 +284,8 @@ function markdownToRecords(
   let prevId: string | null = null;
   let idx = 0;
   for (const { role, content } of messages) {
-    if (!content.trim()) continue;
     const normalizedRole = role.trim().toLowerCase();
+    if (!content.trim() && normalizedRole !== "system") continue;
     const validRole =
       normalizedRole === "user" ||
       normalizedRole === "assistant" ||
@@ -320,7 +320,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
     if (row.length < 2) continue;
     const role = row[0]?.trim().toLowerCase();
     const content = row.slice(1).join(",");
-    if (!content.trim()) continue;
+    if (!content.trim() && role !== "system") continue;
     const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
     const id = crypto.randomUUID();
     records.push({

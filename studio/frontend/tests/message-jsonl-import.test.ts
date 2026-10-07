@@ -103,6 +103,39 @@ test("message JSONL imports as one conversation", () => {
   );
 });
 
+test("empty system turns survive message JSONL export and import", () => {
+  assert.equal(
+    JSON.stringify(
+      messageToOpenAI({
+        role: "system",
+        content: [{ type: "text", text: "" }],
+      }),
+    ),
+    JSON.stringify([{ role: "system", content: "" }]),
+  );
+  const [conversation] = parseImportText(
+    [
+      '{"role":"system","content":"Prompt A"}',
+      '{"role":"user","content":"First"}',
+      '{"role":"assistant","content":"Answer"}',
+      '{"role":"system","content":""}',
+      '{"role":"user","content":"Second"}',
+    ].join("\n"),
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role, content }) => ({ role, content })),
+    [
+      { role: "system", content: [{ type: "text", text: "Prompt A" }] },
+      { role: "user", content: [{ type: "text", text: "First" }] },
+      { role: "assistant", content: [{ type: "text", text: "Answer" }] },
+      { role: "system", content: [] },
+      { role: "user", content: [{ type: "text", text: "Second" }] },
+    ],
+  );
+});
+
 test("developer and assistant array content survive message JSONL import", () => {
   const image = "data:image/png;base64,QUFBQQ==";
   const [conversation] = parseImportText(

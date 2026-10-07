@@ -606,6 +606,9 @@ test("training exports split when a later run clears its instructions", async ()
   });
 
   await exporters.exportConversationRawJsonl(cleared.id);
+  await exporters.exportConversationMessagesJsonl(cleared.id);
+  await exporters.exportConversationCsv(cleared.id);
+  await exporters.exportConversationMarkdown(cleared.id);
   const records = downloads[0]
     .trim()
     .split("\n")
@@ -615,6 +618,18 @@ test("training exports split when a later run clears its instructions", async ()
   assert.equal(records.length, 2);
   assert.equal(records[0][0].content, "Prompt A");
   assert.ok(records[1].every((message: { role: string }) => message.role !== "system"));
+  assert.ok(
+    downloads[1]
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .some(
+        (message: { role: string; content: string }) =>
+          message.role === "system" && message.content === "",
+      ),
+  );
+  assert.match(downloads[2], /"system",""/);
+  assert.match(downloads[3], /## System\n\n\n\n## User/);
   assert.equal(fineTune.lines.length, 2);
   assert.ok(
     JSON.parse(fineTune.lines[1]).messages.every(

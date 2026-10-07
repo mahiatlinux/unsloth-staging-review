@@ -446,7 +446,7 @@ function messagesFromInstructionSegments(
   segments: ChatInstructionSegment[],
 ): MessageRecord[] {
   return segments.flatMap((segment, index) => [
-    ...(segment.instructions
+    ...(segment.instructions || index > 0
       ? [
           systemInstructionTurn(
             threadId,
@@ -710,7 +710,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
   if (!hasNonText) {
     const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
-    return text ? [{ role: role as "user" | "system", content: text }] : [];
+    return text || role === "system"
+      ? [{ role: role as "user" | "system", content: text }]
+      : [];
   }
   return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
 }
@@ -802,7 +804,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   const rows = ["role,content"];
   for (const msg of messages) {
     const content = messageToText(msg);
-    if (!content.trim()) continue;
+    if (!content.trim() && msg.role !== "system") continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
 
@@ -1003,7 +1005,7 @@ async function buildThreadContent(
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
-    if (!content.trim()) continue;
+    if (!content.trim() && msg.role !== "system") continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
   return rows.length > 0 ? rows.join("\n") : null;

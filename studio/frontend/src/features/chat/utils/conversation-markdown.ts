@@ -604,7 +604,7 @@ export function buildConversationMarkdown(
   options: { includeImportMetadata?: boolean } = {},
 ): string {
   const sections = messages.flatMap(({ role, content }) => {
-    if (!content.trim()) {
+    if (!content.trim() && role.trim().toLowerCase() !== "system") {
       return [];
     }
     const label = roleLabel(role);
