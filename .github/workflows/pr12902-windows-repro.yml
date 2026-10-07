@@ -1,0 +1,32 @@
+# Disposable repro workflow. Delete after validation.
+
+name: "PR 12902 Windows Repro"
+
+on:
+  push:
+    branches:
+      - "pr-12902-windows-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: "Targeted repro"
+    runs-on: "windows-latest"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.13"
+
+      - name: "Probe native Windows CPU asset resolution"
+        shell: pwsh
+        run: |
+          python .github/ci/pr12902_windows_probe.py
+
