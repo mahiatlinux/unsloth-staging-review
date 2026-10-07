@@ -2,19 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth-run: execute an unslothai/notebooks notebook unchanged, headless.
+"""execute notebooks headlessly with one transformers version active per kernel."""
 
-Resolves the transformers version the notebook wants (install-cell pin, else the
-model-name tier), launches the kernel with that sidecar on PYTHONPATH so the whole
-kernel process is coherent, and executes every cell with nbconvert.
-
-Usage:
-  unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
-              [--fetch-timeout SECONDS] # URL download stall limit (default 60)
-              [--transformers X.Y.Z]    # force a version, skip auto-detect
-"""
-
-import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
+import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -25,10 +15,7 @@ except Exception:
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# The install-cell scanner lives in unsloth_nb_compat, which is the copy the image puts
-# in site-packages and therefore the only one an IPython kernel can import. Sharing it
-# is what stops this path and the kernel hook from disagreeing about what counts as an
-# install line, which would put the kernel on one sidecar and the hook on another.
+# share the site-packages scanner so this path and the IPython hook select the same sidecar.
 if compat is not None:
     _PIN_RE = compat._PIN_RE
     _INSTALL_RE = compat._INSTALL_RE
@@ -144,6 +131,59 @@ def _stage_metadata(staged, dest):
         pass
 
 
+def _open_url_download(url):
+    name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) or "notebook"
+    stem = name[: -len(".ipynb")] if name.endswith(".ipynb") else name
+    n = 0
+    while True:
+        path = os.path.abspath(f"{stem}-{n}.ipynb" if n else f"{stem}.ipynb")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            n += 1
+            continue
+        try:
+            parent = os.stat(os.path.dirname(path))
+            os.fchown(fd, parent.st_uid, parent.st_gid)
+        except (OSError, AttributeError):
+            pass
+        return path, fd
+
+
+def _host_run_ids():
+    uid = os.environ.pop("UNSLOTH_RUN_UID", None)
+    gid = os.environ.pop("UNSLOTH_RUN_GID", None)
+    if uid is None and gid is None:
+        return None
+    if uid is None or gid is None or not uid.isdigit() or not gid.isdigit():
+        raise SystemExit("UNSLOTH_RUN_UID and UNSLOTH_RUN_GID must be non-negative integers")
+    return int(uid), int(gid)
+
+
+def _root_owned_state(root):
+    state = {}
+    for parent, dirs, files in os.walk(root, followlinks = False):
+        for name in dirs + files:
+            path = os.path.join(parent, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if st.st_uid == 0:
+                state[os.path.relpath(path, root)] = (st.st_dev, st.st_ino, st.st_ctime_ns)
+    return state
+
+
+def _restore_output_ownership(root, before, uid, gid):
+    for relative, identity in _root_owned_state(root).items():
+        if before.get(relative) == identity:
+            continue
+        try:
+            os.chown(os.path.join(root, relative), uid, gid, follow_symlinks = False)
+        except (OSError, TypeError):
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(prog = "unsloth-run")
     ap.add_argument("notebook")
@@ -163,8 +203,8 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
+    host_ids = _host_run_ids()
 
-    tmp_dir = None
     tmp_files = []
     publish_from = None
     if args.out:
@@ -172,18 +212,13 @@ def main():
         out_dir = os.path.dirname(out_path) or "."
         _makedirs_as_host(out_dir)
         if args.notebook.startswith(("http://", "https://")):
-            # A URL has no source tree to run in, so the download stays beside --out:
-            # that is the directory the run's own artifacts should land in.
+            # keep URL inputs beside --out so relative artifacts land in the output directory
             fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
             with os.fdopen(fd, "w") as f:
                 json.dump(nb, f)
             tmp_files.append(src_path)
         else:
-            # nbconvert makes the INPUT notebook's directory the kernel cwd
-            # (Exporter.from_filename sets resources["metadata"]["path"] to it), so a
-            # staged copy under --out would resolve the notebook's relative opens,
-            # local imports and saves against the OUTPUT tree. Execute the original
-            # where it lives; only the result is staged beside --out.
+            # nbconvert uses the input directory as the kernel cwd, so keep local inputs in place
             src_path = args.notebook
         fd, publish_from = tempfile.mkstemp(
             prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
@@ -191,23 +226,20 @@ def main():
         os.close(fd)
         tmp_files.append(publish_from)
     elif args.notebook.startswith(("http://", "https://")):
-        tmp_dir = tempfile.mkdtemp()
-        src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
-        with open(src_path, "w") as f:
+        src_path, fd = _open_url_download(args.notebook)
+        with os.fdopen(fd, "w") as f:
             json.dump(nb, f)
         out_path = src_path
     else:
         src_path = args.notebook
         out_path = src_path
 
+    kernel_dir = os.path.dirname(os.path.abspath(src_path)) or "."
+    ownership_before = _root_owned_state(kernel_dir) if host_ids is not None else None
+
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
-    # Per-run marker, and ALWAYS a fresh one: an inherited value is never this run's.
-    # The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
-    # `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's. Reusing it
-    # broke both ways: a target with a pin overwrote the caller kernel's pin, and a
-    # target with no pin ran against the caller's stale one. Either way a kernel that
-    # has not imported transformers yet can be handed the wrong sidecar.
+    # nested runs need a fresh marker to avoid overwriting or reusing the caller's transformers pin
     fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
     os.close(fd)
     env["UNSLOTH_NB_TF_MARKER"] = marker
@@ -248,13 +280,12 @@ def main():
             try:
                 os.replace(publish_from, out_path)
             except OSError:
-                # rename(2) onto a bind-mounted OUTPUT FILE returns EBUSY even though
-                # the file is writable, and such a mount needs the inode write anyway
+                # bind-mounted output files return EBUSY from rename(2) and require writing the mounted inode
                 try:
                     with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
                         shutil.copyfileobj(staged, live)
                 except OSError:
-                    # keep the result rather than delete it: a run can be hours long
+                    # preserve the result because the run may have taken hours
                     if publish_from in tmp_files:
                         tmp_files.remove(publish_from)
                     print(
@@ -264,8 +295,8 @@ def main():
                     )
                     raise
     finally:
-        if tmp_dir is not None:
-            shutil.rmtree(tmp_dir, ignore_errors = True)
+        if host_ids is not None:
+            _restore_output_ownership(kernel_dir, ownership_before, *host_ids)
         for p in tmp_files:
             try:
                 os.remove(p)
