@@ -79,6 +79,7 @@ function loadBuilder(chats: Record<string, StoredMessage[]>) {
     settleThreadScopedSettingsForCopy: async () => {},
     flushPendingChatSettings: async () => {},
     getChatSettings: async () => ({}),
+    resolveChatInstructions: async () => "",
     ...liveThreadHead,
     orderByParentChain,
     unwrapPastedTextContent,

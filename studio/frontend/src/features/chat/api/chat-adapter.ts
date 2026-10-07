@@ -2250,13 +2250,17 @@ async function resolveUseAdapter(
 async function resolveProjectInstructions(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  strictProjectRead = false,
 ): Promise<string> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
   if (!projectId) {
     return "";
   }
 
-  const project = await getStoredChatProject(projectId).catch(() => null);
+  const projectRequest = getStoredChatProject(projectId);
+  const project = strictProjectRead
+    ? await projectRequest
+    : await projectRequest.catch(() => null);
   if (!project || project.archived) {
     return "";
   }
@@ -2268,6 +2272,7 @@ export async function resolveChatInstructions(
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  strictProjectRead = false,
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2279,6 +2284,7 @@ export async function resolveChatInstructions(
   const projectInstructions = await resolveProjectInstructions(
     threadId,
     readThreadRecord,
+    strictProjectRead,
   );
   return [
     projectInstructions

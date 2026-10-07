@@ -57,6 +57,15 @@ type ExportHarnessOptions = {
     systemPrompt?: string;
     systemVariables?: string;
   };
+  getChatSettings?: () => Promise<{
+    inferenceParams?: {
+      systemPrompt?: string;
+      systemVariables?: string;
+    };
+  }>;
+  getStoredChatProject?: (id: string) => Promise<
+    { instructions: string; archived: boolean } | null
+  >;
   settleThreadScopedSettingsForCopy?: (id: string) => Promise<void>;
 };
 
@@ -144,19 +153,24 @@ function loadExporters(
   const context = {
     exports: {},
     toast: { info: () => {}, success: () => {} },
-    listStoredChatThreads: async () => threadIds.map((id) => ({ id })),
+    listStoredChatThreads: async () =>
+      (options.threads ?? THREADS).filter((thread) =>
+        threadIds.includes(thread.id),
+      ),
     listStoredChatMessages: async (id: string) => turns(id),
     getStoredChatThread:
       options.getStoredChatThread ??
       (async (id: string) =>
         (options.threads ?? THREADS).find((thread) => thread.id === id)),
-    getChatSettings: async () => ({
-      inferenceParams: options.globalInferenceParams,
-    }),
+    getChatSettings:
+      options.getChatSettings ??
+      (async () => ({ inferenceParams: options.globalInferenceParams })),
     flushPendingChatSettings: async () => {},
     settleThreadScopedSettingsForCopy:
       options.settleThreadScopedSettingsForCopy ?? (async () => {}),
-    getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
+    getStoredChatProject:
+      options.getStoredChatProject ??
+      (async (id: string) => PROJECTS[id] ?? null),
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
     composerProjectByPendingThread: new Map(),
@@ -296,6 +310,55 @@ test("a chat without a settings snapshot inherits the global system prompt", asy
     role: "system",
     content: "Answer for the Billing team.",
   });
+});
+
+test("bulk training export reads inherited global prompt settings once", async () => {
+  let settingsReads = 0;
+  const inherited = ["first", "second"].map(
+    (id, index): ThreadRecord => ({
+      id,
+      title: id,
+      modelType: "base",
+      projectId: null,
+      archived: false,
+      createdAt: index + 10,
+    }),
+  );
+  const exporters = loadExporters(
+    inherited.map((thread) => thread.id),
+    [],
+    [],
+    {
+      threads: inherited,
+      getChatSettings: async () => {
+        settingsReads += 1;
+        return { inferenceParams: { systemPrompt: "One shared prompt" } };
+      },
+    },
+  );
+
+  const result = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(result.lines.length, 2);
+  assert.equal(settingsReads, 1);
+  for (const line of result.lines) {
+    assert.equal(JSON.parse(line).messages[0].content, "One shared prompt");
+  }
+});
+
+test("project instruction lookup failures stop the export", async () => {
+  const downloads: string[] = [];
+  const exporters = loadExporters(["support"], downloads, [], {
+    getStoredChatProject: async () => {
+      throw new Error("project lookup unavailable");
+    },
+  });
+
+  await assert.rejects(
+    exporters.exportConversationRawJsonl("support"),
+    /project lookup unavailable/,
+  );
+  assert.equal(downloads.length, 0);
 });
 
 test("export waits for a pending thread prompt write before reading settings", async () => {

@@ -76,7 +76,10 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { getChatSettings } from "../api/chat-settings-api";
+import {
+  getChatSettings,
+  type PersistedInferenceParams,
+} from "../api/chat-settings-api";
 import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
@@ -231,24 +234,33 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
+type ChatExportInstructionContext = {
+  threads: ReadonlyMap<string, ThreadRecord>;
+  defaults: PersistedInferenceParams | undefined;
+};
+
 async function loadConversationMessages(
   threadId: string,
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
     includeInstructions?: boolean;
+    instructionContext?: ChatExportInstructionContext;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
     includeInstructions = true,
+    instructionContext,
   } = options;
   // read before awaiting storage because switching chats would target another thread.
   const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
-    includeInstructions ? chatInstructionsTurn(threadId) : [],
+    includeInstructions
+      ? chatInstructionsTurn(threadId, instructionContext)
+      : [],
   ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -264,15 +276,22 @@ async function loadConversationMessages(
   ] as typeof raw;
 }
 
-async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
-  await settleThreadScopedSettingsForCopy(threadId);
-  const thread = await getStoredChatThread(threadId);
+async function chatInstructionsTurn(
+  threadId: string,
+  context?: ChatExportInstructionContext,
+): Promise<MessageRecord[]> {
+  if (!context) await settleThreadScopedSettingsForCopy(threadId);
+  const thread =
+    context?.threads.get(threadId) ?? (await getStoredChatThread(threadId));
   if (!thread) return [];
   let systemPrompt = thread.settings?.systemPrompt;
   let systemVariables = thread.settings?.systemVariables;
   if (systemPrompt === undefined || systemVariables === undefined) {
-    await flushPendingChatSettings();
-    const defaults = (await getChatSettings()).inferenceParams;
+    let defaults = context?.defaults;
+    if (!context) {
+      await flushPendingChatSettings();
+      defaults = (await getChatSettings()).inferenceParams;
+    }
     systemPrompt ??= defaults?.systemPrompt;
     systemVariables ??= defaults?.systemVariables;
   }
@@ -281,6 +300,7 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
     systemPrompt,
     systemVariables,
     async () => thread,
+    true,
   );
   if (!text) return [];
   return [
@@ -292,6 +312,26 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
       createdAt: thread.createdAt,
     },
   ];
+}
+
+async function chatExportInstructionContext(
+  threadIds: readonly string[],
+): Promise<ChatExportInstructionContext> {
+  await Promise.all(threadIds.map(settleThreadScopedSettingsForCopy));
+  await flushPendingChatSettings();
+  const [threads, settings] = await Promise.all([
+    listStoredChatThreads({ includeArchived: true }),
+    getChatSettings(),
+  ]);
+  const wanted = new Set(threadIds);
+  return {
+    threads: new Map(
+      threads
+        .filter((thread) => wanted.has(thread.id))
+        .map((thread) => [thread.id, thread]),
+    ),
+    defaults: settings.inferenceParams,
+  };
 }
 
 // use the visible branch's newest saved turn because an unstored reply may replace the newest leaf.
@@ -541,7 +581,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 // markdown exports use the displayed branch while callers retain their empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
+  options: {
+    emptyMessage?: string;
+    includeInstructions?: boolean;
+    instructionContext?: ChatExportInstructionContext;
+  } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** matches downloaded markdown for the "Copy as Markdown" shortcut. */
@@ -656,9 +700,11 @@ export const COMBINED_EXPORT_FORMATS_LIST = EXPORT_FORMATS_LIST.filter(
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
+  instructionContext?: ChatExportInstructionContext,
 ): Promise<string | null> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings(format),
+    instructionContext,
   });
   if (!messages) return null;
 
@@ -683,7 +729,13 @@ async function buildThreadContent(
   }
 
   if (format === "markdown") {
-    return await buildConversationMarkdownForThread(threadId);
+    return buildConversationMarkdown(
+      messages.map((message) => ({
+        role: String(message.role ?? ""),
+        content: stripSearchImageTokens(messageToMarkdown(message)),
+      })),
+      { includeImportMetadata: true },
+    );
   }
 
   const rows: string[] = [];
@@ -721,12 +773,13 @@ export async function exportBulkConversationsMerged(
     toast.info("Message JSONL is available per chat.");
     return;
   }
+  const instructionContext = await chatExportInstructionContext(threadIds);
 
   if (format === "markdown" && threadIds.length > 1) {
     const conversations: Array<{ id: string; title: string }> = [];
     const pairs = new Map<string, ThreadRecord[]>();
     for (const id of threadIds) {
-      const thread = await getStoredChatThread(id);
+      const thread = instructionContext.threads.get(id);
       conversations.push({ id, title: thread?.title?.trim() || id });
       if (thread?.pairId) {
         const halves = pairs.get(thread.pairId) ?? [];
@@ -746,9 +799,14 @@ export async function exportBulkConversationsMerged(
     for (const conversation of conversations) {
       conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
     }
+    const buildMarkdown = createConversationMarkdownBuilder<MessageRecord>({
+      loadMessages: (id) =>
+        loadDisplayedBranchMessages(id, { instructionContext }),
+      renderMessage: messageToMarkdown,
+    });
     const body = await buildNamedConversationsMarkdown(
       conversations,
-      buildConversationMarkdownForThread,
+      buildMarkdown,
     );
     if (!body) { toast.info("No exportable content."); return; }
     await downloadBlob(
@@ -763,7 +821,7 @@ export async function exportBulkConversationsMerged(
   const header = csvHeader(format);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format);
+    const content = await buildThreadContent(id, format, instructionContext);
     if (content) parts.push(content);
   }
 
@@ -793,9 +851,10 @@ export async function exportBulkConversationsSeparate(
   const ext = exportExt(format);
   const header = csvHeader(format);
   const files: Record<string, Uint8Array> = {};
+  const instructionContext = await chatExportInstructionContext(threadIds);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format);
+    const content = await buildThreadContent(id, format, instructionContext);
     if (!content) continue;
     const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
@@ -1001,6 +1060,7 @@ export async function buildFineTuneJsonl(
 ): Promise<FineTuneExportResult> {
   const threads = await listStoredChatThreads({ includeArchived: false });
   const ids = [...new Set(threads.map((t) => t.id))];
+  const instructionContext = await chatExportInstructionContext(ids);
   const lines: string[] = [];
   let conversations = 0;
   let skipped = 0;
@@ -1008,7 +1068,7 @@ export async function buildFineTuneJsonl(
     const liveBranch = liveThreadBranch(id);
     const [raw, instructions] = await Promise.all([
       listStoredChatMessages(id),
-      chatInstructionsTurn(id),
+      chatInstructionsTurn(id, instructionContext),
     ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,

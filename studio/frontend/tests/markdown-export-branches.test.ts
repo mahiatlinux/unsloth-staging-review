@@ -108,6 +108,7 @@ function loadExporters(
     exports: {},
     toast: { info: () => {} },
     listStoredChatMessages: async () => stored,
+    listStoredChatThreads: async () => threads,
     getStoredChatThread: async (id: string) =>
       threads.find((thread) => thread.id === id),
     settleThreadScopedSettingsForCopy: async () => {},
