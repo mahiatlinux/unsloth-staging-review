@@ -47,12 +47,13 @@ test("first-token recovery ignores role and control chunks", () => {
   assert.deepEqual(
     [
       { choices: [{ delta: { role: "assistant" } }] },
+      { _resolvedInstructions: "Prompt A" },
       { context_truncated: { checkpoint: true } },
       { choices: [], quote_cut: true },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
     ].map(generationChunkCountsTowardTiming),
-    [true, false, false, false, true],
+    [true, false, false, false, false, true],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({

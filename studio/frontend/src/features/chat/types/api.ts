@@ -738,6 +738,8 @@ export interface OpenAIChatCompletionsRequest {
   tool_call_timeout?: number;
   session_id?: string;
   cancel_id?: string;
+  /** Studio's resolved project/user prompt before server-owned date conditioning. */
+  studio_resolved_instructions?: string;
   provider_id?: string;
   provider_type?: string;
   external_model?: string;
@@ -784,6 +786,8 @@ export interface OpenAIChatChunkChoice {
 
 export interface OpenAIChatChunk {
   choices?: OpenAIChatChunkChoice[];
+  /** Studio-only snapshot of the effective system instructions rendered by the server. */
+  _resolvedInstructions?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;

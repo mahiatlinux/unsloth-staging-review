@@ -1557,6 +1557,7 @@ function scheduleGenerationRecovery(
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
                 _reasoningDurationMs?: unknown;
+                _resolvedInstructions?: unknown;
                 usage?: {
                   prompt_tokens?: unknown;
                   completion_tokens?: unknown;
@@ -1580,6 +1581,17 @@ function scheduleGenerationRecovery(
                   currentMetadata,
                   chunk._reasoningDurationMs,
                 );
+                if (caughtUp(update.run)) {
+                  lastPublishedStatus = update.run.status;
+                  await publish(update.run);
+                }
+                continue;
+              }
+              if (typeof chunk._resolvedInstructions === "string") {
+                currentMetadata = {
+                  ...currentMetadata,
+                  resolvedInstructions: chunk._resolvedInstructions,
+                };
                 if (caughtUp(update.run)) {
                   lastPublishedStatus = update.run.status;
                   await publish(update.run);

@@ -64,6 +64,14 @@ export function normalizeChatGenerationChunkPayload(
 ): OpenAIChatChunk | Record<string, unknown> {
   if (payload !== null && typeof payload === "object" && "type" in payload) {
     const frameType = (payload as { type?: unknown }).type;
+    if (frameType === "resolved_instructions") {
+      return {
+        _resolvedInstructions:
+          typeof (payload as { content?: unknown }).content === "string"
+            ? (payload as { content: string }).content
+            : "",
+      } as OpenAIChatChunk;
+    }
     if (frameType === "skill_load") {
       return { _toolEvent: skillLoadCardEvent(payload) } as unknown as OpenAIChatChunk;
     }

@@ -278,12 +278,6 @@ async function loadConversationMessageSegments(
     toast.info(emptyMessage);
     return null;
   }
-  // Imported conversations already carry their own system turn. Treat it as
-  // the initial instruction snapshot instead of consulting today's defaults.
-  const instructions =
-    includeInstructions && !hasStoredSystemTurn(raw)
-      ? await chatInstructionsTurn(threadId, instructionContext)
-      : [];
   // parentless messages are legacy flat threads sorted by DB createdAt; chain walking reverses them.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   const ordered = hasParentIds
@@ -292,6 +286,14 @@ async function loadConversationMessageSegments(
         headId: liveBranchHeadId(liveBranch, raw),
       }) as typeof raw)
     : raw;
+  // Imported conversations and captured assistant runs already carry the
+  // instructions that produced them. Resolve today's fallback only when the
+  // first exported epoch still needs it; otherwise a transient project/default
+  // read must not make a fully snapshotted conversation unexportable.
+  const instructions =
+    includeInstructions && needsFallbackInstructions(ordered)
+      ? await chatInstructionsTurn(threadId, instructionContext)
+      : [];
   return includeInstructions
     ? partitionByRunInstructions(ordered, instructionText(instructions))
     : [{ instructions: "", messages: ordered }];
@@ -355,6 +357,12 @@ function capturedRunInstructions(message: MessageRecord): string | undefined {
   if (message.role !== "assistant") return undefined;
   const value = message.metadata?.resolvedInstructions;
   return typeof value === "string" ? value : undefined;
+}
+
+function needsFallbackInstructions(messages: MessageRecord[]): boolean {
+  if (hasStoredSystemTurn(messages)) return false;
+  const firstAssistant = messages.find((message) => message.role === "assistant");
+  return !firstAssistant || capturedRunInstructions(firstAssistant) === undefined;
 }
 
 function partitionByRunInstructions(
@@ -1352,9 +1360,6 @@ export async function buildFineTuneJsonl(
       skipped += 1;
       continue;
     }
-    const instructions = hasStoredSystemTurn(raw)
-      ? []
-      : await chatInstructionsTurn(id, instructionContext);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
@@ -1365,6 +1370,9 @@ export async function buildFineTuneJsonl(
           headId: liveBranchHeadId(liveBranch, raw),
         }) as typeof raw)
       : raw;
+    const instructions = needsFallbackInstructions(ordered)
+      ? await chatInstructionsTurn(id, instructionContext)
+      : [];
     let convertedConversations = 0;
     const converted: string[] = [];
     const segments = partitionByRunInstructions(

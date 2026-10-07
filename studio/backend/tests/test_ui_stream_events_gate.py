@@ -164,8 +164,21 @@ def test_control_frame_lines_are_recognised_by_type():
         "tool_status",
         "diffusion_frame",
         "reasoning_summary",
+        "resolved_instructions",
     ):
         assert is_ui_control_sse_line('data: {"type": "%s"}' % frame) is True, frame
+
+
+def test_resolved_instructions_frame_carries_the_exact_server_prompt():
+    from routes.inference import _resolved_instructions_sse_chunk
+
+    line = _resolved_instructions_sse_chunk("The current date is 2026-10-07.\n\nBe terse.")
+    payload = json.loads(line.removeprefix("data: ").strip())
+
+    assert payload == {
+        "type": "resolved_instructions",
+        "content": "The current date is 2026-10-07.\n\nBe terse.",
+    }
 
 
 def test_ordinary_chunks_and_sse_scaffolding_are_not_control_frames():

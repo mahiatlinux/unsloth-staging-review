@@ -5221,6 +5221,7 @@ export function createOpenAIStreamAdapter(
           params.systemVariables,
           readThreadRecord,
         ));
+      let effectiveResolvedInstructions = combinedSystemPrompt;
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -5726,7 +5727,7 @@ export function createOpenAIStreamAdapter(
           ),
         },
         ...generationCustom(),
-        resolvedInstructions: combinedSystemPrompt,
+        resolvedInstructions: effectiveResolvedInstructions,
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
@@ -6494,6 +6495,7 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
+              studio_resolved_instructions: combinedSystemPrompt,
               ...(providerSupportsPreserveThinking(externalProvider?.providerType)
                 ? { preserve_thinking: runtime.preserveThinking }
                 : {}),
@@ -6704,6 +6706,7 @@ export function createOpenAIStreamAdapter(
           return {
             model: params.checkpoint,
             messages: outboundMessages,
+            studio_resolved_instructions: combinedSystemPrompt,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
             ...studioToolHistoryRequestFieldsAfterReplay(
@@ -7001,6 +7004,10 @@ export function createOpenAIStreamAdapter(
             const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
+              if (typeof chunk._resolvedInstructions === "string") {
+                effectiveResolvedInstructions = chunk._resolvedInstructions;
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -8497,7 +8504,7 @@ export function createOpenAIStreamAdapter(
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
               ...generationCustom(),
-              resolvedInstructions: combinedSystemPrompt,
+              resolvedInstructions: effectiveResolvedInstructions,
             },
           },
         };
@@ -8673,7 +8680,7 @@ export function createOpenAIStreamAdapter(
                 },
                 timing: partialTiming,
                 ...generationCustom(),
-                resolvedInstructions: combinedSystemPrompt,
+                resolvedInstructions: effectiveResolvedInstructions,
               },
             },
           };

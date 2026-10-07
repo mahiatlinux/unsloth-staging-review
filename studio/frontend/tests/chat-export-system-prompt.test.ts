@@ -261,8 +261,16 @@ test("terminal stream yields retain the run's resolved instructions", () => {
   );
 
   assert.match(audioProgress, /resolvedInstructions: combinedSystemPrompt/);
-  assert.match(success, /resolvedInstructions: combinedSystemPrompt/);
-  assert.match(failure, /resolvedInstructions: combinedSystemPrompt/);
+  assert.match(success, /resolvedInstructions: effectiveResolvedInstructions/);
+  assert.match(failure, /resolvedInstructions: effectiveResolvedInstructions/);
+  assert.match(
+    ADAPTER,
+    /typeof chunk\._resolvedInstructions === "string"[\s\S]{0,180}effectiveResolvedInstructions = chunk\._resolvedInstructions/,
+  );
+  assert.equal(
+    ADAPTER.match(/studio_resolved_instructions: combinedSystemPrompt/g)?.length,
+    2,
+  );
 });
 
 test("every chat export format starts with the chat's system prompt", async () => {
@@ -940,6 +948,37 @@ test("project instruction lookup failures stop the export", async () => {
     /project lookup unavailable/,
   );
   assert.equal(downloads.length, 0);
+});
+
+test("captured run instructions avoid a failing fallback lookup", async () => {
+  const downloads: string[] = [];
+  let projectReads = 0;
+  const snapshotted = turns("support").map((message) =>
+    message.role === "assistant"
+      ? {
+          ...message,
+          metadata: { resolvedInstructions: SUPPORT_INSTRUCTIONS },
+        }
+      : message,
+  ) as MessageRecord[];
+  const exporters = loadExporters(["support"], downloads, [], {
+    listStoredChatMessages: async () => snapshotted,
+    getStoredChatProject: async () => {
+      projectReads += 1;
+      throw new Error("project lookup unavailable");
+    },
+  });
+
+  await exporters.exportConversationRawJsonl("support");
+  const result = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(projectReads, 0);
+  assert.equal(downloads.length, 1);
+  assert.equal(result.lines.length, 1);
+  assert.equal(
+    JSON.parse(result.lines[0]).messages[0].content,
+    SUPPORT_INSTRUCTIONS,
+  );
 });
 
 test("export waits for a pending thread prompt write before reading settings", async () => {

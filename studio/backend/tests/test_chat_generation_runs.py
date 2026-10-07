@@ -153,6 +153,31 @@ def test_create_snapshots_resolved_instructions_on_the_assistant(chat_home):
         _create(resolved_instructions = "Prompt B on 2026-10-07")
 
 
+def test_server_resolved_instructions_replace_the_client_snapshot(chat_home):
+    _create(resolved_instructions = "Prompt A")
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+
+    runs_db.append_events(
+        "run-1",
+        token,
+        [
+            (
+                "chunk",
+                {
+                    "type": "resolved_instructions",
+                    "content": "The current date is 2026-10-07.\n\nPrompt A",
+                },
+            )
+        ],
+    )
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert message["metadata"]["resolvedInstructions"] == (
+        "The current date is 2026-10-07.\n\nPrompt A"
+    )
+
+
 @pytest.mark.parametrize("admit_before_route", [True, False])
 def test_fork_refuses_durable_run_before_supervisor_registration(
     chat_home, monkeypatch, admit_before_route

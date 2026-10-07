@@ -100,6 +100,64 @@ class TestCurrentDatePromptLine:
         prompt = "The current date is 2026-08-15.\n\nBASE"
         assert inference._apply_current_date_prompt(prompt) == prompt
 
+    def test_studio_snapshot_adds_the_server_date_without_imported_system_history(
+        self, monkeypatch
+    ):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        payload = _types.SimpleNamespace(studio_resolved_instructions = "Prompt A")
+
+        assert inference._studio_resolved_instructions_snapshot(
+            payload,
+            None,
+            "The current date is 2026-08-15.\n\nPrompt A\n\nImported system",
+            "Prompt A\n\nImported system",
+        ) == "The current date is 2026-08-15.\n\nPrompt A"
+
+    def test_studio_empty_snapshot_keeps_only_the_server_date_when_history_has_system_turns(
+        self, monkeypatch
+    ):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        payload = _types.SimpleNamespace(studio_resolved_instructions = "")
+
+        assert inference._studio_resolved_instructions_snapshot(
+            payload,
+            None,
+            "The current date is 2026-08-15.\n\nImported system",
+            "Imported system",
+        ) == "The current date is 2026-08-15."
+
+    def test_studio_empty_snapshot_keeps_the_template_default_when_it_was_injected(
+        self, monkeypatch
+    ):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        payload = _types.SimpleNamespace(studio_resolved_instructions = "")
+        effective = "The current date is 2026-08-15.\n\nTemplate default"
+
+        assert inference._studio_resolved_instructions_snapshot(
+            payload,
+            None,
+            effective,
+            "",
+        ) == effective
+
     def test_discussing_the_date_phrase_does_not_suppress_injection(self, monkeypatch):
         import routes.inference as inference
 
@@ -196,6 +254,17 @@ class TestExternalProviderMessages:
         out = self._prepend([{"role": "user", "content": "hi"}])
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
+
+    def test_effective_instructions_are_flattened_for_the_ui_snapshot(self):
+        import routes.inference as inference
+
+        out = self._prepend(
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}]
+        )
+
+        assert inference._resolved_instructions_from_messages(out) == (
+            "The current date is 2026-08-15.\n\nBe terse."
+        )
 
     def test_ollama_keeps_its_modelfile_system_prompt_when_studio_sends_none(self):
         # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn (#10436).

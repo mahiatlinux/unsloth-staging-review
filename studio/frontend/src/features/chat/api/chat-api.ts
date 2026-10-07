@@ -1770,6 +1770,13 @@ export async function* streamChatCompletions(
         if ("error" in parsed && parsed.error) {
           throw new Error(parsed.error.message || "Stream error");
         }
+        if ("type" in parsed && parsed.type === "resolved_instructions") {
+          yield {
+            _resolvedInstructions: parsed.content ?? "",
+          } as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
         if ("type" in parsed && parsed.type === "skill_load") {
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

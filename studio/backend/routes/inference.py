@@ -1035,6 +1035,87 @@ def _quote_cut_sse_chunk(completion_id: str, model_name: str) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+def _resolved_instructions_sse_chunk(instructions: str) -> str:
+    """Studio-only snapshot of the instructions the server actually rendered."""
+    return "data: " + json.dumps(
+        {"type": "resolved_instructions", "content": instructions}
+    ) + "\n\n"
+
+
+async def _with_resolved_instructions(stream, instructions: str, enabled: bool):
+    iterator = stream.__aiter__()
+    try:
+        first = await iterator.__anext__()
+    except StopAsyncIteration:
+        return
+    try:
+        if enabled:
+            yield _resolved_instructions_sse_chunk(instructions)
+        yield first
+        async for chunk in iterator:
+            yield chunk
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
+
+
+def _resolved_instructions_from_messages(messages: list[dict]) -> str:
+    """Flatten system/developer text exactly enough to persist it in chat metadata."""
+    parts: list[str] = []
+    for message in messages:
+        if message.get("role") not in ("system", "developer"):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            if content:
+                parts.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        text = "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
+        )
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _studio_resolved_instructions_snapshot(
+    payload,
+    request: Any,
+    effective_instructions: str,
+    instructions_before_server: str,
+) -> str:
+    """Keep Studio's run prompt distinct from imported/system history.
+
+    The full backend prompt can contain stored system turns and internal tool
+    nudges that exports already represent elsewhere. Studio identifies the
+    configured run prompt separately so only server-owned date/default
+    conditioning is folded into that snapshot.
+    """
+    client_snapshot = getattr(payload, "studio_resolved_instructions", None)
+    if not isinstance(client_snapshot, str):
+        return effective_instructions
+    if _date_gate_blocks(request, include_api_key = False):
+        return client_snapshot
+    date_line = current_date_prompt_line(request = request)
+    if client_snapshot:
+        if not date_line:
+            return client_snapshot
+        refreshed, stated, _ = _refresh_stated_date(client_snapshot, date_line)
+        return refreshed if stated else f"{date_line}\n\n{client_snapshot.lstrip()}"
+    if instructions_before_server:
+        return (
+            date_line
+            if date_line and contains_current_date_prompt_line(effective_instructions)
+            else ""
+        )
+    return effective_instructions
+
+
 def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
     incoming = {key: value for key, value in event.items() if key != "type"}
     # The drains accumulate rather than forwarding each event, so record here. The per-fit
@@ -28230,10 +28311,17 @@ async def _proxy_to_external_provider(
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         _refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))
+        _codex_instructions_before_server = _resolved_instructions_from_messages(chat_messages)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
+        )
+        _codex_resolved_instructions = _studio_resolved_instructions_snapshot(
+            payload,
+            request,
+            _resolved_instructions_from_messages(chat_messages),
+            _codex_instructions_before_server,
         )
         cancel_event = threading.Event()
         cancel_keys = tuple(
@@ -28461,7 +28549,11 @@ async def _proxy_to_external_provider(
                                 _CANCEL_REGISTRY.pop(key, None)
 
         return StreamingResponse(
-            _codex_stream(),
+            _with_resolved_instructions(
+                _codex_stream(),
+                _codex_resolved_instructions,
+                _ui_events,
+            ),
             media_type = "text/event-stream",
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -28611,11 +28703,18 @@ async def _proxy_to_external_provider(
             full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
+    _external_instructions_before_server = _resolved_instructions_from_messages(chat_messages)
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
+    )
+    _external_resolved_instructions = _studio_resolved_instructions_snapshot(
+        payload,
+        request,
+        _resolved_instructions_from_messages(chat_messages),
+        _external_instructions_before_server,
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -29014,7 +29113,11 @@ async def _proxy_to_external_provider(
         )
 
     return StreamingResponse(
-        _tracked_stream(),
+        _with_resolved_instructions(
+            _tracked_stream(),
+            _external_resolved_instructions,
+            _ui_events,
+        ),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
@@ -30417,7 +30520,14 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
+                _audio_user_system_prompt = system_prompt
                 system_prompt = _audio_input_system_prompt(system_prompt, request)
+                _audio_resolved_instructions = _studio_resolved_instructions_snapshot(
+                    payload,
+                    request,
+                    system_prompt,
+                    _audio_user_system_prompt,
+                )
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -30556,7 +30666,9 @@ async def produce_openai_chat_completions(
                         _tracker.__exit__(None, None, None)
 
                 return _sse_streaming_response(
-                    audio_input_stream(),
+                    _with_resolved_instructions(
+                        audio_input_stream(), _audio_resolved_instructions, _ui_events
+                    ),
                     unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                     monitor_id = monitor_id,
                 )
@@ -30901,6 +31013,12 @@ async def produce_openai_chat_completions(
     system_prompt = _apply_current_date_prompt(
         system_prompt, request, image = _renders_media, controls = _date_controls
     )
+    _resolved_instructions = _studio_resolved_instructions_snapshot(
+        payload,
+        request,
+        system_prompt,
+        _user_system_prompt,
+    )
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -31131,6 +31249,12 @@ async def produce_openai_chat_completions(
                 template_default = False,
                 tools = True,
                 controls = _date_controls,
+            )
+            _resolved_instructions = _studio_resolved_instructions_snapshot(
+                payload,
+                request,
+                system_prompt,
+                _user_system_prompt,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -31870,7 +31994,9 @@ async def produce_openai_chat_completions(
                     _tracker.__exit__(None, None, None)
 
                 return _sse_streaming_response(
-                    admitted_gguf_tool_stream(),
+                    _with_resolved_instructions(
+                        admitted_gguf_tool_stream(), _resolved_instructions, _ui_events
+                    ),
                     unstarted_cleanup = _gguf_tool_admission_unstarted_cleanup,
                     monitor_id = monitor_id,
                 )
@@ -32503,7 +32629,9 @@ async def produce_openai_chat_completions(
                 _tracker.__exit__(None, None, None)
 
             return _sse_streaming_response(
-                admitted_gguf_stream_chunks(),
+                _with_resolved_instructions(
+                    admitted_gguf_stream_chunks(), _resolved_instructions, _ui_events
+                ),
                 unstarted_cleanup = _gguf_admission_unstarted_cleanup,
                 monitor_id = monitor_id,
             )
@@ -33295,6 +33423,12 @@ async def produce_openai_chat_completions(
             tools = True,
             controls = _date_controls,
         )
+        _sf_tool_resolved_instructions = _studio_resolved_instructions_snapshot(
+            payload,
+            request,
+            _sf_system_prompt,
+            _user_system_prompt,
+        )
         if _sf_nudge:
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
@@ -33674,7 +33808,9 @@ async def produce_openai_chat_completions(
 
         if payload.stream:
             return _sse_streaming_response(
-                sf_tool_stream(),
+                _with_resolved_instructions(
+                    sf_tool_stream(), _sf_tool_resolved_instructions, _ui_events
+                ),
                 unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
                 monitor_id = monitor_id,
             )
@@ -33971,6 +34107,12 @@ async def produce_openai_chat_completions(
             image = _sf_has_any_image or _video_clip is not None,
             tools = bool(_sf_client_catalog),
             controls = _date_controls,
+        )
+        _resolved_instructions = _studio_resolved_instructions_snapshot(
+            payload,
+            request,
+            _sf_client_system_prompt,
+            _user_system_prompt,
         )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
@@ -34403,7 +34545,9 @@ async def produce_openai_chat_completions(
                 _tracker.__exit__(None, None, None)
 
         return _sse_streaming_response(
-            stream_chunks(),
+            _with_resolved_instructions(
+                stream_chunks(), _resolved_instructions, _ui_events
+            ),
             unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
             monitor_id = monitor_id,
         )

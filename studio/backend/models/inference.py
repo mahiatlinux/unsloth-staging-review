@@ -2844,6 +2844,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
+    studio_resolved_instructions: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Studio's per-run instruction snapshot before server-owned "
+            "conditioning is applied. Used only to return the exact persisted export snapshot."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = (

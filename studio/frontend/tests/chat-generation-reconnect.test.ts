@@ -185,17 +185,21 @@ test("durable replay re-tags persisted tool control frames for the shared consum
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     if (String(input).includes("/events")) {
       return sse([
-        frame(1, "chunk", { type: "tool_status", content: "Searching…" }),
-        frame(2, "chunk", toolStart),
+        frame(1, "chunk", {
+          type: "resolved_instructions",
+          content: "The current date is 2026-10-07.\n\nPrompt A",
+        }),
+        frame(2, "chunk", { type: "tool_status", content: "Searching…" }),
+        frame(3, "chunk", toolStart),
         frame(
-          3,
+          4,
           "chunk",
           { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
         ),
-        frame(4, "run.completed", { status: "completed" }, run("completed", 4)),
+        frame(5, "run.completed", { status: "completed" }, run("completed", 5)),
       ]);
     }
-    return new Response(JSON.stringify(run("completed", 4)), {
+    return new Response(JSON.stringify(run("completed", 5)), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -210,6 +214,7 @@ test("durable replay re-tags persisted tool control frames for the shared consum
   // Tagged exactly like the legacy stream yields them, and structured delta.tool_calls chunks
   // pass through untouched for the consumer's index-keyed accumulation.
   assert.deepEqual(chunks, [
+    { _resolvedInstructions: "The current date is 2026-10-07.\n\nPrompt A" },
     { _toolStatus: "Searching…" },
     { _toolEvent: toolStart },
     { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
