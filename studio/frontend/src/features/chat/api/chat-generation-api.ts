@@ -42,6 +42,7 @@ export interface CreateChatGenerationRunInput {
   userMessageId: string;
   assistantMessageId: string;
   requestPayload: OpenAIChatCompletionsRequest;
+  resolvedInstructions: string;
 }
 
 export interface ChatGenerationEvent {

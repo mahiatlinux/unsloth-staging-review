@@ -97,6 +97,7 @@ def _create(
     run_id = "run-1",
     owner = "alice",
     request = None,
+    resolved_instructions = "",
 ):
     return runs_db.create_run(
         run_id = run_id,
@@ -105,6 +106,7 @@ def _create(
         user_message_id = "user-1",
         assistant_message_id = "assistant-1" if run_id == "run-1" else f"assistant-{run_id}",
         request_payload = request or _request(),
+        resolved_instructions = resolved_instructions,
     )
 
 
@@ -121,6 +123,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         "generationSeq": 0,
         "generationStatus": "queued",
         "serverManaged": True,
+        "resolvedInstructions": "",
     }
     _assert_protected({**message, "content": [{"type": "text", "text": "stale overwrite"}]})
 
@@ -139,6 +142,15 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(owner = "bob")
     with pytest.raises(runs_db.ChatGenerationConflictError):
         _create(request = _request(max_tokens = 9))
+
+
+def test_create_snapshots_resolved_instructions_on_the_assistant(chat_home):
+    _create(resolved_instructions = "Prompt A on 2026-10-06")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert message["metadata"]["resolvedInstructions"] == "Prompt A on 2026-10-06"
+    with pytest.raises(runs_db.ChatGenerationConflictError):
+        _create(resolved_instructions = "Prompt B on 2026-10-07")
 
 
 @pytest.mark.parametrize("admit_before_route", [True, False])
@@ -413,6 +425,7 @@ def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
         "incomplete": {"reason": "length"},
         "timing": {"tokensPerSecond": 42.5, "durationMs": 1200},
         "contextUsage": {"promptTokens": 900, "contextLength": 4096},
+        "resolvedInstructions": "",
     }
     assert runs_db.get_run("run-1", "alice") is None
 

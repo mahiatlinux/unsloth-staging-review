@@ -12,7 +12,7 @@ import {
 } from "../src/features/chat/codex-reasoning.ts";
 import { stripSearchImageTokens } from "../src/features/chat/search-images/search-images.ts";
 import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
-import type { ThreadRecord } from "../src/features/chat/types.ts";
+import type { MessageRecord, ThreadRecord } from "../src/features/chat/types.ts";
 import {
   buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
@@ -36,7 +36,11 @@ import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.
 import { readSrc } from "./helpers/kit.ts";
 
 type Exporters = {
-  buildFineTuneJsonl: (format: string) => Promise<{ lines: string[] }>;
+  buildFineTuneJsonl: (format: string) => Promise<{
+    lines: string[];
+    conversations: number;
+    skipped: number;
+  }>;
   exportConversationRawJsonl: (threadId: string) => Promise<void>;
   exportConversationMessagesJsonl: (threadId: string) => Promise<void>;
   exportConversationShareGPT: (threadId: string) => Promise<void>;
@@ -53,6 +57,7 @@ type Exporters = {
 type ExportHarnessOptions = {
   threads?: ThreadRecord[];
   getStoredChatThread?: (id: string) => Promise<ThreadRecord | undefined>;
+  listStoredChatMessages?: (id: string) => Promise<MessageRecord[]>;
   globalInferenceParams?: {
     systemPrompt?: string;
     systemVariables?: string;
@@ -157,7 +162,9 @@ function loadExporters(
       (options.threads ?? THREADS).filter((thread) =>
         threadIds.includes(thread.id),
       ),
-    listStoredChatMessages: async (id: string) => turns(id),
+    listStoredChatMessages:
+      options.listStoredChatMessages ??
+      (async (id: string) => turns(id) as MessageRecord[]),
     getStoredChatThread:
       options.getStoredChatThread ??
       (async (id: string) =>
@@ -312,37 +319,127 @@ test("a chat without a settings snapshot inherits the global system prompt", asy
   });
 });
 
-test("a chat exports the exact instructions captured by its latest run", async () => {
+test("chat exports preserve instruction changes at their run boundaries", async () => {
   const downloads: string[] = [];
   const captured: ThreadRecord = {
     id: "captured",
     title: "Captured",
     modelType: "base",
-    projectId: "billing",
+    projectId: null,
     archived: false,
     createdAt: 3,
-    lastResolvedInstructions:
-      "<project_instructions>\nOld project instructions.\n</project_instructions>\n\nToday is 2026-10-06.",
+    settings: { systemPrompt: "Prompt B", systemVariables: "" },
   };
-  let projectReads = 0;
+  const messages: MessageRecord[] = [
+    {
+      id: "captured-u1",
+      threadId: captured.id,
+      parentId: null,
+      role: "user",
+      content: [{ type: "text", text: "First question" }],
+      createdAt: 10,
+    },
+    {
+      id: "captured-a1",
+      threadId: captured.id,
+      parentId: "captured-u1",
+      role: "assistant",
+      content: [{ type: "text", text: "First answer" }],
+      metadata: { resolvedInstructions: "Prompt A on 2026-10-06" },
+      createdAt: 11,
+    },
+    {
+      id: "captured-u2",
+      threadId: captured.id,
+      parentId: "captured-a1",
+      role: "user",
+      content: [{ type: "text", text: "Second question" }],
+      createdAt: 12,
+    },
+    {
+      id: "captured-a2",
+      threadId: captured.id,
+      parentId: "captured-u2",
+      role: "assistant",
+      content: [{ type: "text", text: "Second answer" }],
+      metadata: { resolvedInstructions: "Prompt B on 2026-10-07" },
+      createdAt: 13,
+    },
+  ];
   const exporters = loadExporters([captured.id], downloads, [], {
     threads: [captured],
-    globalInferenceParams: {
-      systemPrompt: "Today is {{$date}}. This is a newer prompt.",
-    },
-    getStoredChatProject: async () => {
-      projectReads += 1;
-      return { instructions: "New project instructions.", archived: false };
-    },
+    listStoredChatMessages: async () => messages,
   });
 
   await exporters.exportConversationRawJsonl(captured.id);
 
-  assert.equal(
-    JSON.parse(downloads[0]).messages[0].content,
-    captured.lastResolvedInstructions,
+  assert.deepEqual(JSON.parse(downloads[0]).messages, [
+    { role: "system", content: "Prompt A on 2026-10-06" },
+    { role: "user", content: "First question" },
+    { role: "assistant", content: "First answer" },
+    { role: "system", content: "Prompt B on 2026-10-07" },
+    { role: "user", content: "Second question" },
+    { role: "assistant", content: "Second answer" },
+  ]);
+});
+
+test("fine-tuning data splits when a chat's resolved instructions change", async () => {
+  const thread: ThreadRecord = {
+    id: "changing",
+    title: "Changing",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 3,
+    settings: { systemPrompt: "Prompt B", systemVariables: "" },
+  };
+  const messages: MessageRecord[] = [
+    ...turns(thread.id),
+    {
+      id: `${thread.id}-u2`,
+      threadId: thread.id,
+      parentId: `${thread.id}-a1`,
+      role: "user",
+      content: [{ type: "text", text: "Second question" }],
+      createdAt: 12,
+    },
+    {
+      id: `${thread.id}-a2`,
+      threadId: thread.id,
+      parentId: `${thread.id}-u2`,
+      role: "assistant",
+      content: [{ type: "text", text: "Second answer" }],
+      metadata: { resolvedInstructions: "Prompt B" },
+      createdAt: 13,
+    },
+  ] as MessageRecord[];
+  messages[1] = {
+    ...messages[1],
+    metadata: { resolvedInstructions: "Prompt A" },
+  };
+  const exporters = loadExporters([thread.id], [], [], {
+    threads: [thread],
+    listStoredChatMessages: async () => messages,
+  });
+
+  const result = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(result.conversations, 2);
+  assert.deepEqual(
+    Array.from(result.lines, (line) => JSON.parse(line).messages),
+    [
+      [
+        { role: "system", content: "Prompt A" },
+        { role: "user", content: "Where is my refund?" },
+        { role: "assistant", content: "It went out today. Ticket closed." },
+      ],
+      [
+        { role: "system", content: "Prompt B" },
+        { role: "user", content: "Second question" },
+        { role: "assistant", content: "Second answer" },
+      ],
+    ],
   );
-  assert.equal(projectReads, 0);
 });
 
 test("bulk training export reads inherited global prompt settings once", async () => {

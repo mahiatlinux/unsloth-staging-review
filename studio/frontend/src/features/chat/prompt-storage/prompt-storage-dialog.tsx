@@ -269,12 +269,15 @@ async function loadConversationMessages(
   }
   // parentless messages are legacy flat threads sorted by DB createdAt; chain walking reverses them.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return [...instructions, ...raw];
-  const headId = liveBranchHeadId(liveBranch, raw);
-  return [
-    ...instructions,
-    ...orderByParentChain(raw, { includeSiblings, headId }),
-  ] as typeof raw;
+  const ordered = hasParentIds
+    ? (orderByParentChain(raw, {
+        includeSiblings,
+        headId: liveBranchHeadId(liveBranch, raw),
+      }) as typeof raw)
+    : raw;
+  return includeInstructions
+    ? messagesWithInstructionBoundaries(threadId, ordered, instructions)
+    : ordered;
 }
 
 async function chatInstructionsTurn(
@@ -285,19 +288,6 @@ async function chatInstructionsTurn(
   const thread =
     context?.threads.get(threadId) ?? (await getStoredChatThread(threadId));
   if (!thread) return [];
-  if (thread.lastResolvedInstructions != null) {
-    const text = thread.lastResolvedInstructions;
-    if (!text) return [];
-    return [
-      {
-        id: `${threadId}-instructions`,
-        threadId,
-        role: "system",
-        content: [{ type: "text", text }],
-        createdAt: thread.createdAt,
-      },
-    ];
-  }
   let systemPrompt = thread.settings?.systemPrompt;
   let systemVariables = thread.settings?.systemVariables;
   if (systemPrompt === undefined || systemVariables === undefined) {
@@ -327,6 +317,91 @@ async function chatInstructionsTurn(
       createdAt: thread.createdAt,
     },
   ];
+}
+
+type ChatInstructionSegment = {
+  instructions: string;
+  messages: MessageRecord[];
+};
+
+function capturedRunInstructions(message: MessageRecord): string | undefined {
+  if (message.role !== "assistant") return undefined;
+  const value = message.metadata?.resolvedInstructions;
+  return typeof value === "string" ? value : undefined;
+}
+
+function partitionByRunInstructions(
+  messages: MessageRecord[],
+  fallbackInstructions: string,
+): ChatInstructionSegment[] {
+  const segments: ChatInstructionSegment[] = [];
+  let instructions = fallbackInstructions;
+  let completed: MessageRecord[] = [];
+  let pending: MessageRecord[] = [];
+
+  for (const message of messages) {
+    pending.push(message);
+    if (message.role !== "assistant") continue;
+    const captured = capturedRunInstructions(message);
+    const nextInstructions = captured ?? instructions;
+    if (
+      nextInstructions !== instructions &&
+      completed.some((item) => item.role === "assistant")
+    ) {
+      segments.push({ instructions, messages: completed });
+      completed = [];
+    }
+    instructions = nextInstructions;
+    completed.push(...pending);
+    pending = [];
+  }
+
+  completed.push(...pending);
+  if (completed.length > 0) segments.push({ instructions, messages: completed });
+  return segments;
+}
+
+function instructionText(instructions: MessageRecord[]): string {
+  return instructions.length > 0
+    ? contentBlocksToText(instructions[0]?.content)
+    : "";
+}
+
+function systemInstructionTurn(
+  threadId: string,
+  text: string,
+  segment: number,
+  createdAt: number,
+): MessageRecord {
+  return {
+    id: `${threadId}-instructions-${segment}`,
+    threadId,
+    role: "system",
+    content: [{ type: "text", text }],
+    createdAt,
+  };
+}
+
+function messagesWithInstructionBoundaries(
+  threadId: string,
+  messages: MessageRecord[],
+  instructions: MessageRecord[],
+): MessageRecord[] {
+  return partitionByRunInstructions(messages, instructionText(instructions)).flatMap(
+    (segment, index) => [
+      ...(segment.instructions
+        ? [
+            systemInstructionTurn(
+              threadId,
+              segment.instructions,
+              index,
+              segment.messages[0]?.createdAt ?? Date.now(),
+            ),
+          ]
+        : []),
+      ...segment.messages,
+    ],
+  );
 }
 
 async function chatExportInstructionContext(
@@ -1096,13 +1171,37 @@ export async function buildFineTuneJsonl(
           headId: liveBranchHeadId(liveBranch, raw),
         }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
-    const converted = turns ? turnsToFineTuneLines(turns, format) : [];
-    if (converted.length === 0) {
+    let convertedConversations = 0;
+    const converted: string[] = [];
+    const segments = partitionByRunInstructions(
+      ordered,
+      instructionText(instructions),
+    );
+    for (const [index, segment] of segments.entries()) {
+      const messages = [
+        ...(segment.instructions
+          ? [
+              systemInstructionTurn(
+                id,
+                segment.instructions,
+                index,
+                segment.messages[0]?.createdAt ?? Date.now(),
+              ),
+            ]
+          : []),
+        ...segment.messages,
+      ];
+      const turns = messagesToFineTuneTurns(messages);
+      const segmentLines = turns ? turnsToFineTuneLines(turns, format) : [];
+      if (segmentLines.length === 0) continue;
+      convertedConversations += 1;
+      converted.push(...segmentLines);
+    }
+    if (convertedConversations === 0) {
       skipped += 1;
       continue;
     }
-    conversations += 1;
+    conversations += convertedConversations;
     lines.push(...converted);
   }
   return { lines, conversations, skipped };

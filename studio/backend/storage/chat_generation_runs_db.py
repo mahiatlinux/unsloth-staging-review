@@ -362,6 +362,7 @@ def canonical_request(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    resolved_instructions: str = "",
 ) -> tuple[str, str]:
     request_json = json.dumps(
         request_payload,
@@ -374,6 +375,7 @@ def canonical_request(
             "threadId": thread_id,
             "userMessageId": user_message_id,
             "assistantMessageId": assistant_message_id,
+            "resolvedInstructions": resolved_instructions,
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
@@ -540,12 +542,14 @@ def create_run(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    resolved_instructions: str = "",
 ) -> tuple[dict[str, Any], bool]:
     request_json, request_hash = canonical_request(
         thread_id = thread_id,
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
         request_payload = request_payload,
+        resolved_instructions = resolved_instructions,
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
@@ -597,6 +601,7 @@ def create_run(
             "generationSeq": 0,
             "generationStatus": "queued",
             "serverManaged": True,
+            "resolvedInstructions": resolved_instructions,
         }
         assistant = conn.execute(
             "SELECT * FROM chat_messages WHERE id=?",

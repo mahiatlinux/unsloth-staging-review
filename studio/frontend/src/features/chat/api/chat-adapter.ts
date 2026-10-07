@@ -2302,19 +2302,6 @@ export async function resolveChatInstructions(
     .join("\n\n");
 }
 
-async function persistResolvedChatInstructions(
-  threadId: string | undefined,
-  instructions: string,
-): Promise<void> {
-  if (!threadId || isThreadIncognito(threadId)) return;
-  const updated = await updateStoredChatThread(threadId, {
-    lastResolvedInstructions: instructions,
-  });
-  if (!updated) {
-    throw new Error("The chat instructions snapshot could not be saved.");
-  }
-}
-
 // Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
 // project, and navigating between them would mix two projects into one request.
 const composerProjectByPendingThread = new Map<string, string | null>();
@@ -4699,10 +4686,6 @@ export function createOpenAIStreamAdapter(
               : {}),
             createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
           });
-          await persistResolvedChatInstructions(
-            resolvedThreadId,
-            researchInstructions,
-          );
           const createdRun = await createResearchRun({
             threadId: resolvedThreadId,
             userMessageId: userMessage.id,
@@ -4768,6 +4751,7 @@ export function createOpenAIStreamAdapter(
                   researchRun: run,
                   serverManaged: true,
                   serverRevision: run.lastEventSeq,
+                  resolvedInstructions: researchInstructions,
                 },
               },
             };
@@ -5528,10 +5512,6 @@ export function createOpenAIStreamAdapter(
             content: [{ type: "text" as const, text: "Generating audio..." }],
           };
 
-          await persistResolvedChatInstructions(
-            resolvedThreadId,
-            combinedSystemPrompt,
-          );
           const result = await generateAudio(
             {
               model: params.checkpoint,
@@ -5560,6 +5540,9 @@ export function createOpenAIStreamAdapter(
                 text: `<audio-player src="${audioUrl}" />`,
               },
             ],
+            metadata: {
+              custom: { resolvedInstructions: combinedSystemPrompt },
+            },
           };
         } catch (err) {
           if (!runSignal.aborted) {
@@ -5738,6 +5721,7 @@ export function createOpenAIStreamAdapter(
           ),
         },
         ...generationCustom(),
+        resolvedInstructions: combinedSystemPrompt,
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
@@ -6847,7 +6831,6 @@ export function createOpenAIStreamAdapter(
         };
 
         let retriedWithRefreshedKey = false;
-        let instructionsPersisted = false;
         while (true) {
           try {
             let requestPayload: OpenAIChatCompletionsRequest;
@@ -6873,13 +6856,6 @@ export function createOpenAIStreamAdapter(
                 runtime.loadedContextLength ??
                 (params.maxSeqLength || null));
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            if (!instructionsPersisted) {
-              await persistResolvedChatInstructions(
-                resolvedThreadId,
-                combinedSystemPrompt,
-              );
-              instructionsPersisted = true;
-            }
             if (generationDecision === "pending") {
               // Keyed on `enabled_tools`, never on `requestPayload.tools`: see durable-gate.ts. Keying this on
               // `tools` read as "no tools" on the local path and as "browser tools" for every passthrough turn that
@@ -6914,6 +6890,7 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        resolvedInstructions: combinedSystemPrompt,
                       },
                       runSignal,
                     );

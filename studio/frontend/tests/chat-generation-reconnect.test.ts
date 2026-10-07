@@ -73,6 +73,7 @@ const createInput = () => ({
   userMessageId: "user-1",
   assistantMessageId: "assistant-1",
   requestPayload: run("queued", 1).requestPayload,
+  resolvedInstructions: "Prompt A",
 });
 
 const frame = (

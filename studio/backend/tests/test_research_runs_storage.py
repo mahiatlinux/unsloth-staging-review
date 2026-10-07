@@ -2951,6 +2951,7 @@ def test_create_run_atomically_creates_exact_frontend_placeholder(research_home)
         "researchStatus": "planning",
         "researchPlanRevision": 0,
         "serverManaged": True,
+        "resolvedInstructions": "",
     }
 
 
