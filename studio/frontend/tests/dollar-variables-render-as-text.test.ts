@@ -63,6 +63,9 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["Run echo $PATH\nthen echo $HOME", ["$PATH", "$HOME"]],
   ["echo $PATH\n| sed 's/bin/sbin/'\necho $HOME", ["$PATH", "$HOME"]],
   ["Run echo $PATH $HOME", ["$PATH $HOME"]],
+  ["echo $HOME$USER", ["$HOME$USER"]],
+  ["cp $SRC$SUFFIX $DST", ["$SRC$SUFFIX $DST"]],
+  ["cp $src$dst $out", ["$src$dst $out"]],
   ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
   [
     "Use $PATH or [the docs](https://example.com), then $HOME",

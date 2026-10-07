@@ -43,6 +43,7 @@ const VARIABLE_PROSE_RE =
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
 const TRAILING_UPPER_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
+const BARE_SHELL_NAME_RE = /^[A-Za-z_]\w*$/;
 const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
@@ -58,7 +59,7 @@ const SHELL_PID_CONTEXT_RE =
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
 const SHELL_PARAMETER_CONTEXT_RE =
-  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b[^$]*$/;
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b.*$/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
@@ -94,10 +95,11 @@ function looksLikeVariableProse(
   prefix: string,
   afterCloser: string,
 ): boolean {
+  const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
+  if (shellContext && BARE_SHELL_NAME_RE.test(body)) return true;
   if (!VARIABLE_PROSE_RE.test(body)) {
     return false;
   }
-  const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
   if (/\s$/.test(body) && /^[a-z]/.test(afterCloser) && !shellContext) {
     return false;
   }
