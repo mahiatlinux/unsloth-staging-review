@@ -500,6 +500,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             fork_boundary_message_id TEXT,
             fork_title_base TEXT,
             settings_json TEXT,
+            last_resolved_instructions TEXT,
             modified_at INTEGER,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
@@ -510,6 +511,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "settings_json" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
+    if "last_resolved_instructions" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN last_resolved_instructions TEXT")
     if "model_gguf_variant" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN model_gguf_variant TEXT")
     # Orders one writer's snapshot writes against its own earlier ones. A tab closing sends its last
@@ -2111,6 +2114,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
         "forkTitleBase": data.get("fork_title_base"),
         "modifiedAt": data.get("modified_at"),
+        "lastResolvedInstructions": data.get("last_resolved_instructions"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2172,8 +2176,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json, last_resolved_instructions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -2206,7 +2210,11 @@ def upsert_chat_thread(thread: dict) -> dict:
                     ELSE NULL
                 END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
-                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
+                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json),
+                last_resolved_instructions = COALESCE(
+                    excluded.last_resolved_instructions,
+                    chat_threads.last_resolved_instructions
+                )
             """,
             (
                 thread["id"],
@@ -2226,6 +2234,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("forkBoundaryMessageId"),
                 thread.get("forkTitleBase"),
                 json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
+                thread.get("lastResolvedInstructions"),
             ),
         )
         conn.commit()
@@ -2279,6 +2288,10 @@ def update_chat_thread(
         "anthropicCodeExecContainerId": (
             "anthropic_code_exec_container_id",
             patch.get("anthropicCodeExecContainerId"),
+        ),
+        "lastResolvedInstructions": (
+            "last_resolved_instructions",
+            patch.get("lastResolvedInstructions"),
         ),
         "forkedFromThreadId": (
             "forked_from_thread_id",
@@ -4390,8 +4403,8 @@ def fork_chat_thread(
                 (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
                  forked_from_thread_id, forked_from_message_id, fork_boundary_message_id,
-                 fork_title_base, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?)
+                 fork_title_base, settings_json, last_resolved_instructions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_thread_id,
@@ -4407,6 +4420,7 @@ def fork_chat_thread(
                 boundary_message_id,
                 base,
                 src_dict.get("settings_json"),
+                src_dict.get("last_resolved_instructions"),
             ),
         )
         fork_messages = []

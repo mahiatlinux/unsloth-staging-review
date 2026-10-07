@@ -237,6 +237,7 @@ function contentBlocksToText(content: unknown): string {
 type ChatExportInstructionContext = {
   threads: ReadonlyMap<string, ThreadRecord>;
   defaults: PersistedInferenceParams | undefined;
+  projectInstructions: Map<string, Promise<string>>;
 };
 
 async function loadConversationMessages(
@@ -284,6 +285,19 @@ async function chatInstructionsTurn(
   const thread =
     context?.threads.get(threadId) ?? (await getStoredChatThread(threadId));
   if (!thread) return [];
+  if (thread.lastResolvedInstructions != null) {
+    const text = thread.lastResolvedInstructions;
+    if (!text) return [];
+    return [
+      {
+        id: `${threadId}-instructions`,
+        threadId,
+        role: "system",
+        content: [{ type: "text", text }],
+        createdAt: thread.createdAt,
+      },
+    ];
+  }
   let systemPrompt = thread.settings?.systemPrompt;
   let systemVariables = thread.settings?.systemVariables;
   if (systemPrompt === undefined || systemVariables === undefined) {
@@ -301,6 +315,7 @@ async function chatInstructionsTurn(
     systemVariables,
     async () => thread,
     true,
+    context?.projectInstructions,
   );
   if (!text) return [];
   return [
@@ -331,6 +346,7 @@ async function chatExportInstructionContext(
         .map((thread) => [thread.id, thread]),
     ),
     defaults: settings.inferenceParams,
+    projectInstructions: new Map(),
   };
 }
 

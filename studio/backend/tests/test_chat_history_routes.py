@@ -255,6 +255,20 @@ def test_chat_thread_payload_carries_gguf_variant():
     assert patch.model_dump(exclude_unset = True) == {"modelGgufVariant": "Q8_0"}
 
 
+def test_chat_thread_payload_carries_last_resolved_instructions():
+    thread = chat_history.ChatThread(
+        id = "thread-1",
+        title = "Prompt chat",
+        modelType = "base",
+        createdAt = 1,
+        lastResolvedInstructions = "Today is 2026-10-06.",
+    )
+    patch = chat_history.ChatThreadPatch(lastResolvedInstructions = "")
+
+    assert thread.model_dump()["lastResolvedInstructions"] == "Today is 2026-10-06."
+    assert patch.model_dump(exclude_unset = True) == {"lastResolvedInstructions": ""}
+
+
 def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
     captured_operation_ids: list[str | None] = []

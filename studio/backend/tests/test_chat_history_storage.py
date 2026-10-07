@@ -240,6 +240,23 @@ def test_chat_thread_preserves_gguf_variant(tmp_path, monkeypatch):
     assert studio_db.upsert_chat_thread(replacement)["modelGgufVariant"] is None
 
 
+def test_chat_thread_persists_last_resolved_instructions(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = {**_thread(), "lastResolvedInstructions": "Prompt A on 2026-10-06"}
+
+    saved = studio_db.upsert_chat_thread(thread)
+    assert saved["lastResolvedInstructions"] == "Prompt A on 2026-10-06"
+
+    updated = studio_db.update_chat_thread(
+        "thread-1", {"lastResolvedInstructions": ""}
+    )
+    assert updated is not None
+    assert updated["lastResolvedInstructions"] == ""
+
+    studio_db.upsert_chat_thread(_thread())
+    assert studio_db.get_chat_thread("thread-1")["lastResolvedInstructions"] == ""
+
+
 def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     older = _thread("thread-old")

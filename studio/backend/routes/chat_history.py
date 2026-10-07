@@ -187,6 +187,8 @@ class ChatThread(BaseModel):
     forkTitleBase: Optional[str] = None
     # Server-set on rename, move or (un)archive.
     modifiedAt: Optional[int] = None
+    # Exact project + system instructions sent on the latest run.
+    lastResolvedInstructions: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")
@@ -294,6 +296,7 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    lastResolvedInstructions: Optional[str] = None
     # Replaces the whole snapshot, except for anything the client could not read.
     settings: Optional[ChatThreadSettings] = None
     # Applies just the fields it names. For the writer that knows what changed but not

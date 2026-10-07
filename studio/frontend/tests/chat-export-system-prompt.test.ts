@@ -312,6 +312,39 @@ test("a chat without a settings snapshot inherits the global system prompt", asy
   });
 });
 
+test("a chat exports the exact instructions captured by its latest run", async () => {
+  const downloads: string[] = [];
+  const captured: ThreadRecord = {
+    id: "captured",
+    title: "Captured",
+    modelType: "base",
+    projectId: "billing",
+    archived: false,
+    createdAt: 3,
+    lastResolvedInstructions:
+      "<project_instructions>\nOld project instructions.\n</project_instructions>\n\nToday is 2026-10-06.",
+  };
+  let projectReads = 0;
+  const exporters = loadExporters([captured.id], downloads, [], {
+    threads: [captured],
+    globalInferenceParams: {
+      systemPrompt: "Today is {{$date}}. This is a newer prompt.",
+    },
+    getStoredChatProject: async () => {
+      projectReads += 1;
+      return { instructions: "New project instructions.", archived: false };
+    },
+  });
+
+  await exporters.exportConversationRawJsonl(captured.id);
+
+  assert.equal(
+    JSON.parse(downloads[0]).messages[0].content,
+    captured.lastResolvedInstructions,
+  );
+  assert.equal(projectReads, 0);
+});
+
 test("bulk training export reads inherited global prompt settings once", async () => {
   let settingsReads = 0;
   const inherited = ["first", "second"].map(
@@ -344,6 +377,38 @@ test("bulk training export reads inherited global prompt settings once", async (
   for (const line of result.lines) {
     assert.equal(JSON.parse(line).messages[0].content, "One shared prompt");
   }
+});
+
+test("bulk training export reads each project's instructions once", async () => {
+  let projectReads = 0;
+  const threads = ["first", "second"].map(
+    (id, index): ThreadRecord => ({
+      id,
+      title: id,
+      modelType: "base",
+      projectId: "billing",
+      archived: false,
+      createdAt: index + 20,
+      settings: { systemPrompt: "Shared prompt", systemVariables: "" },
+    }),
+  );
+  const exporters = loadExporters(
+    threads.map((thread) => thread.id),
+    [],
+    [],
+    {
+      threads,
+      getStoredChatProject: async () => {
+        projectReads += 1;
+        return PROJECTS.billing;
+      },
+    },
+  );
+
+  const result = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(result.lines.length, 2);
+  assert.equal(projectReads, 1);
 });
 
 test("project instruction lookup failures stop the export", async () => {
