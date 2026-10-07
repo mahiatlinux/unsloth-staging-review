@@ -239,7 +239,7 @@ async function loadConversationMessages(
     includeSiblings = true,
     includeInstructions = true,
   } = options;
-  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  // read before awaiting storage because switching chats would target another thread.
   const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
@@ -249,7 +249,7 @@ async function loadConversationMessages(
     toast.info(emptyMessage);
     return null;
   }
-  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
+  // parentless messages are legacy flat threads sorted by DB createdAt; chain walking reverses them.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return [...instructions, ...raw];
   const headId = liveBranchHeadId(liveBranch, raw);
@@ -280,12 +280,12 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
   ];
 }
 
-// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+// use the visible branch's newest saved turn because an unstored reply may replace the newest leaf.
 function liveBranchHeadId(
   liveBranch: string[] | null,
   raw: Array<{ id: string }>,
 ): string | null | undefined {
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  // treat an empty list as no opinion because chat switching sets remoteId before history reloads.
   if (!liveBranch?.length) return undefined;
   const storedIds = new Set(raw.map((m) => m.id));
   return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
@@ -524,13 +524,13 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
-// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+// markdown exports use the displayed branch while callers retain their empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
   options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
-/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+/** matches downloaded markdown for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
     loadMessages: loadDisplayedBranchMessages,
@@ -545,7 +545,7 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   notifyNoContent: () => toast.info("No exportable content."),
 });
 
-// "skipped" is an empty conversation, which has already said so and must not stop the rest of a pair; "failed" has toasted a reason, so stop there rather than stack a second one.
+// "skipped" continues a pair after an empty-conversation notice; "failed" stops to avoid a second toast.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
 
 async function saveConversationAsProjectSource(
@@ -561,7 +561,7 @@ async function saveConversationAsProjectSource(
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      // As the markdown exporter does: a project source is retrieved back into context, so the renderer's tokens must not be saved as prose.
+      // project sources return to context, so do not save renderer tokens as prose.
       content: stripSearchImageTokens(messageToMarkdown(msg)),
     })),
   );
@@ -982,7 +982,6 @@ function turnsToFineTuneLines(
   return [JSON.stringify({ messages: turns })];
 }
 
-/** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
 export async function buildFineTuneJsonl(
   format: FineTuneFormat = "openai",
 ): Promise<FineTuneExportResult> {
@@ -1000,7 +999,7 @@ export async function buildFineTuneJsonl(
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
-    // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
+    // keep one parent chain because sibling retries would corrupt the training targets.
     const ordered = hasParentIds
       ? (orderByParentChain(raw, {
           includeSiblings: false,
