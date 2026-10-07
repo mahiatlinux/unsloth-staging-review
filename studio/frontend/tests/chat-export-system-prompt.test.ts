@@ -639,6 +639,7 @@ test("training exports split when a later run clears its instructions", async ()
 });
 
 test("an imported prompt-clear marker starts an instruction-free epoch", async () => {
+  const downloads: string[] = [];
   const imported: ThreadRecord = {
     id: "imported-clear",
     title: "Imported clear",
@@ -697,7 +698,7 @@ test("an imported prompt-clear marker starts an instruction-free epoch", async (
       createdAt: 15,
     },
   ];
-  const exporters = loadExporters([imported.id], [], [], {
+  const exporters = loadExporters([imported.id], downloads, [], {
     threads: [imported],
     listStoredChatMessages: async () => messages,
     getChatSettings: async () => ({
@@ -706,14 +707,54 @@ test("an imported prompt-clear marker starts an instruction-free epoch", async (
   });
 
   const result = await exporters.buildFineTuneJsonl("openai");
+  await exporters.exportConversationMessagesJsonl(imported.id);
   const records = result.lines.map((line) => JSON.parse(line).messages);
+  const emptyMarkers = downloads[0]
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter(
+      (message: { role: string; content: string }) =>
+        message.role === "system" && message.content === "",
+    );
 
   assert.equal(records.length, 2);
+  assert.equal(emptyMarkers.length, 1);
   assert.equal(records[0][0].content, "Prompt A");
   assert.ok(
     records[1].every((message: { role: string }) => message.role !== "system"),
   );
   assert.equal(records[1].at(-1).content, "Second answer");
+});
+
+test("empty chats skip strict instruction lookups", async () => {
+  const empty: ThreadRecord = {
+    id: "empty",
+    title: "Empty",
+    modelType: "base",
+    projectId: "billing",
+    archived: false,
+    createdAt: 3,
+    settings: { systemPrompt: "Saved prompt", systemVariables: "" },
+  };
+  let projectReads = 0;
+  const exporters = loadExporters([empty.id], [], [], {
+    threads: [empty],
+    listStoredChatMessages: async () => [],
+    getStoredChatProject: async () => {
+      projectReads += 1;
+      throw new Error("project unavailable");
+    },
+  });
+
+  const single = await exporters.buildThreadContent(empty.id, "jsonl-raw");
+  const fineTune = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(single, null);
+  assert.equal(fineTune.lines.length, 0);
+  assert.equal(fineTune.conversations, 0);
+  assert.equal(fineTune.skipped, 1);
+  assert.equal(projectReads, 0);
 });
 
 test("fine-tuning data keeps earlier turns as context across instruction changes", async () => {

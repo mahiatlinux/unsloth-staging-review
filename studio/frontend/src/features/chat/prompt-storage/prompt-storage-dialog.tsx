@@ -274,16 +274,16 @@ async function loadConversationMessageSegments(
   // read before awaiting storage because switching chats would target another thread.
   const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
+  if (raw.length === 0) {
+    toast.info(emptyMessage);
+    return null;
+  }
   // Imported conversations already carry their own system turn. Treat it as
   // the initial instruction snapshot instead of consulting today's defaults.
   const instructions =
     includeInstructions && !hasStoredSystemTurn(raw)
       ? await chatInstructionsTurn(threadId, instructionContext)
       : [];
-  if (raw.length === 0) {
-    toast.info(emptyMessage);
-    return null;
-  }
   // parentless messages are legacy flat threads sorted by DB createdAt; chain walking reverses them.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   const ordered = hasParentIds
@@ -458,7 +458,8 @@ function messagesFromInstructionSegments(
   segments: ChatInstructionSegment[],
 ): MessageRecord[] {
   return segments.flatMap((segment, index) => [
-    ...(segment.instructions || index > 0
+    ...((segment.instructions ||
+      (index > 0 && !hasStoredSystemTurn(segment.messages)))
       ? [
           systemInstructionTurn(
             threadId,
@@ -1347,6 +1348,10 @@ export async function buildFineTuneJsonl(
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
     const raw = await listStoredChatMessages(id);
+    if (raw.length === 0) {
+      skipped += 1;
+      continue;
+    }
     const instructions = hasStoredSystemTurn(raw)
       ? []
       : await chatInstructionsTurn(id, instructionContext);
