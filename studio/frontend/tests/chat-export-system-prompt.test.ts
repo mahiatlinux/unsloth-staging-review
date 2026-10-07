@@ -457,14 +457,87 @@ test("chat exports preserve instruction changes at their run boundaries", async 
 
   await exporters.exportConversationRawJsonl(captured.id);
 
-  assert.deepEqual(JSON.parse(downloads[0]).messages, [
-    { role: "system", content: "Prompt A on 2026-10-06" },
-    { role: "user", content: "First question" },
-    { role: "assistant", content: "First answer" },
-    { role: "system", content: "Prompt B on 2026-10-07" },
-    { role: "user", content: "Second question" },
-    { role: "assistant", content: "Second answer" },
-  ]);
+  assert.deepEqual(
+    downloads[0]
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).messages),
+    [
+      [
+        { role: "system", content: "Prompt A on 2026-10-06" },
+        { role: "user", content: "First question" },
+        { role: "assistant", content: "First answer" },
+      ],
+      [
+        { role: "system", content: "Prompt B on 2026-10-07" },
+        {
+          role: "user",
+          content:
+            "<conversation_context>\nUser: First question\n\nAssistant: First answer\n</conversation_context>",
+        },
+        { role: "user", content: "Second question" },
+        { role: "assistant", content: "Second answer" },
+      ],
+    ],
+  );
+});
+
+test("training exports split when a later run clears its instructions", async () => {
+  const downloads: string[] = [];
+  const cleared: ThreadRecord = {
+    id: "cleared",
+    title: "Cleared",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 3,
+    settings: { systemPrompt: "", systemVariables: "" },
+  };
+  const messages = turns(cleared.id) as MessageRecord[];
+  messages[1] = {
+    ...messages[1],
+    metadata: { resolvedInstructions: "Prompt A" },
+  };
+  messages.push(
+    {
+      id: "cleared-u2",
+      threadId: cleared.id,
+      parentId: `${cleared.id}-a1`,
+      role: "user",
+      content: [{ type: "text", text: "Question without instructions" }],
+      createdAt: 12,
+    },
+    {
+      id: "cleared-a2",
+      threadId: cleared.id,
+      parentId: "cleared-u2",
+      role: "assistant",
+      content: [{ type: "text", text: "Answer without instructions" }],
+      metadata: { resolvedInstructions: "" },
+      createdAt: 13,
+    },
+  );
+  const exporters = loadExporters([cleared.id], downloads, [], {
+    threads: [cleared],
+    listStoredChatMessages: async () => messages,
+  });
+
+  await exporters.exportConversationRawJsonl(cleared.id);
+  const records = downloads[0]
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).messages);
+  const fineTune = await exporters.buildFineTuneJsonl("openai");
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0][0].content, "Prompt A");
+  assert.ok(records[1].every((message: { role: string }) => message.role !== "system"));
+  assert.equal(fineTune.lines.length, 2);
+  assert.ok(
+    JSON.parse(fineTune.lines[1]).messages.every(
+      (message: { role: string }) => message.role !== "system",
+    ),
+  );
 });
 
 test("fine-tuning data keeps earlier turns as context across instruction changes", async () => {
@@ -538,7 +611,11 @@ test("fine-tuning data keeps earlier turns as context across instruction changes
   );
 
   const alpaca = await exporters.buildFineTuneJsonl("alpaca");
-  assert.equal(JSON.parse(alpaca.lines[1]).instruction, previousContext);
+  assert.equal(JSON.parse(alpaca.lines[1]).instruction, "Second question");
+  assert.equal(
+    JSON.parse(alpaca.lines[1]).input,
+    "Prompt B\n\nUser: Where is my refund?\n\nAssistant: It went out today. Ticket closed.",
+  );
 });
 
 test("bulk training export reads inherited global prompt settings once", async () => {
