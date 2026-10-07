@@ -25,7 +25,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  lanApiUrls,
+  loadLanAccess,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -576,6 +580,7 @@ export function ApiMonitorPage(): ReactElement {
   }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const lanUrls = usePlatformStore((s) => s.lanUrls);
   const [unloading, setUnloading] = useState(false);
   // A picker load in flight would land after the raw unload, which has no lifecycle guard.
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -584,6 +589,11 @@ export function ApiMonitorPage(): ReactElement {
   useEffect(() => {
     const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
+      loadLanAccess()
+        .then((status) =>
+          usePlatformStore.setState({ lanUrls: lanApiUrls(status) }),
+        )
+        .catch(() => undefined);
     };
     refreshRemoteBase();
     window.addEventListener("focus", refreshRemoteBase);
@@ -710,7 +720,7 @@ export function ApiMonitorPage(): ReactElement {
   // dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const serverStatus = data?.status ?? "idle";
   // Older backends omit the field; only an explicit `false` means recording is off.
   const loggingDisabled = data?.logging_enabled === false;
