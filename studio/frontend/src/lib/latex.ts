@@ -42,6 +42,7 @@ const VARIABLE_PROSE_RE =
   /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=—–…，。；：！？-]|[\s(]["'(`])$/u;
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
+const TRAILING_UPPER_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
 const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
@@ -51,7 +52,7 @@ const OPERATOR_MATH_BODY_RE =
 const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
-  /\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\}/g;
+  /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})/g;
 const SHELL_PID_CONTEXT_RE =
   /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:run\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
@@ -62,7 +63,7 @@ const SHELL_PARAMETER_CONTEXT_RE =
 const VARIABLE_DOLLAR = "&#36;";
 const MARKDOWN_ASTERISK = "&#42;";
 
-function looksLikeVariableProse(body: string): boolean {
+function looksLikeVariableProse(body: string, prefix: string): boolean {
   if (!VARIABLE_PROSE_RE.test(body)) {
     return false;
   }
@@ -74,8 +75,11 @@ function looksLikeVariableProse(body: string): boolean {
   ) {
     return false;
   }
+  if (!SINGLE_TRAILING_WORD_RE.test(body)) return true;
+  if (!TRAILING_SHELL_NAME_RE.test(body)) return false;
   return (
-    !SINGLE_TRAILING_WORD_RE.test(body) || TRAILING_SHELL_NAME_RE.test(body)
+    TRAILING_UPPER_SHELL_NAME_RE.test(body) ||
+    SHELL_PARAMETER_CONTEXT_RE.test(prefix)
   );
 }
 
@@ -771,7 +775,10 @@ export function preprocessLaTeX(content: string): string {
       !currency &&
       next !== -1 &&
       (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
-      looksLikeVariableProse(text.slice(offset + 1, next))
+      looksLikeVariableProse(
+        text.slice(offset + 1, next),
+        text.slice(lineStart, offset),
+      )
     ) {
       return VARIABLE_DOLLAR;
     }

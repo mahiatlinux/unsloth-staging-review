@@ -180,6 +180,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ],
   ["The result is $velocity(t) = distance $", ["velocity(t) = distance "]],
   ["The probability is $softmax(x) $", ["softmax(x) "]],
+  ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],
@@ -209,6 +210,12 @@ test("braced maths is not rewritten as shell parameter markup", () => {
     preprocessLaTeX("After a short wait, $$\nx^2\n$$"),
     "After a short wait, $$\nx^2\n$$",
   );
+});
+
+test("escaped shell markup stays escaped", () => {
+  for (const source of ["\\${HOME}", "\\$*"]) {
+    assert.equal(preprocessLaTeX(source), source);
+  }
 });
 
 test("maths and currency next to shell variables keep rendering", () => {
