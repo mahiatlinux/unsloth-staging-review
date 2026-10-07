@@ -403,6 +403,89 @@ test("an imported system turn is not replaced or duplicated by current defaults"
   assert.equal(settingsReads, 0);
 });
 
+test("later epochs retain the imported system turn alongside current instructions", async () => {
+  const downloads: string[] = [];
+  const imported: ThreadRecord = {
+    id: "continued-import",
+    title: "Continued import",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 4,
+    settings: { systemPrompt: "Prompt B", systemVariables: "" },
+  };
+  const messages: MessageRecord[] = [
+    {
+      id: "continued-system",
+      threadId: imported.id,
+      parentId: null,
+      role: "system",
+      content: [{ type: "text", text: "Imported prompt A" }],
+      createdAt: 10,
+    },
+    {
+      id: "continued-u1",
+      threadId: imported.id,
+      parentId: "continued-system",
+      role: "user",
+      content: [{ type: "text", text: "Imported question" }],
+      createdAt: 11,
+    },
+    {
+      id: "continued-a1",
+      threadId: imported.id,
+      parentId: "continued-u1",
+      role: "assistant",
+      content: [{ type: "text", text: "Imported answer" }],
+      createdAt: 12,
+    },
+    {
+      id: "continued-u2",
+      threadId: imported.id,
+      parentId: "continued-a1",
+      role: "user",
+      content: [{ type: "text", text: "New question" }],
+      createdAt: 13,
+    },
+    {
+      id: "continued-a2",
+      threadId: imported.id,
+      parentId: "continued-u2",
+      role: "assistant",
+      content: [{ type: "text", text: "New answer" }],
+      metadata: { resolvedInstructions: "Prompt B" },
+      createdAt: 14,
+    },
+  ];
+  const exporters = loadExporters([imported.id], downloads, [], {
+    threads: [imported],
+    listStoredChatMessages: async () => messages,
+  });
+
+  await exporters.exportConversationRawJsonl(imported.id);
+  const records = downloads[0]
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).messages);
+  const fineTune = await exporters.buildFineTuneJsonl("openai");
+  const fineTuneRecords = fineTune.lines.map(
+    (line) => JSON.parse(line).messages,
+  );
+
+  assert.deepEqual(
+    records[1]
+      .filter((message: { role: string }) => message.role === "system")
+      .map((message: { content: string }) => message.content),
+    ["Prompt B", "Imported prompt A"],
+  );
+  assert.deepEqual(
+    fineTuneRecords[1]
+      .filter((message: { role: string }) => message.role === "system")
+      .map((message: { content: string }) => message.content),
+    ["Prompt B\n\nImported prompt A"],
+  );
+});
+
 test("chat exports preserve instruction changes at their run boundaries", async () => {
   const downloads: string[] = [];
   const captured: ThreadRecord = {

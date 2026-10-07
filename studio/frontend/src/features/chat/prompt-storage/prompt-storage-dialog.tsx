@@ -301,6 +301,10 @@ function hasStoredSystemTurn(messages: MessageRecord[]): boolean {
   return messages.some((message) => message.role === "system");
 }
 
+function storedSystemTurns(messages: MessageRecord[]): MessageRecord[] {
+  return messages.filter((message) => message.role === "system");
+}
+
 async function chatInstructionsTurn(
   threadId: string,
   context?: ChatExportInstructionContext,
@@ -474,6 +478,7 @@ function trainingEpochMessages(
             ),
           ]
         : []),
+      ...storedSystemTurns(priorMessages),
       ...(context ? [context] : []),
       ...segment.messages,
     ];
@@ -1362,6 +1367,7 @@ export async function buildFineTuneJsonl(
               ),
             ]
           : []),
+        ...storedSystemTurns(priorMessages),
         ...(context ? [context] : []),
         ...segment.messages,
       ];
