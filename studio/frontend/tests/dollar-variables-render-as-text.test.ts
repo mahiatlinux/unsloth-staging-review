@@ -64,6 +64,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["echo $PATH\n| sed 's/bin/sbin/'\necho $HOME", ["$PATH", "$HOME"]],
   ["Run echo $PATH $HOME", ["$PATH $HOME"]],
   ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
+  ["cp $HOME/src $PATH/bin", ["$HOME/src", "$PATH/bin"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -71,6 +72,10 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   [
     "Use ${HOME:-/tmp}, then ${PATH:-/usr/bin}",
     ["${HOME:-/tmp}", "${PATH:-/usr/bin}"],
+  ],
+  [
+    "Use ${HOME%/*}, ${PATH#*/}, and ${value/pat/repl}; then ${USER%/*}",
+    ["${HOME%/*}", "${PATH#*/}", "${value/pat/repl}", "${USER%/*}"],
   ],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
@@ -146,6 +151,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
     "The relation $velocity = distance / time $is useful.",
     ["velocity = distance / time "],
   ],
+  ["The result is $velocity(t) = distance $", ["velocity(t) = distance "]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 
