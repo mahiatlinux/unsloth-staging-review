@@ -185,6 +185,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The probability is $softmax(x) $", ["softmax(x) "]],
   ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
   ["Segments $AB, CD $are congruent.", ["AB, CD "]],
+  ["The triangles are $ABC, DEF $", ["ABC, DEF "]],
   ["In triangle $ABC $is acute.", ["ABC "]],
   ["Use $softmax(x), sigmoid(x) $for the logits.", ["softmax(x), sigmoid(x) "]],
   [

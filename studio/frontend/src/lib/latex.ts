@@ -49,10 +49,10 @@ const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
 const NAMED_PAIR_MATH_BODY_RE =
-  /^[a-z]{2,}\s+(?!(?:and|or|then)\s*$)(?:[A-Z]{1,2}|[a-z]{2,})\s+$/;
+  /^[a-z]{2,}\s+(?!(?:and|or|then)\s*$)(?:[A-Z]+|[a-z]{2,})\s+$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
-const COMMA_MATH_BODY_RE = /^(?:[A-Z]{1,2}\s*,\s*)+[A-Z]{1,2}\s+$/;
+const COMMA_MATH_BODY_RE = /^(?:[A-Z]+\s*,\s*)+[A-Z]+\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})/g;
