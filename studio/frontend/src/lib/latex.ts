@@ -39,7 +39,7 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=—–…，。；：！？-]|[\s(]["'(`])$/u;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=*_~\[—–…，。；：！？-]|[\s(]["'(`])$/u;
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
 const TRAILING_UPPER_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]{2,}\s+$/;
@@ -48,8 +48,8 @@ const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
 const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
 const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
-const NAMED_PAIR_MATH_BODY_RE =
-  /^[a-z]{2,}\s+(?!(?:and|or|then)\s*$)(?:[A-Z]+|[a-z]{2,})\s+$/;
+const NAMED_SEQUENCE_MATH_BODY_RE =
+  /^[a-z]{2,}(?:\s+(?!(?:and|or|then)(?:\s|$))(?:[A-Z]+|[a-z]{2,}))+\s+$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const COMMA_MATH_BODY_RE =
@@ -59,6 +59,8 @@ const SHELL_MARKUP_RE =
   /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})/g;
 const SHELL_PID_CONTEXT_RE =
   /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/;
+const SHELL_PID_PROSE_CONTEXT_RE =
+  /\b(?:Bash|shell|PID|process(?:\s+ID)?|subshell)\b[^$]*$/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
 const SHELL_PARAMETER_CONTEXT_RE =
@@ -109,7 +111,7 @@ function looksLikeVariableProse(
   if (TRAILING_SHELL_PATH_RE.test(body)) return true;
   if (
     WORD_MATH_BODY_RE.test(body) ||
-    NAMED_PAIR_MATH_BODY_RE.test(body) ||
+    NAMED_SEQUENCE_MATH_BODY_RE.test(body) ||
     OPERATOR_MATH_BODY_RE.test(body) ||
     looksLikeFunctionMath(body) ||
     COMMA_MATH_BODY_RE.test(body)
@@ -777,8 +779,12 @@ function protectParameterExpansionMarkup(content: string): string {
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
       const prefix = content.slice(lineStart, offset);
       const next = content[offset + 2] ?? "";
+      const proseContext =
+        next !== "\n" &&
+        next !== "\r" &&
+        SHELL_PID_PROSE_CONTEXT_RE.test(prefix);
       if (
-        !SHELL_PID_CONTEXT_RE.test(prefix) ||
+        (!SHELL_PID_CONTEXT_RE.test(prefix) && !proseContext) ||
         (next && !SHELL_PID_FOLLOW_RE.test(next))
       ) {
         return match;

@@ -67,6 +67,9 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["cp $SRC$SUFFIX $DST", ["$SRC$SUFFIX $DST"]],
   ["cp $src$dst $out", ["$src$dst $out"]],
   ["Use $PATH **or** $HOME", ["$PATH", "$HOME"]],
+  ["Use $PATH, then **$HOME**", ["$PATH, then", "$HOME"]],
+  ["Use $PATH, then ~~$HOME~~", ["$PATH, then", "$HOME"]],
+  ["Use $PATH, then [$HOME](https://example.com)", ["$PATH, then", "$HOME"]],
   [
     "Use $PATH or [the docs](https://example.com), then $HOME",
     ["$PATH", "$HOME"],
@@ -82,6 +85,10 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["home is $HOME; status is $?", ["$HOME", "$?"]],
   ["args are $PATH then $@", ["$PATH", "$@"]],
   ["echo $$; kill $$", ["$$", "$$"]],
+  [
+    "In Bash, $$ is the PID and $$ is inherited by subshells.",
+    ["$$ is the PID and $$ is inherited by subshells."],
+  ],
   ["使用 $PATH，然后 $HOME。", ["$PATH", "$HOME"]],
   ["Use $PATH — or $HOME", ["$PATH", "$HOME"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
@@ -208,6 +215,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The product is $theta phi $in the basis.", ["theta phi "]],
   ["The result is $det A $", ["det A "]],
   ["The product is $theta phi $", ["theta phi "]],
+  ["The product is $alpha beta gamma $", ["alpha beta gamma "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],
