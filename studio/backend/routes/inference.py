@@ -27736,9 +27736,13 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     finally:
         for task in (step, waiter):
             if task is not None and not task.done():
-                # cancelling the pending read closes the upstream response inside ``agen``.
+                # asyncio.wait lets cancellation cleanup finish even when the relay is cancelled.
                 task.cancel()
-                await asyncio.gather(task, return_exceptions = True)
+                await asyncio.wait({task})
+                try:
+                    task.exception()
+                except asyncio.CancelledError:
+                    pass
         try:
             await agen.aclose()
         except RuntimeError:
