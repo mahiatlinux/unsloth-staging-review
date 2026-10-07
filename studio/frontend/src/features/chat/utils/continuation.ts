@@ -373,6 +373,8 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 export type ContinuationRequest = {
   /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
+  /** The rendered instructions used for the partial, including an intentionally empty prompt. */
+  resolvedInstructions?: string;
   /** Carried only to a backend that resumes a thought. */
   reasoning?: string;
   /** Seconds, so the resumed turn keeps its timer. */
@@ -442,6 +444,16 @@ export function providerCompactionContinuationFields(
   return providerCompactionFields(custom);
 }
 
+export function instructionContinuationFields(
+  metadata: unknown,
+): Pick<ContinuationRequest, "resolvedInstructions"> | Record<string, never> {
+  const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  return typeof custom?.resolvedInstructions === "string"
+    ? { resolvedInstructions: custom.resolvedInstructions }
+    : {};
+}
+
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
   runConfig: unknown,
@@ -451,6 +463,7 @@ export function readContinuationRequest(
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
     | {
         partial?: unknown;
+        resolvedInstructions?: unknown;
         reasoning?: unknown;
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
@@ -471,8 +484,12 @@ export function readContinuationRequest(
   }
   const duration = request?.reasoningDuration;
   const signature = request?.thoughtSignature;
+  const resolvedInstructions = request?.resolvedInstructions;
   return {
     partial,
+    ...(typeof resolvedInstructions === "string"
+      ? { resolvedInstructions }
+      : {}),
     ...(reasoning ? { reasoning } : {}),
     ...(reasoning &&
     typeof duration === "number" &&

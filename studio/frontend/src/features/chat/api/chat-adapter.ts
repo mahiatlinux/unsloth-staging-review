@@ -5213,12 +5213,14 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
-        params.systemPrompt,
-        params.systemVariables,
-        readThreadRecord,
-      );
+      const combinedSystemPrompt =
+        continuation?.resolvedInstructions ??
+        (await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+          readThreadRecord,
+        ));
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",

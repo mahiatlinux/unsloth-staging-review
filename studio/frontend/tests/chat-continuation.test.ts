@@ -26,6 +26,7 @@ const {
   hasRenderableContent,
   incompleteLabel,
   incompleteReasonAfterError,
+  instructionContinuationFields,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
@@ -479,6 +480,31 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("a continuation keeps the partial response's rendered instructions", () => {
+  assert.deepEqual(
+    instructionContinuationFields({
+      custom: { resolvedInstructions: "Prompt A on 2026-10-07" },
+    }),
+    { resolvedInstructions: "Prompt A on 2026-10-07" },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half an answer",
+          resolvedInstructions: "",
+        },
+      },
+    }),
+    { partial: "half an answer", resolvedInstructions: "" },
+  );
+  assert.match(THREAD, /\.\.\.instructionContinuationFields\(metadata\)/);
+  assert.match(
+    CHAT_ADAPTER,
+    /continuation\?\.resolvedInstructions \?\?[\s\S]{0,200}resolveChatInstructions/,
+  );
 });
 
 test("a continuation carries a complete provider compaction tuple", () => {
