@@ -382,6 +382,33 @@ function systemInstructionTurn(
   };
 }
 
+function fineTuneContextTurn(
+  threadId: string,
+  messages: MessageRecord[],
+  segment: number,
+): MessageRecord | null {
+  const turns = messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") return [];
+    const content = messageToPlainText(message);
+    if (!content) return [];
+    const role = message.role === "user" ? "User" : "Assistant";
+    return [`${role}: ${content}`];
+  });
+  if (turns.length === 0) return null;
+  return {
+    id: `${threadId}-training-context-${segment}`,
+    threadId,
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `<conversation_context>\n${turns.join("\n\n")}\n</conversation_context>`,
+      },
+    ],
+    createdAt: messages[0]?.createdAt ?? Date.now(),
+  };
+}
+
 function messagesWithInstructionBoundaries(
   threadId: string,
   messages: MessageRecord[],
@@ -1177,7 +1204,9 @@ export async function buildFineTuneJsonl(
       ordered,
       instructionText(instructions),
     );
+    const priorMessages: MessageRecord[] = [];
     for (const [index, segment] of segments.entries()) {
+      const context = fineTuneContextTurn(id, priorMessages, index);
       const messages = [
         ...(segment.instructions
           ? [
@@ -1189,10 +1218,12 @@ export async function buildFineTuneJsonl(
               ),
             ]
           : []),
+        ...(context ? [context] : []),
         ...segment.messages,
       ];
       const turns = messagesToFineTuneTurns(messages);
       const segmentLines = turns ? turnsToFineTuneLines(turns, format) : [];
+      priorMessages.push(...segment.messages);
       if (segmentLines.length === 0) continue;
       convertedConversations += 1;
       converted.push(...segmentLines);

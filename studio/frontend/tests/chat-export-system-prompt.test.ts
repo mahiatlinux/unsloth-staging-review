@@ -383,7 +383,7 @@ test("chat exports preserve instruction changes at their run boundaries", async 
   ]);
 });
 
-test("fine-tuning data splits when a chat's resolved instructions change", async () => {
+test("fine-tuning data keeps earlier turns as context across instruction changes", async () => {
   const thread: ThreadRecord = {
     id: "changing",
     title: "Changing",
@@ -424,6 +424,12 @@ test("fine-tuning data splits when a chat's resolved instructions change", async
 
   const result = await exporters.buildFineTuneJsonl("openai");
 
+  const previousContext =
+    "<conversation_context>\n" +
+    "User: Where is my refund?\n\n" +
+    "Assistant: It went out today. Ticket closed.\n" +
+    "</conversation_context>\n\nSecond question";
+
   assert.equal(result.conversations, 2);
   assert.deepEqual(
     Array.from(result.lines, (line) => JSON.parse(line).messages),
@@ -435,11 +441,20 @@ test("fine-tuning data splits when a chat's resolved instructions change", async
       ],
       [
         { role: "system", content: "Prompt B" },
-        { role: "user", content: "Second question" },
+        { role: "user", content: previousContext },
         { role: "assistant", content: "Second answer" },
       ],
     ],
   );
+
+  const sharegpt = await exporters.buildFineTuneJsonl("sharegpt");
+  assert.equal(
+    JSON.parse(sharegpt.lines[1]).conversations[1].value,
+    previousContext,
+  );
+
+  const alpaca = await exporters.buildFineTuneJsonl("alpaca");
+  assert.equal(JSON.parse(alpaca.lines[1]).instruction, previousContext);
 });
 
 test("bulk training export reads inherited global prompt settings once", async () => {
