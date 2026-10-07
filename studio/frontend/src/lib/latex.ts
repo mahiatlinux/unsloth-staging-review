@@ -65,6 +65,10 @@ const SHELL_PID_PAIR_BODY_RE =
   /^\s*(?:is|means|expands(?:\s+to)?)\b[\s\S]*\b(?:PID|process|subshell)\b/i;
 const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
 const SHELL_CONCAT_START_RE = /[A-Z_{]/;
+const SHELL_VARIABLE_INSTRUCTION_RE =
+  /\b(?:use|set|check|export|print|run|copy|move|add|read|write)\s*$/i;
+const BRACED_MATH_CONTINUATION_RE =
+  /^\s*(?:[+\-*/=<>^]|\\[A-Za-z]+)/;
 const SHELL_PARAMETER_CONTEXT_RE =
   /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b.*$/;
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
@@ -128,7 +132,9 @@ function looksLikeVariableProse(
     shellContext ||
     (TRAILING_UPPER_SHELL_NAME_RE.test(body) &&
       (/^[A-Z_]/.test(afterCloser) ||
-        (!afterCloser && trailingName.length === 1)))
+        (!afterCloser &&
+          trailingName.length === 1 &&
+          SHELL_VARIABLE_INSTRUCTION_RE.test(prefix))))
   );
 }
 
@@ -797,15 +803,24 @@ function protectParameterExpansionMarkup(content: string): string {
     if (match === "$_" && /^\$_\{[^}\r\n]+\}\$/.test(content.slice(offset))) {
       return match;
     }
-    if (match.startsWith("${") && content[offset + match.length] === "$") {
-      const afterCloser = content[offset + match.length + 1] ?? "";
+    if (match.startsWith("${")) {
+      const matchEnd = offset + match.length;
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
       const prefix = content.slice(lineStart, offset);
-      if (
-        !SHELL_CONCAT_START_RE.test(afterCloser) &&
-        !SHELL_PARAMETER_CONTEXT_RE.test(prefix)
-      )
-        return match;
+      const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
+      const closer = findInlineMathCloser(content, offset, lineStart);
+      if (closer !== -1 && !shellContext) {
+        const afterCloser = content[closer + 1] ?? "";
+        const continuation = content.slice(matchEnd, closer);
+        if (
+          (closer === matchEnd &&
+            !SHELL_CONCAT_START_RE.test(afterCloser)) ||
+          (closer > matchEnd &&
+            BRACED_MATH_CONTINUATION_RE.test(continuation))
+        ) {
+          return match;
+        }
+      }
     }
     if (match === "$$") {
       if (isDisplayMathDelimiter(offset)) return match;
