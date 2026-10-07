@@ -49,7 +49,8 @@ const WORD_MATH_BODY_RE =
   /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
-const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
+const FUNCTION_MATH_BODY_RE =
+  /^[A-Za-z]\w*\([^()\s]*\)(?:\s*,\s*[A-Za-z]\w*\([^()\s]*\))*\s*$/;
 const COMMA_MATH_BODY_RE = /^(?:[A-Z]{1,2}\s*,\s*)+[A-Z]{1,2}\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =

@@ -183,6 +183,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
   ["Segments $AB, CD $are congruent.", ["AB, CD "]],
   ["In triangle $ABC $is acute.", ["ABC "]],
+  ["Use $softmax(x), sigmoid(x) $for the logits.", ["softmax(x), sigmoid(x) "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
   ["Convolution is $*$ and $*x$.", ["*", "*x"]],
