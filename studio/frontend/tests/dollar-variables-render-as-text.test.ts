@@ -90,6 +90,8 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["home is $HOME; status is $?", ["$HOME", "$?"]],
   ["args are $PATH then $@", ["$PATH", "$@"]],
   ["echo $$; kill $$", ["$$", "$$"]],
+  ["echo /tmp/worker-$$.log", ["/tmp/worker-$$.log"]],
+  ["echo $$suffix", ["$$suffix"]],
   [
     "In Bash, $$ is the PID and $$ is inherited by subshells.",
     ["$$ is the PID and $$ is inherited by subshells."],
@@ -207,6 +209,8 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
   ["Segments $AB, CD $are congruent.", ["AB, CD "]],
   ["The triangles are $ABC, DEF $", ["ABC, DEF "]],
+  ["The side is $AB $", ["AB "]],
+  ["The triangle is $ABC $", ["ABC "]],
   ["Parameters $alpha, beta $", ["alpha, beta "]],
   ["Rates $distance/time, speed/time $", ["distance/time, speed/time "]],
   ["In triangle $ABC $is acute.", ["ABC "]],

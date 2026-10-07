@@ -123,10 +123,12 @@ function looksLikeVariableProse(
   }
   if (!SINGLE_TRAILING_WORD_RE.test(body)) return true;
   if (!TRAILING_SHELL_NAME_RE.test(body)) return false;
+  const trailingName = body.trim();
   return (
     shellContext ||
     (TRAILING_UPPER_SHELL_NAME_RE.test(body) &&
-      (!afterCloser || /^[A-Z_]/.test(afterCloser)))
+      (/^[A-Z_]/.test(afterCloser) ||
+        (!afterCloser && trailingName.length === 1)))
   );
 }
 
@@ -810,13 +812,14 @@ function protectParameterExpansionMarkup(content: string): string {
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
       const prefix = content.slice(lineStart, offset);
       const next = content[offset + 2] ?? "";
+      const commandContext = SHELL_PID_CONTEXT_RE.test(prefix);
       const proseContext =
         next !== "\n" &&
         next !== "\r" &&
         SHELL_PID_PROSE_CONTEXT_RE.test(prefix);
       if (
-        (!SHELL_PID_CONTEXT_RE.test(prefix) && !proseContext) ||
-        (next && !SHELL_PID_FOLLOW_RE.test(next))
+        (!commandContext && !proseContext) ||
+        (!commandContext && next && !SHELL_PID_FOLLOW_RE.test(next))
       ) {
         return match;
       }
