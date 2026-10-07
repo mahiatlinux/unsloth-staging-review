@@ -2,19 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth-run: execute an unslothai/notebooks notebook unchanged, headless.
+"""execute notebooks headlessly with one transformers version active per kernel."""
 
-Resolves the transformers version the notebook wants (install-cell pin, else the
-model-name tier), launches the kernel with that sidecar on PYTHONPATH so the whole
-kernel process is coherent, and executes every cell with nbconvert.
-
-Usage:
-  unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
-              [--fetch-timeout SECONDS] # URL download stall limit (default 60)
-              [--transformers X.Y.Z]    # force a version, skip auto-detect
-"""
-
-import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
+import argparse, ctypes, json, os, re, select, shutil, stat, struct, subprocess, sys, tempfile, threading, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -25,10 +15,7 @@ except Exception:
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# The install-cell scanner lives in unsloth_nb_compat, which is the copy the image puts
-# in site-packages and therefore the only one an IPython kernel can import. Sharing it
-# is what stops this path and the kernel hook from disagreeing about what counts as an
-# install line, which would put the kernel on one sidecar and the hook on another.
+# share the site-packages scanner so this path and the IPython hook select the same sidecar.
 if compat is not None:
     _PIN_RE = compat._PIN_RE
     _INSTALL_RE = compat._INSTALL_RE
@@ -144,6 +131,184 @@ def _stage_metadata(staged, dest):
         pass
 
 
+def _open_url_download(url):
+    name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) or "notebook"
+    stem = name[: -len(".ipynb")] if name.endswith(".ipynb") else name
+    n = 0
+    while True:
+        path = os.path.abspath(f"{stem}-{n}.ipynb" if n else f"{stem}.ipynb")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            n += 1
+            continue
+        try:
+            parent = os.stat(os.path.dirname(path))
+            os.fchown(fd, parent.st_uid, parent.st_gid)
+        except (OSError, AttributeError):
+            pass
+        return path, fd
+
+
+def _host_run_ids():
+    uid = os.environ.pop("UNSLOTH_RUN_UID", None)
+    gid = os.environ.pop("UNSLOTH_RUN_GID", None)
+    if uid is None and gid is None:
+        return None
+    if uid is None or gid is None or not uid.isdigit() or not gid.isdigit():
+        raise SystemExit("UNSLOTH_RUN_UID and UNSLOTH_RUN_GID must be non-negative integers")
+    return int(uid), int(gid)
+
+
+_IN_EVENT = struct.Struct("iIII")
+_IN_ATTRIB = 0x00000004
+_IN_CLOSE_WRITE = 0x00000008
+_IN_MOVED_TO = 0x00000080
+_IN_CREATE = 0x00000100
+_IN_IGNORED = 0x00008000
+_IN_Q_OVERFLOW = 0x00004000
+_IN_ISDIR = 0x40000000
+
+
+class _OwnershipMonitor:
+    def __init__(self, root):
+        self.root = os.path.abspath(root)
+        self.device = os.stat(self.root).st_dev
+        self.fd = -1
+        self.watches = {}
+        self.affected = set()
+        self.recursive = set()
+        self.failed = False
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.libc = ctypes.CDLL(None, use_errno = True)
+
+    def _remember(self, path):
+        path = os.path.abspath(path)
+        prefix = self.root + os.sep
+        if path != self.root and not path.startswith(prefix):
+            return
+        while path != self.root:
+            self.affected.add(path)
+            path = os.path.dirname(path)
+
+    def _add_tree(self, root):
+        try:
+            same_device = os.stat(root, follow_symlinks = False).st_dev == self.device
+        except OSError:
+            self.failed = True
+            return
+        pending = [(root, same_device)]
+        mask = _IN_ATTRIB | _IN_CLOSE_WRITE | _IN_MOVED_TO | _IN_CREATE
+        while pending:
+            current, recurse = pending.pop()
+            wd = self.libc.inotify_add_watch(self.fd, os.fsencode(current), mask)
+            if wd < 0:
+                self.failed = True
+            else:
+                self.watches[wd] = current
+            if not recurse:
+                continue
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if not entry.is_dir(follow_symlinks = False):
+                            continue
+                        try:
+                            child_device = entry.stat(follow_symlinks = False).st_dev
+                        except OSError:
+                            self.failed = True
+                            continue
+                        pending.append((entry.path, child_device == self.device))
+            except OSError:
+                self.failed = True
+
+    def start(self):
+        try:
+            self.libc.inotify_init1.argtypes = [ctypes.c_int]
+            self.libc.inotify_init1.restype = ctypes.c_int
+            self.libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+            self.libc.inotify_add_watch.restype = ctypes.c_int
+            self.fd = self.libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        except (AttributeError, OSError):
+            return False
+        if self.fd < 0:
+            return False
+        self._add_tree(self.root)
+        if not self.watches:
+            os.close(self.fd)
+            self.fd = -1
+            return False
+        self.thread = threading.Thread(target = self._run, daemon = True)
+        self.thread.start()
+        return True
+
+    def _drain(self):
+        while True:
+            try:
+                data = os.read(self.fd, 65536)
+            except BlockingIOError:
+                return
+            except OSError:
+                self.failed = True
+                return
+            if not data:
+                return
+            offset = 0
+            while offset + _IN_EVENT.size <= len(data):
+                wd, mask, _cookie, length = _IN_EVENT.unpack_from(data, offset)
+                offset += _IN_EVENT.size
+                raw_name = data[offset : offset + length].split(b"\0", 1)[0]
+                offset += length
+                if mask & _IN_Q_OVERFLOW:
+                    self.failed = True
+                    continue
+                parent = self.watches.get(wd)
+                if mask & _IN_IGNORED:
+                    self.watches.pop(wd, None)
+                if parent is None or not raw_name:
+                    continue
+                path = os.path.join(parent, os.fsdecode(raw_name))
+                self._remember(path)
+                if mask & _IN_ISDIR and mask & (_IN_CREATE | _IN_MOVED_TO):
+                    self.recursive.add(path)
+                    self._add_tree(path)
+
+    def _run(self):
+        while not self.stop_event.is_set():
+            try:
+                ready, _, _ = select.select([self.fd], [], [], 0.1)
+            except OSError:
+                self.failed = True
+                return
+            if ready:
+                self._drain()
+
+    def stop(self):
+        if self.fd < 0:
+            return set(), set()
+        self.stop_event.set()
+        self.thread.join()
+        self._drain()
+        os.close(self.fd)
+        self.fd = -1
+        return self.affected, self.recursive
+
+
+def _restore_output_ownership(affected, recursive, uid, gid):
+    paths = set(affected)
+    for root in recursive:
+        for parent, dirs, files in os.walk(root, followlinks = False):
+            paths.add(parent)
+            paths.update(os.path.join(parent, name) for name in dirs + files)
+    for path in sorted(paths, key = len):
+        try:
+            if os.lstat(path).st_uid == 0:
+                os.chown(path, uid, gid, follow_symlinks = False)
+        except (OSError, TypeError):
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(prog = "unsloth-run")
     ap.add_argument("notebook")
@@ -163,8 +328,8 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
+    host_ids = _host_run_ids()
 
-    tmp_dir = None
     tmp_files = []
     publish_from = None
     if args.out:
@@ -172,18 +337,13 @@ def main():
         out_dir = os.path.dirname(out_path) or "."
         _makedirs_as_host(out_dir)
         if args.notebook.startswith(("http://", "https://")):
-            # A URL has no source tree to run in, so the download stays beside --out:
-            # that is the directory the run's own artifacts should land in.
+            # keep URL inputs beside --out so relative artifacts land in the output directory
             fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
             with os.fdopen(fd, "w") as f:
                 json.dump(nb, f)
             tmp_files.append(src_path)
         else:
-            # nbconvert makes the INPUT notebook's directory the kernel cwd
-            # (Exporter.from_filename sets resources["metadata"]["path"] to it), so a
-            # staged copy under --out would resolve the notebook's relative opens,
-            # local imports and saves against the OUTPUT tree. Execute the original
-            # where it lives; only the result is staged beside --out.
+            # nbconvert uses the input directory as the kernel cwd, so keep local inputs in place
             src_path = args.notebook
         fd, publish_from = tempfile.mkstemp(
             prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
@@ -191,23 +351,23 @@ def main():
         os.close(fd)
         tmp_files.append(publish_from)
     elif args.notebook.startswith(("http://", "https://")):
-        tmp_dir = tempfile.mkdtemp()
-        src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
-        with open(src_path, "w") as f:
+        src_path, fd = _open_url_download(args.notebook)
+        with os.fdopen(fd, "w") as f:
             json.dump(nb, f)
         out_path = src_path
     else:
         src_path = args.notebook
         out_path = src_path
 
+    kernel_dir = os.path.dirname(os.path.abspath(src_path)) or "."
+    ownership_monitor = _OwnershipMonitor(kernel_dir) if host_ids is not None else None
+    if ownership_monitor is not None and not ownership_monitor.start():
+        print("[unsloth-run] could not monitor output ownership", file = sys.stderr)
+        ownership_monitor = None
+
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
-    # Per-run marker, and ALWAYS a fresh one: an inherited value is never this run's.
-    # The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
-    # `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's. Reusing it
-    # broke both ways: a target with a pin overwrote the caller kernel's pin, and a
-    # target with no pin ran against the caller's stale one. Either way a kernel that
-    # has not imported transformers yet can be handed the wrong sidecar.
+    # nested runs need a fresh marker to avoid overwriting or reusing the caller's transformers pin
     fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
     os.close(fd)
     env["UNSLOTH_NB_TF_MARKER"] = marker
@@ -248,13 +408,12 @@ def main():
             try:
                 os.replace(publish_from, out_path)
             except OSError:
-                # rename(2) onto a bind-mounted OUTPUT FILE returns EBUSY even though
-                # the file is writable, and such a mount needs the inode write anyway
+                # bind-mounted output files return EBUSY from rename(2) and require writing the mounted inode
                 try:
                     with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
                         shutil.copyfileobj(staged, live)
                 except OSError:
-                    # keep the result rather than delete it: a run can be hours long
+                    # preserve the result because the run may have taken hours
                     if publish_from in tmp_files:
                         tmp_files.remove(publish_from)
                     print(
@@ -264,8 +423,14 @@ def main():
                     )
                     raise
     finally:
-        if tmp_dir is not None:
-            shutil.rmtree(tmp_dir, ignore_errors = True)
+        if ownership_monitor is not None:
+            affected, recursive = ownership_monitor.stop()
+            _restore_output_ownership(affected, recursive, *host_ids)
+            if ownership_monitor.failed:
+                print(
+                    "[unsloth-run] some output ownership events could not be monitored",
+                    file = sys.stderr,
+                )
         for p in tmp_files:
             try:
                 os.remove(p)
