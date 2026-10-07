@@ -52,7 +52,8 @@ const NAMED_PAIR_MATH_BODY_RE =
   /^[a-z]{2,}\s+(?!(?:and|or|then)\s*$)(?:[A-Z]+|[a-z]{2,})\s+$/;
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
-const COMMA_MATH_BODY_RE = /^(?:[A-Z]+\s*,\s*)+[A-Z]+\s+$/;
+const COMMA_MATH_BODY_RE =
+  /^(?:(?:[A-Z]+\s*,\s*)+[A-Z]+|(?:[a-z]+(?:\/[a-z]+)?\s*,\s*)+[a-z]+(?:\/[a-z]+)?)\s+$/;
 const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /(?<!\\)(?:\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})/g;

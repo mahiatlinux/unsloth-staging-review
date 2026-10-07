@@ -194,6 +194,8 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Let $theta $be positive and $radius $stay finite.", ["theta ", "radius "]],
   ["Segments $AB, CD $are congruent.", ["AB, CD "]],
   ["The triangles are $ABC, DEF $", ["ABC, DEF "]],
+  ["Parameters $alpha, beta $", ["alpha, beta "]],
+  ["Rates $distance/time, speed/time $", ["distance/time, speed/time "]],
   ["In triangle $ABC $is acute.", ["ABC "]],
   ["Use $softmax(x), sigmoid(x) $for the logits.", ["softmax(x), sigmoid(x) "]],
   [
