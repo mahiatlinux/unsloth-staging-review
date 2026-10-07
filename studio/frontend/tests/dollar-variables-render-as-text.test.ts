@@ -76,7 +76,11 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["PID is $!; home is $HOME", ["$!", "$HOME"]],
   ["All args are $*; home is $HOME", ["$*", "$HOME"]],
   ["Flags are $-; home is $HOME", ["$-", "$HOME"]],
+  ["home is $HOME; status is $?", ["$HOME", "$?"]],
+  ["args are $PATH then $@", ["$PATH", "$@"]],
   ["echo $$; kill $$", ["$$", "$$"]],
+  ["使用 $PATH，然后 $HOME。", ["$PATH", "$HOME"]],
+  ["Use $PATH — or $HOME", ["$PATH", "$HOME"]],
   ["Check $HOME, $PATH, and $USER first.", ["$HOME, $PATH, and $USER"]],
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
@@ -178,6 +182,7 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["The probability is $softmax(x) $", ["softmax(x) "]],
   ["Product ${a*b}$.", ["{a*b}"]],
   ["Braced ${x^2}$ and ${a+b}$.", ["{x^2}", "{a+b}"]],
+  ["Convolution is $*$ and $*x$.", ["*", "*x"]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 

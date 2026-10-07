@@ -39,7 +39,7 @@ const TABLE_DELIMITER_BREAK_RE =
 
 /** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
-  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})[\w\s.,;:!?'"()\[\]/*~`|&<>=@#-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
+  /^(?:[A-Za-z]{2,}\w*|_\w+|[?@!#*\-]|\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=—–…，。；：！？-]|[\s(]["'(`])$/u;
 const TRAILING_SHELL_NAME_RE =
   /^(?:[a-z_][A-Za-z0-9_]{1,}|[A-Z_][A-Z0-9_]{2,})\s+$/;
 const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
@@ -49,7 +49,7 @@ const WORD_MATH_BODY_RE =
 const OPERATOR_MATH_BODY_RE =
   /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]{1,2}\s+(?:(?:log|ln)\s+[A-Za-z]{1,2}|(?:and|or)\s+[A-Za-z]{1,2}))\s*$/;
 const FUNCTION_MATH_BODY_RE = /^[A-Za-z]\w*\([^()\s]*\)\s*$/;
-const NEW_TOKEN_RE = /[\w{\\]/;
+const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
 const SHELL_MARKUP_RE =
   /\$\$|\$\*(?!\*)|\$\{(?:![A-Za-z_]\w*[*@]|#[A-Za-z_]\w*|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\s]*)?)\}/g;
 const SHELL_PID_CONTEXT_RE =
@@ -699,6 +699,9 @@ function protectParameterExpansionMarkup(content: string): string {
   SHELL_MARKUP_RE.lastIndex = 0;
   return content.replace(SHELL_MARKUP_RE, (match, offset) => {
     if (isInRegion(offset, skipRegions)) return match;
+    if (match === "$*" && hasInlineMathCloser(content, offset, [])) {
+      return match;
+    }
     if (match.startsWith("${") && content[offset + match.length] === "$") {
       const afterCloser = content[offset + match.length + 1] ?? "";
       const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
