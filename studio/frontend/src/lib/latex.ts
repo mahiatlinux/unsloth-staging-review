@@ -25,21 +25,120 @@ import {
   quoteState,
 } from "./markdown-list-columns.ts";
 
-/**
- * Matches a single $ followed by a number pattern (currency), e.g.:
- *   $5, $1,000, $5.99, $100K, $3.5M
- *
- * Does NOT match:
- *   $$ (display math), \$ (already escaped), $\alpha (LaTeX command)
- */
-const CURRENCY_REGEX =
-  /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
+const DOLLAR_REGEX = /(?<![\\$])\$(?!\$)/g;
 
-/**
- * Union of two span lists, each ascending by start (overlap within a list is
- * fine, non-ascending input silently drops spans). The sorted, non-overlapping
- * result is the shape `isInRegion`'s binary search needs.
- */
+/** matches currency bodies after `$`, including separators, decimals, and K/M/B suffixes. */
+const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
+
+const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
+const TABLE_ROW_RE = /[ \t]*\|/y;
+const BLOCK_BREAK_RE =
+  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|>|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
+const TABLE_DELIMITER_BREAK_RE =
+  /\n[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*(?=\r?(?:\n|$))/;
+
+/** matches prose-like `$NAME ... $word` spans without math symbols. */
+const VARIABLE_PROSE_RE =
+  /^(?:[A-Za-z]\w*|_\w*|[?@!#*\-]|\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})[\w\p{L}\p{N}\s.,;:!?'"()\[\]/*~`|&<>=@#—–…，。；：！？、“”‘’-]*(?:[\s/:,.;|<>=*_~\[—–…，。；：！？-]|[\s(]["'(`])$/u;
+const TRAILING_SHELL_NAME_RE =
+  /^(?:[a-z_][A-Za-z0-9_]*|[A-Z_][A-Z0-9_]*)\s+$/;
+const TRAILING_UPPER_SHELL_NAME_RE = /^[A-Z_][A-Z0-9_]*\s+$/;
+const BARE_SHELL_NAME_RE = /^[A-Za-z_]\w*$/;
+const TRAILING_SHELL_PATH_RE = /^[A-Z_][A-Z0-9_]{2,}(?:\/[^\s$]+)+\s+$/;
+const SINGLE_TRAILING_WORD_RE = /^\w+\s+$/;
+const WORD_MATH_BODY_RE =
+  /^(?:sin|cos|tan|cot|sec|csc|sinh|cosh|tanh|log|ln|exp|lim|max|min)\s+[A-Za-z]\w*(?:\s+[A-Za-z]\w*)*\s*$/;
+const NAMED_SEQUENCE_MATH_BODY_RE =
+  /^[a-z]+(?:\s+(?!(?:and|or|then)(?:\s|$))(?:[A-Z]+|[a-z]+))+\s+$/;
+const OPERATOR_MATH_BODY_RE =
+  /^(?:[A-Za-z]\w*(?:\([^()\s]*\))?(?:\s*[=+\-<>/*]\s*(?:[A-Za-z]\w*(?:\([^()\s]*\))?|\d+(?:\.\d+)?))+|[A-Za-z]+\s+(?:(?:log|ln)\s+[A-Za-z]+|(?:and|or)\s+[A-Za-z]+))\s*$/;
+const COMMA_MATH_BODY_RE =
+  /^(?:(?:[A-Z]+\s*,\s*)+[A-Z]+|(?:[a-z]+(?:\/[a-z]+)?\s*,\s*)+[a-z]+(?:\/[a-z]+)?)\s+$/;
+const NEW_TOKEN_RE = /[\w{\\?@!#*\-]/;
+const SHELL_MARKUP_RE =
+  /(?<!\\)(?:\$\$|\$\*(?!\*)|\$_(?!\w)|\$\{(?:![A-Za-z_]\w*(?:[*@]|\[[^}\r\n]*\])?|#[A-Za-z_]\w*(?:\[[^}\r\n]*\])?|[A-Za-z_]\w*(?:(?:[:+\-=?#%/^,@]|\[)[^}\r\n]*)?)\})/g;
+const SHELL_PID_CONTEXT_RE =
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|kill|wait)\b[^$]*$|^\s*(?:PID|PPID)\s*=$/;
+const SHELL_PID_PROSE_CONTEXT_RE =
+  /\b(?:Bash|shell|PID|process(?:\s+ID)?|subshell)\b[^$]*$/i;
+const SHELL_PID_PAIR_BODY_RE =
+  /^\s*(?:is|means|expands(?:\s+to)?)\b[\s\S]*\b(?:PID|process|subshell)\b/i;
+const SHELL_PID_FOLLOW_RE = /[\s;&|),]/;
+const SHELL_CONCAT_START_RE = /[A-Z_{]/;
+const SHELL_VARIABLE_INSTRUCTION_RE =
+  /\b(?:use|set|check|export|print|run|copy|move|add|read|write)\s*$/i;
+const BRACED_MATH_CONTINUATION_RE =
+  /^\s*(?:[+\-*/=<>^]|\\[A-Za-z]+)/;
+const SHELL_PARAMETER_CONTEXT_RE =
+  /(?:^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:[Rr]un\s+)?|[;&|]\s*)(?:echo|printf|export|cp|mv|rm|kill|wait|cd|mkdir|source)\b.*$/;
+// an entity stays literal in Markdown without showing an escape slash in raw HTML.
+const VARIABLE_DOLLAR = "&#36;";
+const MARKDOWN_ASTERISK = "&#42;";
+const MARKDOWN_UNDERSCORE = "&#95;";
+
+function looksLikeFunctionMath(body: string): boolean {
+  const value = body.trimEnd();
+  let offset = 0;
+  let calls = 0;
+  while (offset < value.length) {
+    if (!/[A-Za-z]/.test(value[offset])) return false;
+    offset += 1;
+    while (offset < value.length && /\w/.test(value[offset])) offset += 1;
+    if (value[offset] !== "(") return false;
+    let depth = 0;
+    do {
+      if (value[offset] === "(") depth += 1;
+      if (value[offset] === ")") depth -= 1;
+      offset += 1;
+    } while (offset < value.length && depth > 0);
+    if (depth !== 0) return false;
+    calls += 1;
+    while (offset < value.length && /\s/.test(value[offset])) offset += 1;
+    if (offset === value.length) return calls > 0;
+    if (value[offset] !== ",") return false;
+    offset += 1;
+    while (offset < value.length && /\s/.test(value[offset])) offset += 1;
+  }
+  return false;
+}
+
+function looksLikeVariableProse(
+  body: string,
+  prefix: string,
+  afterCloser: string,
+): boolean {
+  const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
+  if (shellContext && BARE_SHELL_NAME_RE.test(body)) return true;
+  if (!VARIABLE_PROSE_RE.test(body)) {
+    return false;
+  }
+  if (/\s$/.test(body) && /^[a-z]/.test(afterCloser) && !shellContext) {
+    return false;
+  }
+  if (TRAILING_SHELL_PATH_RE.test(body)) return true;
+  if (
+    WORD_MATH_BODY_RE.test(body) ||
+    NAMED_SEQUENCE_MATH_BODY_RE.test(body) ||
+    OPERATOR_MATH_BODY_RE.test(body) ||
+    looksLikeFunctionMath(body) ||
+    COMMA_MATH_BODY_RE.test(body)
+  ) {
+    return false;
+  }
+  if (!SINGLE_TRAILING_WORD_RE.test(body)) return true;
+  if (!TRAILING_SHELL_NAME_RE.test(body)) return false;
+  const trailingName = body.trim();
+  return (
+    shellContext ||
+    (TRAILING_UPPER_SHELL_NAME_RE.test(body) &&
+      (/^[A-Z_]/.test(afterCloser) ||
+        (!afterCloser &&
+          trailingName.length === 1 &&
+          SHELL_VARIABLE_INSTRUCTION_RE.test(prefix))))
+  );
+}
+
+/** merges ascending spans; overlaps merge and non-ascending spans drop. */
 function mergeRegions(
   left: ReadonlyArray<readonly [number, number]>,
   right: ReadonlyArray<readonly [number, number]>,
@@ -357,43 +456,39 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   const blocks = mergeRegions(fenced, indented);
   const inline = findInlineCodeRegions(content, blocks);
 
-  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
-  // the binary search land on the inner span and miss the outer one.
+  // merge overlaps so binary search does not miss a containing inline span.
   return mergeRegions(blocks, inline);
 }
 
-/**
- * Match an inline link/image `[text](DEST)`, capturing the destination as group 1
- * with the `d` flag so its span is read straight from `match.indices` (the text
- * can contain an escaped `\](`, so a string search for the separator is unsafe).
- * The text disallows unescaped `]`; the destination allows escapes and one level
- * of balanced parens.
- */
+/** destinations allow escapes and one level of balanced parentheses. */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
+const AUTOLINK_RE =
+  /<(?:[a-z][a-z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>|\b(?:https?:\/\/|www\.)[^\s<]+/gi;
 
-/**
- * Find the destination spans of inline links/images, so a `\(...\)` written with
- * escaped parens inside a URL isn't rewritten as math (which would break the
- * link). Only the destination is returned, not the link text, so math in the
- * visible text still converts. Sorted, non-overlapping (matches are disjoint).
- */
+/** shields link destinations from math rewrites; link text stays convertible. */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
   if (!content.includes("](")) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
-    // `indices` is present (the `d` flag); group 1 spans the destination.
+    // escaped separators make searches unsafe; use the `d` flag's bounds.
     regions.push(match.indices![1]);
   }
   return regions;
 }
 
-/**
- * Binary search to check if a position falls inside any region. Regions must be
- * sorted by start and non-overlapping.
- */
+function findAutolinkRegions(content: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  AUTOLINK_RE.lastIndex = 0;
+  for (const match of content.matchAll(AUTOLINK_RE)) {
+    regions.push([match.index, match.index + match[0].length]);
+  }
+  return regions;
+}
+
+/** regions must be sorted by start and non-overlapping. */
 export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
@@ -521,10 +616,29 @@ function hasInlineMathCloser(
   return false;
 }
 
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
- * is capped so repeated incomplete openers stay linear during streaming.
- */
+// remark-math closes an open span at the next single `$`, escaped or not, within the block.
+function findInlineMathCloser(
+  content: string,
+  offset: number,
+  lineStart: number,
+): number {
+  let i = content.indexOf("$", offset + 1);
+  while (i !== -1 && content[i + 1] === "$") {
+    while (content[i + 1] === "$") i++;
+    i = content.indexOf("$", i + 1);
+  }
+  if (i === -1) return -1;
+  const body = content.slice(offset + 1, i);
+  if (BLOCK_BREAK_RE.test(body) || TABLE_DELIMITER_BREAK_RE.test(body))
+    return -1;
+  HEADING_LINE_RE.lastIndex = lineStart;
+  if (HEADING_LINE_RE.test(content) && body.includes("\n")) return -1;
+  TABLE_ROW_RE.lastIndex = lineStart;
+  if (TABLE_ROW_RE.test(content) && /\n|(?<!\\)\|/.test(body)) return -1;
+  return i;
+}
+
+/** caps LaTeX delimiter bodies at 4,096 characters so repeated incomplete openers stay linear while streaming. */
 const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
@@ -627,40 +741,164 @@ function convertLatexDelimiters(content: string): {
   return { text: parts.join(""), mathRegions };
 }
 
-/**
- * Preprocess a markdown string so LaTeX renders: convert bracket delimiters to
- * dollar forms, then escape currency dollar signs so they are not parsed as
- * math delimiters.
- *
- * - `\[E = mc^2\]` becomes a `$$` display block on its own lines (display math)
- * - `\(\alpha\)` becomes `$\alpha$` (inline math)
- * - `\(x\)` in a code span is untouched
- * - `$5` alone becomes `\$5` (currency, not math)
- * - `$\alpha$` is untouched (real LaTeX)
- * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
- * - `**$30^\circ$**` is untouched (LaTeX wrapped in bold)
- * - `$$E = mc^2$$` is untouched (display math)
- * - Currency inside code blocks/spans is untouched
- */
+function protectParameterExpansionMarkup(content: string): string {
+  if (
+    !content.includes("${") &&
+    !content.includes("$*") &&
+    !content.includes("$_") &&
+    !content.includes("$$")
+  )
+    return content;
+  const baseSkipRegions = mergeRegions(
+    findCodeBlockRegions(content),
+    mergeRegions(
+      findLinkDestinationRegions(content),
+      findAutolinkRegions(content),
+    ),
+  );
+  const bracketMathRegions: Array<[number, number]> = [];
+  CONVERT_LATEX_DELIM_RE.lastIndex = 0;
+  let bracketMatch: RegExpExecArray | null;
+  while ((bracketMatch = CONVERT_LATEX_DELIM_RE.exec(content)) !== null) {
+    const end = bracketMatch.index + bracketMatch[0].length;
+    if (
+      isInRegion(bracketMatch.index, baseSkipRegions) ||
+      isInRegion(end - 1, baseSkipRegions)
+    ) {
+      CONVERT_LATEX_DELIM_RE.lastIndex = bracketMatch.index + 1;
+      continue;
+    }
+    bracketMathRegions.push([bracketMatch.index, end]);
+  }
+  const skipRegions = mergeRegions(baseSkipRegions, bracketMathRegions);
+  const isDisplayMathDelimiter = (offset: number): boolean => {
+    const pairIsMath = (open: number, close: number): boolean => {
+      if (
+        content[open - 1] === "\\" ||
+        content[close - 1] === "\\" ||
+        isInRegion(open, skipRegions) ||
+        isInRegion(close, skipRegions)
+      )
+        return false;
+      const lineStart = content.lastIndexOf("\n", open - 1) + 1;
+      const prefix = content.slice(lineStart, open);
+      const body = content.slice(open + 2, close);
+      return (
+        !SHELL_PID_CONTEXT_RE.test(prefix) &&
+        !SHELL_PID_PAIR_BODY_RE.test(body)
+      );
+    };
+
+    const next = content.indexOf("$$", offset + 2);
+    if (next !== -1 && pairIsMath(offset, next)) return true;
+    const previous = content.lastIndexOf("$$", offset - 1);
+    return previous !== -1 && pairIsMath(previous, offset);
+  };
+  SHELL_MARKUP_RE.lastIndex = 0;
+  return content.replace(SHELL_MARKUP_RE, (match, offset) => {
+    if (isInRegion(offset, skipRegions)) return match;
+    if (match === "$*" && hasInlineMathCloser(content, offset, [])) {
+      return match;
+    }
+    if (match === "$_" && /^\$_\{[^}\r\n]+\}\$/.test(content.slice(offset))) {
+      return match;
+    }
+    if (match.startsWith("${")) {
+      const matchEnd = offset + match.length;
+      const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
+      const prefix = content.slice(lineStart, offset);
+      const shellContext = SHELL_PARAMETER_CONTEXT_RE.test(prefix);
+      const closer = findInlineMathCloser(content, offset, lineStart);
+      if (closer !== -1 && !shellContext) {
+        const afterCloser = content[closer + 1] ?? "";
+        const continuation = content.slice(matchEnd, closer);
+        if (
+          (closer === matchEnd &&
+            !SHELL_CONCAT_START_RE.test(afterCloser)) ||
+          (closer > matchEnd &&
+            BRACED_MATH_CONTINUATION_RE.test(continuation))
+        ) {
+          return match;
+        }
+      }
+    }
+    if (match === "$$") {
+      if (isDisplayMathDelimiter(offset)) return match;
+      const lineStart = content.lastIndexOf("\n", offset - 1) + 1;
+      const prefix = content.slice(lineStart, offset);
+      const next = content[offset + 2] ?? "";
+      const commandContext = SHELL_PID_CONTEXT_RE.test(prefix);
+      const proseContext =
+        next !== "\n" &&
+        next !== "\r" &&
+        SHELL_PID_PROSE_CONTEXT_RE.test(prefix);
+      if (
+        (!commandContext && !proseContext) ||
+        (!commandContext && next && !SHELL_PID_FOLLOW_RE.test(next))
+      ) {
+        return match;
+      }
+    }
+    const protectedMatch = match
+      .replaceAll("$", VARIABLE_DOLLAR)
+      .replaceAll("*", MARKDOWN_ASTERISK);
+    return match === "$_"
+      ? protectedMatch.replace("_", MARKDOWN_UNDERSCORE)
+      : protectedMatch;
+  });
+}
+
+/** converts bracketed LaTeX and protects currency or shell variables from single-dollar math. */
 export function preprocessLaTeX(content: string): string {
-  const { text, mathRegions } = convertLatexDelimiters(content);
+  const { text, mathRegions } = convertLatexDelimiters(
+    protectParameterExpansionMarkup(content),
+  );
 
   if (!text.includes("$")) return text;
 
   const codeRegions = findCodeBlockRegions(text);
+  const linkRegions = mergeRegions(
+    findLinkDestinationRegions(text),
+    findAutolinkRegions(text),
+  );
+  let closer = -1;
+  let lineStart = 0;
+  let nextNewline = text.indexOf("\n");
 
-  return text.replace(CURRENCY_REGEX, (match, offset) => {
-    if (isInRegion(offset, codeRegions)) {
+  return text.replace(DOLLAR_REGEX, (match, offset) => {
+    if (isInRegion(offset, codeRegions) || isInRegion(offset, linkRegions)) {
       return match;
     }
-    // Skip the spans we just created from `\(...\)` so a numeric body like
-    // `$5$` isn't re-escaped back to literal `\$5$`.
+    // preserve converted numeric math to avoid currency re-escaping
     if (isInRegion(offset, mathRegions)) {
       return match;
     }
-    if (hasInlineMathCloser(text, offset, mathRegions)) {
+    CURRENCY_REGEX.lastIndex = offset + 1;
+    const currency = CURRENCY_REGEX.test(text);
+    if (currency && !hasInlineMathCloser(text, offset, mathRegions)) {
+      return "\\" + match;
+    }
+    if (offset === closer) {
       return match;
     }
-    return "\\" + match;
+    while (nextNewline !== -1 && nextNewline < offset) {
+      lineStart = nextNewline + 1;
+      nextNewline = text.indexOf("\n", lineStart);
+    }
+    const next = findInlineMathCloser(text, offset, lineStart);
+    if (
+      !currency &&
+      next !== -1 &&
+      (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
+      looksLikeVariableProse(
+        text.slice(offset + 1, next),
+        text.slice(lineStart, offset),
+        text[next + 1] ?? "",
+      )
+    ) {
+      return VARIABLE_DOLLAR;
+    }
+    closer = next;
+    return match;
   });
 }
