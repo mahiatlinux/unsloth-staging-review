@@ -224,7 +224,7 @@ enum BrowserEvent {
         tab_id: String,
         url: String,
     },
-    /// A link only another app opens (mailto:); the panel asks first.
+    /// a link only another app opens (mailto:); the panel asks first.
     External {
         tab_id: String,
         url: String,
@@ -237,15 +237,21 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
-        /// A finished download's handle for Download history (browser_downloads.rs).
+        /// correlates the prompt with completion so frontend context survives async delivery.
+        request_id: Option<String>,
+        /// finished download handle for Download history (browser_downloads.rs).
         download_id: Option<String>,
-        /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
+        /// false if the internet mark failed so the panel can warn; None when no mark applies.
         marked: Option<bool>,
+    },
+    DownloadCancelled {
+        tab_id: String,
+        request_id: String,
     },
     DownloadPrompt {
         tab_id: String,
         url: String,
-        /// Page showing when the download started (the site a remembered answer is for); "" before the view showed one.
+        /// page at download start, used to scope remembered answers; empty before first view.
         site: String,
         name: String,
         id: String,
@@ -538,6 +544,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
     tab_id: &str,
     url: &Url,
     path: &Path,
+    request_id: Option<String>,
     download_id: Option<String>,
     marked: Option<bool>,
 ) {
@@ -554,6 +561,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
             size: std::fs::metadata(path).ok().map(|m| m.len()),
             done: true,
             success: true,
+            request_id,
             download_id,
             marked,
         },
@@ -565,6 +573,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
     tab_id: &str,
     url: &Url,
     name: &str,
+    request_id: Option<String>,
 ) {
     emit(
         app,
@@ -576,8 +585,23 @@ pub(crate) fn emit_download_failed<R: Runtime>(
             size: None,
             done: true,
             success: false,
+            request_id,
             download_id: None,
             marked: None,
+        },
+    );
+}
+
+pub(crate) fn emit_download_cancelled<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    request_id: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::DownloadCancelled {
+            tab_id: tab_id.to_string(),
+            request_id: request_id.to_string(),
         },
     );
 }
@@ -1044,7 +1068,7 @@ fn create_view<R: Runtime>(
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        emit_download_failed(app, &download_tab, &url, &name);
+                        emit_download_failed(app, &download_tab, &url, &name, None);
                         return false;
                     }
                     let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
@@ -1053,8 +1077,7 @@ fn create_view<R: Runtime>(
                     let path = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
-                        // macOS reports no path when a download finishes, so two of one URL at
-                        // once couldn't be told apart: one at a time.
+                        // macOS omits paths, so concurrent downloads of one URL are ambiguous.
                         let busy =
                             cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
                         let in_flight = inner.downloads.values().map(Vec::len).sum();
@@ -1070,7 +1093,7 @@ fn create_view<R: Runtime>(
                                     .file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_default();
-                                emit_download_failed(app, &download_tab, &url, &name);
+                                emit_download_failed(app, &download_tab, &url, &name, None);
                             }
                             return false;
                         }
@@ -1373,6 +1396,15 @@ pub fn browser_view_navigate<R: Runtime>(
         .committed
         .remove(&tab_id);
     page.navigate(url).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn browser_view_validate_url<R: Runtime>(
+    webview: Webview<R>,
+    url: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    parse_page_url(&url).map(|_| ())
 }
 
 #[tauri::command]
@@ -2098,6 +2130,15 @@ mod tests {
         assert_eq!(
             event,
             serde_json::json!({ "kind": "history", "tabId": "t1", "canGoBack": true, "canGoForward": false, "icon": null })
+        );
+        let cancelled = serde_json::to_value(BrowserEvent::DownloadCancelled {
+            tab_id: "t1".into(),
+            request_id: "d1".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            cancelled,
+            serde_json::json!({ "kind": "downloadCancelled", "tabId": "t1", "requestId": "d1" })
         );
         let bounds: ViewBounds = serde_json::from_value(serde_json::json!({
             "x": 1, "y": 2, "width": 3, "height": 4, "viewportWidth": 5

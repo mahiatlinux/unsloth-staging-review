@@ -91,13 +91,20 @@ let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
   calls.push({ command, args });
   if (command === "browser_capture")
     return new Promise((resolve) => (captureDone = resolve));
+  if (
+    (command === "browser_view_navigate" || command === "browser_view_validate_url") &&
+    (globalThis as { rejectNativeNavigation?: boolean }).rejectNativeNavigation
+  ) {
+    return Promise.reject(new Error("refused for test"));
+  }
   return Promise.resolve();
 };
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews } = await import(
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
+const { useChatRuntimeStore } = await import("@/features/chat");
+const { nativePageTemporary, returnToNativePage, startNativeViews } = await import(
   "../src/features/browser/native-view.ts"
 );
 
@@ -216,7 +223,7 @@ test("a finished download is listed and reported after its tab closed, and warns
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d1", marked: true } });
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d2", marked: false } });
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d3", marked: null } });
-    // A tab this page never opened: the account signed in before the last reload (an account switch) started it.
+    // this page never opened the tab; a prior account started it before the last reload.
     g.nativeViewListener?.({ payload: { ...done, tabId: "tab-before-reload", downloadId: "d4", marked: true } });
     assert.deepEqual(seen, [
       { level: "history", message: "d1" },
@@ -227,6 +234,313 @@ test("a finished download is listed and reported after its tab closed, and warns
       { level: "success", message: "browser.native.downloaded" },
     ]);
   } finally {
+    stop();
+  }
+});
+
+test("native navigation keeps temporary history private after the chat mode changes", async () => {
+  useBrowserStore.getState().openUrl("https://normal.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: { kind: "load", tabId, url: "https://private.example/", loading: true },
+    });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({
+      payload: { kind: "load", tabId, url: "https://private.example/", loading: false },
+    });
+    g.nativeViewListener?.({ payload: { kind: "title", tabId, title: "Private" } });
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "visit", message: "https://private.example/", temporary: true },
+      { level: "visit", message: "https://private.example/", temporary: true },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a native pushState change latches temporary provenance without a load event", async () => {
+  useBrowserStore.getState().openUrl("https://spa.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({ payload: { kind: "url", tabId, url: "https://spa.example/private" } });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({ payload: { kind: "title", tabId, title: "Private route" } });
+    assert.equal(nativePageTemporary(tabId), true);
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "visit", message: "https://spa.example/private", temporary: true },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a native privacy boundary starts a fresh history before showing a persistent page", async () => {
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://private-history.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const afterPrivate = calls.length;
+    useChatRuntimeStore.getState().setIncognito(false);
+    useBrowserStore.getState().navigate(tabId, { url: "https://persistent-history.example/" });
+    await frame();
+    const boundary = calls.slice(afterPrivate);
+    const closed = boundary.findIndex(({ command }) => command === "browser_view_close");
+    const shown = boundary.findIndex(
+      ({ command, args }) =>
+        command === "browser_view_show" &&
+        args?.tabId === tabId &&
+        args?.url === "https://persistent-history.example/",
+    );
+    assert.ok(closed >= 0 && shown > closed);
+    const validated = boundary.findIndex(({ command }) => command === "browser_view_validate_url");
+    assert.ok(validated >= 0 && validated < closed);
+    assert.equal(boundary.some(({ command }) => command === "browser_view_navigate"), false);
+    assert.equal(nativePageTemporary(tabId), false);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a native child tab inherits retained temporary page provenance", async () => {
+  useBrowserStore.getState().openUrl("https://normal-parent.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void };
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: { kind: "load", tabId, url: "https://private-parent.example/", loading: true },
+    });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({
+      payload: { kind: "newTab", tabId, url: "https://private-child.example/" },
+    });
+    const child = useBrowserStore
+      .getState()
+      .tabs.find((candidate) => candidate.id === useBrowserStore.getState().activeTabId);
+    const childEntry = child ? currentEntry(child) : null;
+    assert.equal(childEntry?.kind === "web" && childEntry.temporary, true);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a failed native navigation restores the displayed page's temporary provenance", async () => {
+  useBrowserStore.getState().openUrl("https://normal-before-private.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      rejectNativeNavigation?: boolean;
+    };
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: { kind: "load", tabId, url: "https://private-shown.example/", loading: true },
+    });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.rejectNativeNavigation = true;
+    useBrowserStore.getState().navigate(tabId, { url: "https://refused.example/" });
+    await frame();
+    g.rejectNativeNavigation = false;
+    assert.equal(returnToNativePage(tabId), true);
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+    const entry = tab ? currentEntry(tab) : null;
+    assert.equal(entry?.kind === "web" && entry.temporary, true);
+  } finally {
+    (globalThis as { rejectNativeNavigation?: boolean }).rejectNativeNavigation = undefined;
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("native downloads inherit a temporary page navigation after chat mode changes", async () => {
+  useBrowserStore.getState().openUrl("https://normal.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeDownloadAllowed?: boolean;
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    g.nativeDownloadAllowed = true;
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: { kind: "load", tabId, url: "https://private.example/", loading: true },
+    });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({
+      payload: {
+        kind: "downloadPrompt",
+        tabId,
+        url: "https://private.example/private.zip",
+        site: "https://private.example/",
+        name: "private.zip",
+        id: "private-page-download",
+      },
+    });
+    await settle();
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download",
+        tabId,
+        url: "https://private.example/private.zip",
+        name: "private.zip",
+        path: null,
+        size: 3,
+        done: true,
+        success: true,
+        requestId: "private-page-download",
+        downloadId: "native-private-page",
+        marked: true,
+      },
+    });
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "info", message: "browser.native.downloading" },
+      { level: "history", message: "native-private-page", temporary: true },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    delete (globalThis as { nativeDownloadAllowed?: boolean }).nativeDownloadAllowed;
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("native download completion keeps the chat mode from its prompt", async () => {
+  useBrowserStore.getState().openUrl("https://download.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeDownloadAllowed?: boolean;
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    g.nativeDownloadAllowed = true;
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: {
+        kind: "downloadPrompt",
+        tabId,
+        url: "https://download.example/private.zip",
+        site: "https://download.example/",
+        name: "private.zip",
+        id: "private-download",
+      },
+    });
+    await settle();
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download",
+        tabId,
+        url: "https://download.example/private.zip",
+        name: "private.zip",
+        path: null,
+        size: 3,
+        done: true,
+        success: true,
+        requestId: "private-download",
+        downloadId: "native-private",
+        marked: true,
+      },
+    });
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "info", message: "browser.native.downloading" },
+      { level: "history", message: "native-private", temporary: true },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    delete (globalThis as { nativeDownloadAllowed?: boolean }).nativeDownloadAllowed;
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("cancelling a native save retires its captured chat context", async () => {
+  useBrowserStore.getState().openUrl("https://download.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeDownloadAllowed?: boolean;
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    g.nativeDownloadAllowed = true;
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({
+      payload: {
+        kind: "downloadPrompt",
+        tabId,
+        url: "https://download.example/cancelled.zip",
+        site: "https://download.example/",
+        name: "cancelled.zip",
+        id: "cancelled-download",
+      },
+    });
+    await settle();
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({
+      payload: { kind: "downloadCancelled", tabId, requestId: "cancelled-download" },
+    });
+    // a late terminal event is unexpected but exposes the retired context.
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download",
+        tabId,
+        url: "https://download.example/cancelled.zip",
+        name: "cancelled.zip",
+        path: null,
+        size: 3,
+        done: true,
+        success: true,
+        requestId: "cancelled-download",
+        downloadId: "native-cancelled",
+        marked: true,
+      },
+    });
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "info", message: "browser.native.downloading" },
+      { level: "history", message: "native-cancelled" },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    delete (globalThis as { nativeDownloadAllowed?: boolean }).nativeDownloadAllowed;
+    useChatRuntimeStore.getState().setIncognito(false);
     stop();
   }
 });

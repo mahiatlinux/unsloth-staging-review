@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
+import { useChatRuntimeStore } from "@/features/chat";
 import { accountDatabaseName } from "@/lib/account-transition";
 import { hostOf } from "./address";
 import { forgetNativeDownloads } from "./native-downloads";
@@ -16,33 +17,37 @@ export type DownloadItem = {
   size: number;
   contentType: string;
   downloadedAt: number;
-  /** Desktop app id for the saved file (native-downloads.ts). */
+  /** native saved-file id from native-downloads.ts. */
   nativeId?: string;
 };
 
 const MAX_HISTORY = 1000;
 const MAX_DOWNLOADS = 200;
-// Pages pick their URLs and titles; cap them so history can't fill Studio's storage.
+// cap page-provided URLs and titles so history cannot fill Studio storage.
 export const MAX_URL_CHARS = 2048;
 export const MAX_TITLE_CHARS = 200;
-// The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
+// sites usually declare icons in-page instead of at /favicon.ico; keep one per host.
 const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Visits before this are past the kept period; 0 keeps them all. */
-/** Icons of hosts with a kept visit; the rest are history too. */
+/** keeps icons only for hosts with retained visits. */
 function iconsFor(history: HistoryItem[], icons: Record<string, string>): Record<string, string> {
   const hosts = new Set(history.map((visit) => hostOf(visit.url)));
   return Object.fromEntries(Object.entries(icons).filter(([host]) => hosts.has(host)));
 }
 
+function savesHistory(temporary: boolean): boolean {
+  return useBrowserPrefsStore.getState().saveHistory && !temporary && !useChatRuntimeStore.getState().incognito;
+}
+
+/** returns the retention cutoff; 0 keeps all visits. */
 function retentionCutoff(): number {
   const days = useBrowserPrefsStore.getState().historyRetentionDays;
   return days > 0 ? Date.now() - days * DAY_MS : 0;
 }
 
-/** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
+/** batches the single large history value and ignores storage exhaustion. */
 function deferredLocalStorage(): StateStorage {
   const pending = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -77,17 +82,17 @@ const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 interface BrowserHistoryState {
   history: HistoryItem[];
   downloads: DownloadItem[];
-  /** Host to the icon its pages declared, newest last. */
+  /** host icons ordered oldest to newest. */
   icons: Record<string, string>;
-  recordVisit: (url: string, title: string) => void;
-  recordIcon: (host: string, icon: string) => void;
-  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => void;
+  recordVisit: (url: string, title: string, temporary?: boolean) => void;
+  recordIcon: (host: string, icon: string, temporary?: boolean) => void;
+  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">, temporary?: boolean) => void;
   removeVisit: (id: string) => void;
   removeVisits: (ids: ReadonlySet<string>) => void;
   removeDownload: (id: string) => void;
   clearHistory: () => void;
   clearDownloads: () => void;
-  /** Drops visits past the kept period (Settings > Browser). */
+  /** drops visits outside the Browser retention setting. */
   pruneHistory: () => void;
 }
 
@@ -97,39 +102,39 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       history: [],
       downloads: [],
       icons: {},
-      recordIcon: (host, icon) =>
+      recordIcon: (host, icon, temporary = false) =>
         set((state) => {
           if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
-          // Icons name the hosts visited, so they follow the history setting.
-          if (!useBrowserPrefsStore.getState().saveHistory) return state;
+          // icons expose visited hosts, so they follow history privacy settings.
+          if (!savesHistory(temporary)) return state;
           const { [host]: _replaced, ...rest } = state.icons;
           const hosts = Object.keys(rest);
           for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
           return { icons: { ...rest, [host]: icon } };
         }),
-      recordVisit: (url, fullTitle) =>
+      recordVisit: (url, fullTitle, temporary = false) =>
         set((state) => {
-          if (url.length > MAX_URL_CHARS || !useBrowserPrefsStore.getState().saveHistory) return state;
+          if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
           const [latest, ...rest] = kept;
-          // A reload or title update of the same page is one visit.
+          // reloads and title updates remain a single visit.
           const history =
             latest?.url === url
               ? [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest]
               : [{ id: newId(), url, title, visitedAt: Date.now() }, ...kept].slice(0, MAX_HISTORY);
-          // Pruned against the new visit too: its icon was recorded just before it.
+          // prune icons against the new visit because its icon was recorded first.
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
         }),
-      recordDownload: (item) =>
+      recordDownload: (item, temporary = useChatRuntimeStore.getState().incognito) =>
         set((state) => {
-          if (!useBrowserPrefsStore.getState().saveDownloadHistory) {
+          if (!useBrowserPrefsStore.getState().saveDownloadHistory || temporary) {
             if (item.nativeId) forgetNativeDownloads([item.nativeId]);
             return state;
           }
-          // A page picks these: bounded like a visit, keeping the download without an overlong address.
+          // bound page-controlled fields while retaining downloads with oversized URLs.
           const entry = {
             ...item,
             name: item.name.slice(0, MAX_TITLE_CHARS),

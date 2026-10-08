@@ -27,12 +27,17 @@ const STUBS = {
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
   "./native-downloads": stub("export const decideNativeDownload = async () => {};"),
   "./download-approval-queue": stub(
-    "export const approveDownload = async () => false; export const downloadSiteOf = () => '';",
+    "export const approveDownload = async () => globalThis.nativeDownloadAllowed ?? false; export const downloadSiteOf = () => '';",
   ),
-  "./history-store": stub(
-    "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {}," +
-      " recordDownload: (item) => void (globalThis.nativeViewSeen ??= []).push({ level: 'history', message: item.nativeId }) }) };",
-  ),
+  "./history-store": stub(`
+    const push = (entry) => void (globalThis.nativeViewSeen ??= []).push(entry);
+    export const useBrowserHistoryStore = { getState: () => ({
+      recordVisit: (url, _title, temporary) => push({ level: 'visit', message: url, temporary }),
+      recordDownload: (item, temporary) => push(temporary === undefined
+        ? { level: 'history', message: item.nativeId }
+        : { level: 'history', message: item.nativeId, temporary })
+    }) };
+  `),
 };
 
 export function resolve(specifier, context, next) {

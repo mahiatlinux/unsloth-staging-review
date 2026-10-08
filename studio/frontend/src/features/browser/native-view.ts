@@ -3,6 +3,7 @@
 
 /** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
 
+import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -49,10 +50,12 @@ type NativeEvent =
       size: number | null;
       done: boolean;
       success: boolean;
+      requestId: string | null;
       downloadId: string | null;
-      /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
+      /** false when the file could not be marked as downloaded from the internet; null where nothing marks. */
       marked?: boolean | null;
     }
+  | { kind: "downloadCancelled"; tabId: string; requestId: string }
   | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
@@ -60,21 +63,25 @@ type Bounds = { x: number; y: number; width: number; height: number; viewportWid
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
 
 const views = new Map<string, number>();
-// Tabs this page has opened a view for. A download from any other tab started under the account
-// signed in before the last reload (an account switch reloads), so it isn't this account's to list.
+// downloads from unopened tabs predate the current account's last reload and do not belong in its history.
 const openedTabs = new Set<string>();
+// exceeds the backend's unanswered-prompt timeout.
+const DOWNLOAD_PROMPT_CONTEXT_MS = 11 * 60_000;
+type DownloadContext = { temporary: boolean; expires: ReturnType<typeof setTimeout> | null };
+const downloadContexts = new Map<string, DownloadContext>();
+const temporaryPages = new Map<string, boolean>();
 let recency: string[] = [];
 const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
-// What each view really shows, to return to after a refused address.
+// cached page state restores a refused address.
 const pages = new Map<string, { url: string; title: string; favicon: string | null }>();
-// Where a closed view's page had got to, so it reopens there rather than at the entry's address.
+// last closed-view location, used to reopen it instead of its entry address.
 const resume = new Map<string, { entry: number; url: string }>();
 let newTabTimes: number[] = [];
-// The view on screen, as last shown; menus and dialogs over the page hide it.
+// currently shown view; menus and dialogs hide it.
 let shownView: string | null = null;
 const shownWaiters = new Set<() => void>();
-// Bumped when the panel unmounts, so a call still in flight leaves the closed views alone.
+// invalidates in-flight calls when the panel unmounts.
 let generation = 0;
 
 function page(tabId: string) {
@@ -87,13 +94,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
-// The view's history closes with it: keep the page it reached as a tab entry, for Back.
+// preserve the reached page so Back can restore it after the view's own history closes.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   const shown = pages.get(tabId);
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
-  store.navigate(tabId, { url: shown.url }, { replace: false });
+  store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
 }
 
@@ -104,6 +111,7 @@ function closeView(tabId: string): void {
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
+  temporaryPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
@@ -118,19 +126,31 @@ function listenOnce(): void {
   );
 }
 
-/** Always answered: an unanswered download would sit in staging until the app quits. */
+/** always answer prompts because unanswered downloads remain staged until exit. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
   const entry = tab ? currentEntry(tab) : null;
-  // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
+  const expires = setTimeout(() => downloadContexts.delete(id), DOWNLOAD_PROMPT_CONTEXT_MS);
+  downloadContexts.set(id, {
+    temporary:
+      Boolean(temporaryPages.get(event.tabId)) ||
+      useChatRuntimeStore.getState().incognito ||
+      Boolean(entry?.kind === "web" && entry.temporary),
+    expires,
+  });
+  // bind approval to the initiating site; blob URLs inherit their creator, with the opener or address as fallback.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
   void decided
     .then(async (allow) => {
+      const context = downloadContexts.get(id);
+      if (context?.expires) clearTimeout(context.expires);
+      if (!allow) downloadContexts.delete(id);
+      else if (context) context.expires = null;
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
       if (allow) toast(t("browser.native.downloading", { name }));
     })
-    .catch(() => undefined);
+    .catch(() => downloadContexts.delete(id));
 }
 
 function onNativeEvent(event: NativeEvent): void {
@@ -140,26 +160,50 @@ function onNativeEvent(event: NativeEvent): void {
     onDownloadPrompt(event, tab);
     return;
   }
-  // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
-  if (event.kind === "download") {
-    if (openedTabs.has(event.tabId)) onDownload(event);
+  if (event.kind === "downloadCancelled") {
+    const context = downloadContexts.get(event.requestId);
+    if (context?.expires) clearTimeout(context.expires);
+    downloadContexts.delete(event.requestId);
     return;
   }
-  if (!tab || currentEntry(tab).kind !== "web") return;
+  // downloads can finish after their tab closes or navigates and still belong in history.
+  if (event.kind === "download") {
+    if (openedTabs.has(event.tabId)) onDownload(event);
+    else if (event.requestId) downloadContexts.delete(event.requestId);
+    return;
+  }
+  if (!tab) return;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
-    case "load":
+    case "load": {
+      if (event.loading) {
+        const temporary =
+          temporaryPages.get(tab.id) || useChatRuntimeStore.getState().incognito || Boolean(entry.temporary);
+        temporaryPages.set(tab.id, temporary);
+      }
+      const temporary = temporaryPages.get(tab.id) ?? Boolean(entry.temporary);
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
-      if (!event.loading) history.recordVisit(event.url, tab.title);
+      if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
       break;
+    }
     case "title":
       store.updateTab(tab.id, { title: event.title });
       page(tab.id).title = event.title;
-      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title);
+      history.recordVisit(
+        tab.displayUrl ?? currentEntryUrl(tab),
+        event.title,
+        temporaryPages.get(tab.id) ?? entry.temporary,
+      );
       break;
     case "url":
+      temporaryPages.set(
+        tab.id,
+        Boolean(temporaryPages.get(tab.id) || useChatRuntimeStore.getState().incognito || entry.temporary),
+      );
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
@@ -169,7 +213,7 @@ function onNativeEvent(event: NativeEvent): void {
       if (tab.nativeHistory?.back !== next.back || tab.nativeHistory?.forward !== next.forward) {
         store.updateTab(tab.id, { nativeHistory: next });
       }
-      // Through the backend, so a page can't point Studio at a local address.
+      // route through the backend so pages cannot point Studio at a local address.
       if (event.icon && icons.get(tab.id) !== event.icon) {
         const icon = event.icon;
         icons.set(tab.id, icon);
@@ -183,14 +227,16 @@ function onNativeEvent(event: NativeEvent): void {
     }
     case "newTab": {
       const now = Date.now();
+      const temporary = temporaryPages.get(tab.id) ?? Boolean(entry.temporary);
+      const open = () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab), temporary });
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        open();
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
+          onClick: open,
         });
       }
       break;
@@ -205,16 +251,24 @@ function onNativeEvent(event: NativeEvent): void {
 }
 
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
+  const context = event.requestId ? downloadContexts.get(event.requestId) : undefined;
+  if (event.done && event.requestId) {
+    if (context?.expires) clearTimeout(context.expires);
+    downloadContexts.delete(event.requestId);
+  }
   if (!event.done) {
     toast(t("browser.native.downloading", { name: event.name }));
   } else if (event.success) {
-    useBrowserHistoryStore.getState().recordDownload({
-      name: event.name,
-      url: event.url,
-      size: event.size ?? 0,
-      contentType: "",
-      nativeId: event.downloadId ?? undefined,
-    });
+    useBrowserHistoryStore.getState().recordDownload(
+      {
+        name: event.name,
+        url: event.url,
+        size: event.size ?? 0,
+        contentType: "",
+        nativeId: event.downloadId ?? undefined,
+      },
+      context?.temporary,
+    );
     if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
     else toast.success(t("browser.native.downloaded", { name: event.name }));
   } else {
@@ -222,7 +276,7 @@ function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
   }
 }
 
-// Pages can ask in a loop: one prompt on screen, replaced at most once a second.
+// rate-limit pages to one visible prompt, replaced at most once per second.
 const PROMPT_ID = "browser-native-prompt";
 const PROMPT_INTERVAL_MS = 1000;
 let lastPrompt = Number.NEGATIVE_INFINITY;
@@ -261,7 +315,7 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
-/** Gives key focus back to the panel's webview. */
+/** gives key focus back to the panel's webview. */
 export function focusPanel(tabId: string): Promise<void> {
   if (!views.has(tabId)) return Promise.resolve();
   return call("browser_view_action", { tabId, action: "blur" }).catch(() => undefined);
@@ -272,7 +326,7 @@ export function returnToNativePage(tabId: string): boolean {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   if (!shown?.url || !tab?.nativeError || !views.has(tabId)) return false;
-  store.navigate(tabId, { url: shown.url }, { replace: true });
+  store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: true });
   const back = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
   if (back) views.set(tabId, entryKey(currentEntry(back)));
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false, displayUrl: shown.url });
@@ -283,7 +337,11 @@ export function hasNativeView(tabId: string): boolean {
   return views.has(tabId);
 }
 
-/** Last shown bounds of `tabId`'s view, in window coordinates. */
+export function nativePageTemporary(tabId: string): boolean | undefined {
+  return temporaryPages.get(tabId);
+}
+
+/** last shown bounds of `tabId`'s view, in window coordinates. */
 export function nativeViewBounds(tabId: string): Bounds | null {
   return viewBounds.get(tabId) ?? null;
 }
@@ -334,7 +392,7 @@ function visibleRect(element: HTMLElement): DOMRect | null {
 }
 
 type Desired =
-  | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
+  | { tabId: string; url: string; entry: number; temporary: boolean; zoom: number; bounds: Bounds }
   | { tabId: string; covered: true }
   | null;
 
@@ -367,6 +425,7 @@ function desiredView(): Desired {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
+    temporary: Boolean(entry.temporary),
     zoom: tab.zoom,
     bounds: {
       x: Math.round(rect.left),
@@ -471,9 +530,11 @@ async function applyView(desired: Desired): Promise<void> {
     await call("browser_view_show", { tabId: null });
     return;
   }
-  const { tabId, url, entry, zoom, bounds } = desired;
-  const existed = views.has(tabId);
-  const loaded = views.get(tabId);
+  const { tabId, url, entry, temporary, zoom, bounds } = desired;
+  let existed = views.has(tabId);
+  let loaded = views.get(tabId);
+  const previousTemporary = temporaryPages.get(tabId);
+  const changingPage = existed && loaded !== entry;
   const resumed = resume.get(tabId);
   const started = generation;
   const stale = () => {
@@ -483,6 +544,24 @@ async function applyView(desired: Desired): Promise<void> {
   };
   try {
     openedTabs.add(tabId);
+    // a private page must not remain reachable from a persistent page's native Back stack.
+    if (changingPage && previousTemporary !== undefined && previousTemporary !== temporary) {
+      // validate before discarding the page the reader can return to.
+      await call("browser_view_validate_url", { url });
+      if (stale()) return;
+      await call("browser_view_close", { tabId });
+      if (stale()) return;
+      views.delete(tabId);
+      viewBounds.delete(tabId);
+      zooms.delete(tabId);
+      icons.delete(tabId);
+      pages.delete(tabId);
+      resume.delete(tabId);
+      temporaryPages.delete(tabId);
+      existed = false;
+      loaded = undefined;
+    }
+    if (!existed || loaded !== entry) temporaryPages.set(tabId, temporary);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     clearSnapshot();
@@ -502,6 +581,11 @@ async function applyView(desired: Desired): Promise<void> {
     }
   } catch (cause) {
     if (stale()) return;
+    // a refused navigation leaves the previous page visible, so retain its provenance.
+    if (changingPage && views.get(tabId) === loaded) {
+      if (previousTemporary === undefined) temporaryPages.delete(tabId);
+      else temporaryPages.set(tabId, previousTemporary);
+    }
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
       nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
@@ -510,8 +594,7 @@ async function applyView(desired: Desired): Promise<void> {
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// serialize calls and keep only the newest pending state to avoid replaying stale drag bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 
@@ -533,7 +616,7 @@ function apply(desired: Desired): void {
   pump();
 }
 
-// A clear closed every page: forget them, keeping where each tab got to, and show them again.
+// a clear closes every page, so retain each tab's location before recreating its view.
 let epoch = 0;
 onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
@@ -543,6 +626,7 @@ onNativeViewsClosed(() => {
   zooms.clear();
   icons.clear();
   pages.clear();
+  temporaryPages.clear();
   resume.clear();
   recency = [];
   epoch += 1;

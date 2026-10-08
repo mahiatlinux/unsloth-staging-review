@@ -77,7 +77,10 @@ function useFrameMessages(tabId: string, origin: string | null) {
       const store = useBrowserStore.getState();
       switch (message.type) {
         case "navigate": {
-          const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          const from = pageAddress(tab);
+          const temporary = entry?.kind === "web" ? entry.temporary : undefined;
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
@@ -85,9 +88,14 @@ function useFrameMessages(tabId: string, origin: string | null) {
               method: message.method,
               body: message.body,
               from,
+              temporary,
             });
           } else {
-            store.navigate(tabId, { url: message.url, method: message.method, body: message.body, from }, { replace: message.replace });
+            store.navigate(
+              tabId,
+              { url: message.url, method: message.method, body: message.body, from, temporary },
+              { replace: message.replace },
+            );
           }
           break;
         }
@@ -100,9 +108,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
           const entry = tab ? currentEntry(tab) : null;
           const favicon = safeFavicon(message.favicon);
-          // Kept by site, so Recents, History and Suggested show it once the tab is gone.
+          // persist site icons for Recents, History, and Suggested after the tab closes.
           if (favicon && tab && entry?.kind === "web") {
-            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon);
+            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon, entry.temporary);
           }
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
@@ -110,9 +118,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
               if (icon && now && currentEntry(now) === entry) useBrowserStore.getState().updateTab(tabId, { favicon: icon });
             });
           }
-          // POST results can't be revisited, so they stay out of history.
+          // POST results cannot be revisited and stay out of history.
           if (tab && entry?.kind === "web" && entry.method !== "POST") {
-            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
+            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title, entry.temporary);
           }
           break;
         }
@@ -123,8 +131,11 @@ function useFrameMessages(tabId: string, origin: string | null) {
           if (message.title) store.updateTab(tabId, { title: message.title });
           break;
         case "url":
-          // Same origin only, or a page could spoof the address bar.
-          if (origin && sameOrigin(message.url, origin)) store.updateTab(tabId, { displayUrl: message.url });
+          // require the loaded origin to prevent address-bar spoofing.
+          if (origin && sameOrigin(message.url, origin)) {
+            store.retainTemporary(tabId);
+            store.updateTab(tabId, { displayUrl: message.url });
+          }
           break;
         case "reload":
           store.reload(tabId);
@@ -250,7 +261,12 @@ function WebPage({
     const show = (page: BrowserPage) => {
       if (page.kind === "raw") {
         const name = page.fileName ?? fileNameFromUrl(page.url);
-        setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
+        setPageDownload(tab.id, {
+          blob: page.blob,
+          name,
+          contentType: page.contentType,
+          temporary: entry.temporary,
+        });
         fitZoomToPage(tab.id, true);
         updateTab(tab.id, {
           loading: false,
@@ -259,7 +275,7 @@ function WebPage({
           documentType: page.contentType,
           pageError: false,
         });
-        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
+        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name, entry.temporary);
       } else {
         fitZoomToPage(tab.id, false);
         updateTab(tab.id, {
@@ -284,17 +300,24 @@ function WebPage({
     }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
-    fetchBrowserPage({ url, method, body }, controller.signal)
+    fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
-        // A file the panel can't show downloads, as in a browser; fresh loads only, so returning to the tab doesn't ask again.
+        // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
-            // The sending page, else the address asked for (not the redirect target), so another site's "allow" can't cover it.
-            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
+            // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
+            void saveBrowserDownload({
+              blob: page.blob,
+              name,
+              contentType: page.contentType,
+              url: page.url,
+              site: entry.from ?? url,
+              temporary: entry.temporary,
+            });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }

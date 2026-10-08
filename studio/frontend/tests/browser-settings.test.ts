@@ -25,6 +25,8 @@ register("./helpers/browser-store-resolver.mjs", import.meta.url);
 const { useBrowserHistoryStore } = await import("../src/features/browser/history-store.ts");
 const { useBrowserPrefsStore } = await import("../src/features/browser/prefs-store.ts");
 const { useBrowserBookmarksStore } = await import("../src/features/browser/bookmarks-store.ts");
+const { useChatRuntimeStore } = await import("@/features/chat");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const download = { name: "file.pdf", url: "https://example.com/file.pdf", size: 10, contentType: "application/pdf" };
 
@@ -39,6 +41,62 @@ test("with history saving off, visits are not recorded; turned back on, they are
   assert.equal(useBrowserHistoryStore.getState().history.length, 1);
 });
 
+test("pages visited beside a temporary chat stay out of history, icons included", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordIcon("example.com", "https://example.com/icon.png");
+  history.recordVisit("https://example.com/", "Example");
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+  assert.deepEqual(useBrowserHistoryStore.getState().icons, {});
+  useChatRuntimeStore.getState().setIncognito(false);
+  history.recordVisit("https://example.com/", "Example");
+  assert.equal(useBrowserHistoryStore.getState().history.length, 1);
+});
+
+test("a page opened beside a temporary chat stays out of history when it loads after the chat turns normal", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://example.com/", { newTab: true });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
+  history.recordVisit("https://example.com/", "Example", entry?.kind === "web" ? entry.temporary : false);
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+  useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+  const next = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const nextEntry = next ? currentEntry(next) : null;
+  history.recordVisit("https://example.org/", "Example", nextEntry?.kind === "web" ? nextEntry.temporary : false);
+  assert.equal(useBrowserHistoryStore.getState().history.length, 1);
+});
+
+test("a tab copied into a temporary chat stays out of history after the chat turns normal", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(false);
+  useBrowserStore.getState().openUrl("https://copied.example/", { newTab: true });
+  const originalId = useBrowserStore.getState().activeTabId;
+  assert.ok(originalId);
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().duplicateTab(originalId);
+  const copied = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = copied ? currentEntry(copied) : null;
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
+  history.recordVisit("https://copied.example/", "Copied", entry?.kind === "web" ? entry.temporary : false);
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+});
+
+test("an explicitly temporary page keeps that provenance after the chat turns normal", () => {
+  useChatRuntimeStore.getState().setIncognito(false);
+  useBrowserStore.getState().openUrl("https://child.example/", { newTab: true, temporary: true });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
+});
+
 test("with download history off, downloads are not listed", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();
@@ -48,6 +106,37 @@ test("with download history off, downloads are not listed", () => {
   useBrowserPrefsStore.getState().setSaveDownloadHistory(true);
   history.recordDownload(download);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+});
+
+test("files downloaded beside a temporary chat are not listed", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordDownload(download);
+  assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  useChatRuntimeStore.getState().setIncognito(false);
+  history.recordDownload(download);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+});
+
+test("a saved screenshot carries its captured temporary provenance", async () => {
+  const { screenshotDownload } = await import("../src/features/browser/downloads.ts");
+  const shot = screenshotDownload(new Blob(["png"]), "Screenshot.png", true);
+  assert.equal(shot.temporary, true);
+  assert.equal(shot.contentType, "image/png");
+  assert.equal(shot.url, null);
+});
+
+test("download history keeps the chat mode from when the download began", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  useChatRuntimeStore.getState().setIncognito(false);
+  history.recordDownload(download, true);
+  assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordDownload({ ...download, name: "normal.pdf" }, false);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  useChatRuntimeStore.getState().setIncognito(false);
 });
 
 test("shortening how long history is kept drops older visits at once", () => {
@@ -143,6 +232,37 @@ test("a fetched file shows at 100% and the next page returns to the default zoom
   fitZoomToPage(tabId, false);
   assert.equal(zoom(), 1.25);
   useBrowserPrefsStore.getState().setDefaultZoom(1);
+});
+
+test("a fetched file keeps temporary provenance for a later toolbar download", async () => {
+  const { pageDownload, setPageDownload } = await import("../src/features/browser/store.ts");
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://example.com/private.pdf", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab ? currentEntry(tab) : null;
+  setPageDownload(tabId, {
+    blob: new Blob(["%PDF"]),
+    name: "private.pdf",
+    contentType: "application/pdf",
+    temporary: entry?.kind === "web" ? entry.temporary : undefined,
+  });
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(pageDownload(tabId)?.temporary, true);
+  setPageDownload(tabId, null);
+});
+
+test("a local file keeps the temporary mode captured before its asynchronous load", () => {
+  useChatRuntimeStore.getState().setIncognito(false);
+  useBrowserStore.getState().openFile({
+    blob: new Blob(["private"]),
+    name: "private.txt",
+    contentType: "text/plain",
+    temporary: true,
+  });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  assert.equal(entry?.kind === "file" && entry.temporary, true);
 });
 
 test("expired visits take their sites' icons with them", () => {
@@ -459,6 +579,63 @@ test("a download whose click has expired waits for Save rather than skip the sav
   delete (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker;
 });
 
+test("a delayed browser save keeps the chat mode from when saving began", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const history = useBrowserHistoryStore.getState();
+  const prefs = useBrowserPrefsStore.getState();
+  let finish: (() => void) | undefined;
+  Object.assign(globalThis, {
+    showSaveFilePicker: async ({ suggestedName }: { suggestedName: string }) => ({
+      name: suggestedName,
+      createWritable: async () => ({
+        write: async () => new Promise<void>((resolve) => void (finish = resolve)),
+        close: async () => {},
+      }),
+    }),
+  });
+  Object.defineProperty(globalThis, "navigator", { value: { userActivation: { isActive: true } }, configurable: true });
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  history.clearDownloads();
+  const blob = new Blob(["x"]);
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    const temporary = saveBrowserDownload({
+      blob,
+      name: "temporary.zip",
+      contentType: "application/zip",
+      url: "https://a.example/temporary.zip",
+    });
+    for (let i = 0; i < 20 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    const finishTemporary = finish as (() => void) | undefined;
+    assert.ok(finishTemporary);
+    useChatRuntimeStore.getState().setIncognito(false);
+    finishTemporary();
+    await temporary;
+    assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+
+    finish = undefined;
+    const normal = saveBrowserDownload({
+      blob,
+      name: "normal.zip",
+      contentType: "application/zip",
+      url: "https://a.example/normal.zip",
+    });
+    for (let i = 0; i < 20 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    const finishNormal = finish as (() => void) | undefined;
+    assert.ok(finishNormal);
+    useChatRuntimeStore.getState().setIncognito(true);
+    finishNormal();
+    await normal;
+    assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+    delete (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+  }
+});
+
 test("a file a page sends the tab to is asked about for that page, not the file's site", async () => {
   const { useBrowserStore, currentEntry } = await import("../src/features/browser/store.ts");
   const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
@@ -543,4 +720,18 @@ test("a blocked site's blob: page can't download past the block", async () => {
   assert.equal(await approveDownload("https://cdn.example/f.zip", "f.zip", "https://b.example/"), true);
   useDownloadSitesStore.getState().setSite("https://a.example", null);
   prefs.setAskBeforeDownloading(true);
+});
+
+test("video and audio tabs don't zoom; pages, images and documents do", async () => {
+  const { canZoom } = await import("../src/features/browser/zoom.ts");
+  const tab = (entry: object) =>
+    ({ id: "t", index: 0, history: [{ kind: "file", contentType: "", ...entry }], zoom: 1 }) as never;
+  assert.equal(canZoom(tab({ name: "clip.mp4" })), false);
+  assert.equal(canZoom(tab({ name: "clip", contentType: "video/webm" })), false);
+  assert.equal(canZoom(tab({ name: "song.mp3" })), false);
+  assert.equal(canZoom(tab({ name: "photo.png" })), true);
+  assert.equal(canZoom(tab({ name: "paper.pdf" })), true);
+  // A clip shown as its text is a text file.
+  assert.equal(canZoom(tab({ name: "clip.mp4", plainText: true })), true);
+  assert.equal(canZoom({ id: "t", index: 0, history: [{ kind: "web", url: "https://a.b/" }], zoom: 1 } as never), true);
 });

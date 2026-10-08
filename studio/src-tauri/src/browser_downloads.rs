@@ -534,7 +534,7 @@ fn decide(
     Ok(())
 }
 
-/// Once answered and finished, move the download out of staging or drop it.
+/// waits for both decision and completion before moving the staged download or dropping it.
 fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let entry = {
         let state = app.state::<BrowserDownloads>();
@@ -549,6 +549,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let Some(entry) = entry else {
         return;
     };
+    let request_id = id.to_string();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let staging = entry.staged.parent().map(Path::to_path_buf);
@@ -566,21 +567,25 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 &entry.tab_id,
                 &entry.url,
                 &path,
+                Some(request_id.clone()),
                 Some(download_id),
                 marked,
             ),
-            Ok(None) => {}
+            Ok(None) => {
+                crate::browser_webview::emit_download_cancelled(&app, &entry.tab_id, &request_id)
+            }
             Err(_) => crate::browser_webview::emit_download_failed(
                 &app,
                 &entry.tab_id,
                 &entry.url,
                 &entry.name,
+                Some(request_id),
             ),
         }
     });
 }
 
-/// None if the save dialog was cancelled.
+/// none if the save dialog was cancelled.
 async fn deliver<R: Runtime>(
     app: &AppHandle<R>,
     entry: &Pending,

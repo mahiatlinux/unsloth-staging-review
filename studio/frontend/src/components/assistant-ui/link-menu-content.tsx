@@ -20,6 +20,7 @@ import {
   textFileKind,
   useBrowserPrefsStore,
 } from "@/features/browser";
+import { useChatRuntimeStore } from "@/features/chat";
 import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -159,7 +160,8 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
   const failed = (key: "linkMenu.openFailed" | "linkMenu.revealFailed" | "linkMenu.saveFailed") => () =>
     toast.error(t(key, { name: file.name }));
 
-  const openInBrowser = () =>
+  const openInBrowser = () => {
+    const temporary = useChatRuntimeStore.getState().incognito;
     void file
       .load()
       .then((blob) =>
@@ -167,10 +169,12 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
           blob,
           name: file.name,
           contentType: contentType || blob.type,
+          temporary,
           key: file.sandbox ? `sandbox:${file.sandbox.sessionId}:${file.sandbox.file}` : undefined,
         }),
       )
       .catch(failed("linkMenu.openFailed"));
+  };
   const open = () => (file.open ? file.open() : openInBrowser());
   const openInNewChat = () =>
     void file

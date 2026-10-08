@@ -6,6 +6,7 @@ import { register } from "node:module";
 import { test } from "node:test";
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
+const { useChatRuntimeStore } = await import("@/features/chat");
 const { browserFile, cachePage, cachedPage, currentEntry, sentPosts, setNativeWebHistory, useBrowserStore } = await import(
   "../src/features/browser/store.ts"
 );
@@ -76,6 +77,18 @@ test("a native tab's navigations replace its entry unless asked to keep it", () 
     ["https://b.example/", "https://c.example/"],
   );
   setNativeWebHistory(false);
+});
+
+test("a proxied URL change latches the current temporary chat onto its entry", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://spa.example/", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  useChatRuntimeStore.getState().setIncognito(true);
+  store.retainTemporary(tabId);
+  useChatRuntimeStore.getState().setIncognito(false);
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab ? currentEntry(tab) : null;
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
 });
 
 test("a reload refetches its own page, not the pages behind it", () => {

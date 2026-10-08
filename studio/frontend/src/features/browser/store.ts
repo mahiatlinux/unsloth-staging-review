@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DocumentAnnotations } from "@/features/chat";
+import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -16,17 +16,21 @@ export type BrowserEntry =
       url: string;
       method?: "GET" | "POST";
       body?: string;
-      /** The page that sent the tab here (link, form, script, refresh); a file here downloads on its behalf. */
+      /** source page used for delegated download approval. */
       from?: string;
+      /** suppresses history for entries opened beside a temporary chat. */
+      temporary?: true;
     }
   | {
       kind: "file";
       fileId: string;
       name: string;
       contentType: string;
-      /** Show as text even if named .html (text extracted from a document). */
+      /** suppresses download history for files opened beside a temporary chat. */
+      temporary?: true;
+      /** forces document-derived .html files to display as text. */
       plainText?: boolean;
-      /** The tab's openKey while this entry shows, so Back restores it. */
+      /** tab openKey used to restore this entry with Back. */
       openKey?: string;
     };
 
@@ -87,18 +91,20 @@ export type OpenFileInput = {
   blob: Blob;
   name: string;
   contentType?: string;
+  /** mode captured when an asynchronous file-open action began. */
+  temporary?: boolean;
   plainText?: boolean;
   key?: string;
 };
 
-// Blobs live outside the store; documents can be 50 MB.
+// blobs live outside the store because documents can be 50 MB.
 const files = new Map<string, Blob>();
 
 export function browserFile(fileId: string): Blob | undefined {
   return files.get(fileId);
 }
 
-type PageDownload = { blob: Blob; name: string; contentType: string };
+type PageDownload = { blob: Blob; name: string; contentType: string; temporary?: boolean };
 const pageDownloads = new Map<string, PageDownload>();
 
 export function setPageDownload(tabId: string, download: PageDownload | null): void {
@@ -171,7 +177,6 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     loading: false,
     reloadKey: 0,
     openKey,
-    // Files open fitted; the default zoom is for web pages.
     zoom: entry.kind === "file" ? 1 : defaultZoom(),
     nativeHistory: null,
     nativeError: null,
@@ -183,15 +188,17 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
 
 export const MAX_TAB_TITLE_CHARS = 120;
 
-// A copy of each entry, so the copy keeps its own cached pages and native view.
+// copy entries so cached pages and native views remain tab-local.
 function copyTab(tab: BrowserTab): BrowserTab {
+  const temporary = useChatRuntimeStore.getState().incognito;
   return {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
-      // The original keeps its key; a copy going Back must not claim it.
+      if ((copy.kind === "web" || copy.kind === "file") && temporary) copy.temporary = true;
+      // preserve the original file key so Back in the copy cannot claim it.
       if (copy.kind === "file") delete copy.openKey;
-      // A form result is not sent again unasked just because the tab was copied.
+      // copied POST results require confirmation before resubmission.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
       return copy;
     }),
@@ -208,19 +215,26 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
-  const entry: BrowserEntry =
+function webEntry(
+  url: string,
+  method?: "GET" | "POST",
+  body?: string,
+  from?: string,
+  temporary = false,
+): BrowserEntry {
+  const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  if (temporary || useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 
-// Pending file refreshes per tab, run in order, and the blobs they will compare.
+// serialize file refreshes per tab and retain their comparison blobs.
 const refreshes = new Map<string, Promise<void>>();
 const queuedFiles = new Set<string>();
 
 const COMPARE_CHUNK_BYTES = 1024 * 1024;
 
-// In slices, a word at a time: a 50 MB file never holds the UI thread or both copies whole.
+// chunked comparison avoids blocking the UI or holding two 50 MB copies.
 async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
   for (let start = 0; start < b.size; start += COMPARE_CHUNK_BYTES) {
@@ -275,38 +289,46 @@ type BrowserState = {
   closePanel: () => void;
   togglePanel: () => void;
   newTab: () => void;
-  /** A new tab just after `tabId`, as its menu's New tab to the right opens. */
+  /** inserts the menu's New tab to the right immediately after `tabId`. */
   newTabAfter: (tabId: string) => void;
-  /** A copy of the tab and its history, just after it. */
+  /** inserts a copy and its history immediately after the source tab. */
   duplicateTab: (tabId: string) => void;
-  /** Opens a pinned page in a tab of its own, or shows the tab already showing it. */
+  /** opens a dedicated tab or reuses one already showing the pinned page. */
   openPinned: (pinnedId: string, url: string, title: string) => void;
   setTabPinned: (tabId: string, pinnedId: string | null) => void;
   renamingTabId: string | null;
   setRenamingTab: (tabId: string | null) => void;
-  /** A name for the tab, or null for the page's own title. */
+  /** null restores the page's own title. */
   renameTab: (tabId: string, title: string | null) => void;
   setMuted: (tabId: string, muted: boolean) => void;
   closeOtherTabs: (tabId: string) => void;
   closeTabsToRight: (tabId: string) => void;
   openUrl: (
     url: string,
-    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
+    options?: {
+      newTab?: boolean;
+      background?: boolean;
+      method?: "GET" | "POST";
+      body?: string;
+      from?: string;
+      temporary?: boolean;
+    },
   ) => void;
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
     options?: { replace?: boolean },
   ) => void;
-  /** A page-sent entry that became a download: back to that page and out of history, unless the tab moved on. */
+  retainTemporary: (tabId: string) => void;
+  /** removes a page-sent download entry when the tab has not moved on. */
   leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
   goForward: (tabId: string) => void;
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  /** Moves a tab to `index` in the strip, as dragging it there does. */
+  /** interprets `index` as the target position in the tab strip. */
   moveTab: (tabId: string, index: number) => void;
   updateTab: (
     tabId: string,
@@ -484,25 +506,31 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
       if (options?.method === "POST") {
-        openTab(createTab(webEntry(url, "POST", options.body ?? "", options.from)), options.background);
+        openTab(
+          createTab(webEntry(url, "POST", options.body ?? "", options.from, options.temporary)),
+          options.background,
+        );
         return;
       }
       const target = unwrapRedirect(url);
       const openKey = `url:${target}`;
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
-        get().navigate(activeTabId, { url: target, from: options.from });
+        get().navigate(activeTabId, { url: target, from: options.from, temporary: options.temporary });
         set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
       if (options?.newTab === undefined && focusExisting(openKey)) return;
-      openTab(createTab(webEntry(target, undefined, undefined, options?.from), openKey), options?.background);
+      openTab(
+        createTab(webEntry(target, undefined, undefined, options?.from, options?.temporary), openKey),
+        options?.background,
+      );
     },
-    openFile: ({ blob, name, contentType, plainText, key }) => {
+    openFile: ({ blob, name, contentType, temporary, plainText, key }) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
-      const entry: BrowserEntry = {
+      const entry: Extract<BrowserEntry, { kind: "file" }> = {
         kind: "file",
         fileId,
         name: name || "Untitled",
@@ -510,6 +538,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         plainText,
         ...(openKey ? { openKey } : {}),
       };
+      if (temporary || useChatRuntimeStore.getState().incognito) entry.temporary = true;
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
@@ -519,7 +548,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);
           const shown = tab && currentEntry(tab);
-          if (!tab || shown?.kind !== "file" || (await sameBytes(files.get(shown.fileId), blob))) {
+          if (!tab || shown?.kind !== "file") {
+            files.delete(fileId);
+            return;
+          }
+          if (await sameBytes(files.get(shown.fileId), blob)) {
+            if (entry.temporary) shown.temporary = true;
             files.delete(fileId);
             return;
           }
@@ -547,11 +581,20 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
-          const entry = webEntry(request.url, request.method, request.body, request.from);
+          const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
           if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
           return pushEntry(tab, entry, replace);
         }),
       }));
+    },
+    retainTemporary: (tabId) => {
+      if (!useChatRuntimeStore.getState().incognito) return;
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      const entry = tab ? currentEntry(tab) : null;
+      // provenance is latched in place so the page cache and native view keep their entry identity.
+      if (entry?.kind === "web" || entry?.kind === "file") entry.temporary = true;
+      const download = pageDownloads.get(tabId);
+      if (download) download.temporary = true;
     },
     leaveDownload: (tabId, entry) =>
       set((state) => ({

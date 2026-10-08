@@ -379,10 +379,17 @@ function SandboxFileLink({
     };
     const openFile = () => {
       if (filesOpenInBrowser()) {
+        const temporary = useChatRuntimeStore.getState().incognito;
         void target
           .load()
           .then((blob) =>
-            openFileInBrowser({ blob, name: target.name, contentType: blob.type, key: `sandbox:${sessionId}:${file}` }),
+            openFileInBrowser({
+              blob,
+              name: target.name,
+              contentType: blob.type,
+              temporary,
+              key: `sandbox:${sessionId}:${file}`,
+            }),
           )
           .catch(() => toast.error(t("linkMenu.openFailed", { name: target.name })));
         return;
@@ -1083,7 +1090,8 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
+// Only the adapter's inline wav: any other src (remote URL, WebKit-followed audio/mpegurl) fetches on render.
+const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/wav;base64,[A-Za-z0-9+/=]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing

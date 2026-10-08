@@ -5,7 +5,7 @@
 
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { authFetch } from "@/features/auth";
-import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
+import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText, useChatRuntimeStore } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { isStudioUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -25,14 +25,25 @@ import { FileContextMenu } from "./link-context-menu";
 
 type Opened = { blob: Blob; plainText?: boolean };
 
-// Documents and text open as tabs; media keeps the lightbox.
-const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text"]);
+// Documents, text and videos open as tabs; images and audio keep the lightbox.
+const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text", "video"]);
 
 function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
   const { file, text } = source;
   // Copied: the tab can outlive the composer's File.
   if (file) return () => file.arrayBuffer().then((data) => ({ blob: new Blob([data], { type: file.type }) }));
   switch (source.kind) {
+    case "video": {
+      // A sent clip is only its base64 part until someone opens it.
+      const { video, src } = source;
+      const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
+      if (!url) return null;
+      return () =>
+        fetch(url).then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return { blob: await response.blob() };
+        });
+    }
     case "document":
       return !source.hasOriginal && text !== undefined
         ? () => Promise.resolve({ blob: new Blob([attachmentBodyText(text)], { type: "text/plain" }), plainText: true })
@@ -51,7 +62,8 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
 }
 
 function opener(source: AttachmentSource, id: string, load: () => Promise<Opened>) {
-  return () =>
+  return () => {
+    const temporary = useChatRuntimeStore.getState().incognito;
     void load()
       .then(({ blob, plainText }) => {
         const name = source.name || "attachment";
@@ -60,11 +72,13 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
           blob,
           name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
           contentType: plainText ? "text/plain" : source.contentType || blob.type,
+          temporary,
           plainText,
           key: `${id}:${source.name}`,
         });
       })
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
+  };
 }
 
 /** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */
