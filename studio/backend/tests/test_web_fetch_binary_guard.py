@@ -9,6 +9,7 @@ import codecs
 import random
 import sys
 import time
+import tracemalloc
 from email.message import Message
 from pathlib import Path
 
@@ -451,6 +452,19 @@ def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
     )
     out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
     assert "Actual article body" in out
+
+
+def test_html_body_locator_does_not_store_every_newline():
+    tracemalloc.start()
+    try:
+        locator = tools._HTMLBodyLocator()
+        locator.feed_bytes(b"\n" * (256 * 1024))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert locator.body_at is None
+    assert peak < 4 * 1024 * 1024
 
 
 @pytest.mark.parametrize(
