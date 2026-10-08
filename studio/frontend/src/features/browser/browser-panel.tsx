@@ -1151,7 +1151,7 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   try {
     blob = await screenshotPage(tab, page);
   } catch (error) {
-    // Declining the browser's prompt is an answer, not a failure.
+    // declining the browser's prompt is an answer, not a failure.
     if (error instanceof DOMException && error.name === "NotAllowedError") return;
     toast.error(t(error instanceof OtherSurfaceError ? "browser.screenshot.otherSurface" : "browser.screenshot.failed"));
     return;
@@ -1172,7 +1172,7 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
     });
     return;
   }
-  // The share prompt outlasts the click, so the save dialog needs a fresh one.
+  // the share prompt outlasts the click, so the save dialog needs a fresh one.
   if (saveNeedsClick()) {
     toast.success(t("browser.screenshot.taken"), {
       action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
