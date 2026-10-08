@@ -20968,16 +20968,26 @@ def materialize_sandbox_attachments(
     from core import chat_originals
     with _session_in_flight(session_id):
         workdir = _get_workdir(session_id)
-        for sha256, name in attachments:
-            source = chat_originals.originals_dir() / sha256
-            if not source.is_file():
-                continue
-            try:
-                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
-            except (OSError, ValueError):
-                logger.warning(
-                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
-                )
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # Like a tool call: chats in a project share this workdir, and a call running in one must not claim the copy.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+        finally:
+            _call_finished(token)
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
@@ -21837,7 +21847,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
             # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
