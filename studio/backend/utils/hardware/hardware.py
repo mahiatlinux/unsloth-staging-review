@@ -1488,7 +1488,17 @@ def _detect_hardware_locked() -> DeviceType:
             try:
                 device_name = torch.cuda.get_device_properties(0).name
             except Exception as e:
-                logger.debug("CUDA device 0 property probe failed: %s", e)
+                # Usually a failed first CUDA init. Torch lets later calls proceed on the broken runtime and they can segfault, so log the cause.
+                from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
+
+                allocator_conf = {
+                    name: os.environ[name] for name in ALLOCATOR_CONF_ENV_VARS if name in os.environ
+                }
+                logger.error(
+                    "CUDA device 0 property probe failed: %r (allocator config: %s)",
+                    e,
+                    allocator_conf or "unset",
+                )
                 device_name = "<unavailable>"
 
             # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA). AMD SDK wheels do not set torch.version.hip, so fall back to __version__.
