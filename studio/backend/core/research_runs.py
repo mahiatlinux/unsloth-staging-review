@@ -31,6 +31,7 @@ from core.inference.tool_loop_controller import is_tool_error, strip_result_for_
 from core.inference.tools import (
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
+    execute_mcp_tool,
     execute_tool,
     is_high_risk_tool_call,
     mcp_search_tools,
@@ -1016,10 +1017,14 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def _mcp_evidence(sources: list[dict]) -> str:
+    if not sources:
+        return ""
+    share = 6000 // len(sources)
     text = "\n\n".join(
-        f"{_document_source_citation(source)}\n{source.get('snippet') or ''}" for source in sources
+        f"{_document_source_citation(source)}\n{(source.get('snippet') or '')[:share]}"
+        for source in sources
     )
-    return f"\n\nMCP tools:\n{text[:6000]}" if text else ""
+    return f"\n\nMCP tools:\n{text}"
 
 
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
@@ -1338,7 +1343,7 @@ class ResearchSupervisor:
         results = await asyncio.gather(
             *(
                 asyncio.to_thread(
-                    execute_tool,
+                    execute_mcp_tool,
                     tool["name"],
                     arguments,
                     cancel_event = cancel_event,
