@@ -546,8 +546,8 @@ async function applyView(desired: Desired): Promise<void> {
     openedTabs.add(tabId);
     // a private page must not remain reachable from a persistent page's native Back stack.
     if (changingPage && previousTemporary !== undefined && previousTemporary !== temporary) {
-      // let the existing view reject an address before discarding the page the reader can return to.
-      await call("browser_view_navigate", { tabId, url });
+      // validate before discarding the page the reader can return to.
+      await call("browser_view_validate_url", { url });
       if (stale()) return;
       await call("browser_view_close", { tabId });
       if (stale()) return;

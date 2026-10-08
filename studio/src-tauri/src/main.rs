@@ -2248,6 +2248,7 @@ fn main() {
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_navigate,
+            browser_webview::browser_view_validate_url,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,

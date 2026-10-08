@@ -1399,6 +1399,15 @@ pub fn browser_view_navigate<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn browser_view_validate_url<R: Runtime>(
+    webview: Webview<R>,
+    url: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    parse_page_url(&url).map(|_| ())
+}
+
+#[tauri::command]
 pub fn browser_view_action<R: Runtime>(
     webview: Webview<R>,
     tab_id: String,

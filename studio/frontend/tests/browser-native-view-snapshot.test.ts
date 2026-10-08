@@ -91,7 +91,10 @@ let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
   calls.push({ command, args });
   if (command === "browser_capture")
     return new Promise((resolve) => (captureDone = resolve));
-  if (command === "browser_view_navigate" && (globalThis as { rejectNativeNavigation?: boolean }).rejectNativeNavigation) {
+  if (
+    (command === "browser_view_navigate" || command === "browser_view_validate_url") &&
+    (globalThis as { rejectNativeNavigation?: boolean }).rejectNativeNavigation
+  ) {
     return Promise.reject(new Error("refused for test"));
   }
   return Promise.resolve();
@@ -310,8 +313,9 @@ test("a native privacy boundary starts a fresh history before showing a persiste
         args?.url === "https://persistent-history.example/",
     );
     assert.ok(closed >= 0 && shown > closed);
-    const navigated = boundary.findIndex(({ command }) => command === "browser_view_navigate");
-    assert.ok(navigated >= 0 && navigated < closed);
+    const validated = boundary.findIndex(({ command }) => command === "browser_view_validate_url");
+    assert.ok(validated >= 0 && validated < closed);
+    assert.equal(boundary.some(({ command }) => command === "browser_view_navigate"), false);
     assert.equal(nativePageTemporary(tabId), false);
   } finally {
     useChatRuntimeStore.getState().setIncognito(false);
