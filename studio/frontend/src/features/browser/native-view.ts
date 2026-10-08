@@ -200,6 +200,10 @@ function onNativeEvent(event: NativeEvent): void {
       );
       break;
     case "url":
+      temporaryPages.set(
+        tab.id,
+        Boolean(temporaryPages.get(tab.id) || useChatRuntimeStore.getState().incognito || entry.temporary),
+      );
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
@@ -331,6 +335,10 @@ export function returnToNativePage(tabId: string): boolean {
 
 export function hasNativeView(tabId: string): boolean {
   return views.has(tabId);
+}
+
+export function nativePageTemporary(tabId: string): boolean | undefined {
+  return temporaryPages.get(tabId);
 }
 
 /** last shown bounds of `tabId`'s view, in window coordinates. */

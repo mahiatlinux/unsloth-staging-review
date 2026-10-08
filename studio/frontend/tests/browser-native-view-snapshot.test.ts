@@ -101,7 +101,7 @@ register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
 const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 const { useChatRuntimeStore } = await import("@/features/chat");
-const { returnToNativePage, startNativeViews } = await import(
+const { nativePageTemporary, returnToNativePage, startNativeViews } = await import(
   "../src/features/browser/native-view.ts"
 );
 
@@ -258,6 +258,31 @@ test("native navigation keeps temporary history private after the chat mode chan
     assert.deepEqual(g.nativeViewSeen, [
       { level: "visit", message: "https://private.example/", temporary: true },
       { level: "visit", message: "https://private.example/", temporary: true },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a native pushState change latches temporary provenance without a load event", async () => {
+  useBrowserStore.getState().openUrl("https://spa.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown[];
+    };
+    g.nativeViewSeen = [];
+    useChatRuntimeStore.getState().setIncognito(true);
+    g.nativeViewListener?.({ payload: { kind: "url", tabId, url: "https://spa.example/private" } });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewListener?.({ payload: { kind: "title", tabId, title: "Private route" } });
+    assert.equal(nativePageTemporary(tabId), true);
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "visit", message: "https://spa.example/private", temporary: true },
     ]);
   } finally {
     useChatRuntimeStore.getState().setIncognito(false);

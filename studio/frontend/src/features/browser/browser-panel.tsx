@@ -34,6 +34,7 @@ import {
   ATTACHMENT_KIND_ICONS,
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { startLibraryChat } from "@/features/library";
@@ -103,7 +104,7 @@ import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
-import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import { type BrowserDownload, saveBrowserDownload, saveNeedsClick, screenshotDownload } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -124,6 +125,7 @@ import {
 import {
   hasNativeView,
   nativeAction,
+  nativePageTemporary,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
@@ -1141,6 +1143,10 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
+  const entry = currentEntry(tab);
+  const temporary = Boolean(
+    nativePageTemporary(tab.id) || useChatRuntimeStore.getState().incognito || (entry.kind === "web" && entry.temporary),
+  );
   let blob: Blob | null;
   try {
     blob = await screenshotPage(tab, page);
@@ -1154,12 +1160,11 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
     toast.error(t("browser.screenshot.failed"));
     return;
   }
-  const entry = currentEntry(tab);
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
   const name = `Screenshot ${entry.kind === "web" ? hostOf(entry.url) : tab.title || "page"} ${stamp}.png`.replace(/[\\/:*?"<>|]+/g, "-");
-  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null };
+  const download = screenshotDownload(blob, name, temporary);
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {

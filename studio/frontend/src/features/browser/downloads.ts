@@ -23,6 +23,10 @@ export type BrowserDownload = {
   temporary?: boolean;
 };
 
+export function screenshotDownload(blob: Blob, name: string, temporary: boolean): BrowserDownload {
+  return { blob, name, contentType: "image/png", url: null, temporary };
+}
+
 type SaveHandle = {
   name: string;
   createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }>;

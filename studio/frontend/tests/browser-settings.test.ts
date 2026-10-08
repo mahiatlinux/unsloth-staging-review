@@ -119,6 +119,14 @@ test("files downloaded beside a temporary chat are not listed", () => {
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
 });
 
+test("a saved screenshot carries its captured temporary provenance", async () => {
+  const { screenshotDownload } = await import("../src/features/browser/downloads.ts");
+  const shot = screenshotDownload(new Blob(["png"]), "Screenshot.png", true);
+  assert.equal(shot.temporary, true);
+  assert.equal(shot.contentType, "image/png");
+  assert.equal(shot.url, null);
+});
+
 test("download history keeps the chat mode from when the download began", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();
