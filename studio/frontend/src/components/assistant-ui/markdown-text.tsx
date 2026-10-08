@@ -379,10 +379,17 @@ function SandboxFileLink({
     };
     const openFile = () => {
       if (filesOpenInBrowser()) {
+        const temporary = useChatRuntimeStore.getState().incognito;
         void target
           .load()
           .then((blob) =>
-            openFileInBrowser({ blob, name: target.name, contentType: blob.type, key: `sandbox:${sessionId}:${file}` }),
+            openFileInBrowser({
+              blob,
+              name: target.name,
+              contentType: blob.type,
+              temporary,
+              key: `sandbox:${sessionId}:${file}`,
+            }),
           )
           .catch(() => toast.error(t("linkMenu.openFailed", { name: target.name })));
         return;

@@ -290,6 +290,35 @@ test("a native pushState change latches temporary provenance without a load even
   }
 });
 
+test("a native privacy boundary starts a fresh history before showing a persistent page", async () => {
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://private-history.example/", { newTab: true });
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const afterPrivate = calls.length;
+    useChatRuntimeStore.getState().setIncognito(false);
+    useBrowserStore.getState().navigate(tabId, { url: "https://persistent-history.example/" });
+    await frame();
+    const boundary = calls.slice(afterPrivate);
+    const closed = boundary.findIndex(({ command }) => command === "browser_view_close");
+    const shown = boundary.findIndex(
+      ({ command, args }) =>
+        command === "browser_view_show" &&
+        args?.tabId === tabId &&
+        args?.url === "https://persistent-history.example/",
+    );
+    assert.ok(closed >= 0 && shown > closed);
+    const navigated = boundary.findIndex(({ command }) => command === "browser_view_navigate");
+    assert.ok(navigated >= 0 && navigated < closed);
+    assert.equal(nativePageTemporary(tabId), false);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
 test("a native child tab inherits retained temporary page provenance", async () => {
   useBrowserStore.getState().openUrl("https://normal-parent.example/", { newTab: true });
   const stop = startNativeViews();

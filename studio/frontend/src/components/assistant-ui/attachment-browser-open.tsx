@@ -5,7 +5,7 @@
 
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { authFetch } from "@/features/auth";
-import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
+import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText, useChatRuntimeStore } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { isStudioUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -62,7 +62,8 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
 }
 
 function opener(source: AttachmentSource, id: string, load: () => Promise<Opened>) {
-  return () =>
+  return () => {
+    const temporary = useChatRuntimeStore.getState().incognito;
     void load()
       .then(({ blob, plainText }) => {
         const name = source.name || "attachment";
@@ -71,11 +72,13 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
           blob,
           name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
           contentType: plainText ? "text/plain" : source.contentType || blob.type,
+          temporary,
           plainText,
           key: `${id}:${source.name}`,
         });
       })
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
+  };
 }
 
 /** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */

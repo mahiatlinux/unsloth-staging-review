@@ -26,6 +26,8 @@ export type BrowserEntry =
       fileId: string;
       name: string;
       contentType: string;
+      /** suppresses download history for files opened beside a temporary chat. */
+      temporary?: true;
       /** forces document-derived .html files to display as text. */
       plainText?: boolean;
       /** tab openKey used to restore this entry with Back. */
@@ -89,6 +91,8 @@ export type OpenFileInput = {
   blob: Blob;
   name: string;
   contentType?: string;
+  /** mode captured when an asynchronous file-open action began. */
+  temporary?: boolean;
   plainText?: boolean;
   key?: string;
 };
@@ -191,7 +195,7 @@ function copyTab(tab: BrowserTab): BrowserTab {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
-      if (copy.kind === "web" && temporary) copy.temporary = true;
+      if ((copy.kind === "web" || copy.kind === "file") && temporary) copy.temporary = true;
       // preserve the original file key so Back in the copy cannot claim it.
       if (copy.kind === "file") delete copy.openKey;
       // copied POST results require confirmation before resubmission.
@@ -522,11 +526,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         options?.background,
       );
     },
-    openFile: ({ blob, name, contentType, plainText, key }) => {
+    openFile: ({ blob, name, contentType, temporary, plainText, key }) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
-      const entry: BrowserEntry = {
+      const entry: Extract<BrowserEntry, { kind: "file" }> = {
         kind: "file",
         fileId,
         name: name || "Untitled",
@@ -534,6 +538,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         plainText,
         ...(openKey ? { openKey } : {}),
       };
+      if (temporary || useChatRuntimeStore.getState().incognito) entry.temporary = true;
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
@@ -543,7 +548,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);
           const shown = tab && currentEntry(tab);
-          if (!tab || shown?.kind !== "file" || (await sameBytes(files.get(shown.fileId), blob))) {
+          if (!tab || shown?.kind !== "file") {
+            files.delete(fileId);
+            return;
+          }
+          if (await sameBytes(files.get(shown.fileId), blob)) {
+            if (entry.temporary) shown.temporary = true;
             files.delete(fileId);
             return;
           }
@@ -582,7 +592,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       const entry = tab ? currentEntry(tab) : null;
       // provenance is latched in place so the page cache and native view keep their entry identity.
-      if (entry?.kind === "web") entry.temporary = true;
+      if (entry?.kind === "web" || entry?.kind === "file") entry.temporary = true;
       const download = pageDownloads.get(tabId);
       if (download) download.temporary = true;
     },

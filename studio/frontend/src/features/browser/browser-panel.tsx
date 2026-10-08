@@ -1036,7 +1036,7 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
   if (entry.kind === "file") {
     const blob = browserFile(entry.fileId);
     return blob
-      ? { blob, name: entry.name, contentType: entry.contentType, url: null }
+      ? { blob, name: entry.name, contentType: entry.contentType, url: null, temporary: entry.temporary }
       : undefined;
   }
   const page = pageDownload(tab.id);
@@ -1145,7 +1145,9 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
   const entry = currentEntry(tab);
   const temporary = Boolean(
-    nativePageTemporary(tab.id) || useChatRuntimeStore.getState().incognito || (entry.kind === "web" && entry.temporary),
+    nativePageTemporary(tab.id) ||
+      useChatRuntimeStore.getState().incognito ||
+      ((entry.kind === "web" || entry.kind === "file") && entry.temporary),
   );
   let blob: Blob | null;
   try {

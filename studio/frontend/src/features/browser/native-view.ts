@@ -531,8 +531,8 @@ async function applyView(desired: Desired): Promise<void> {
     return;
   }
   const { tabId, url, entry, temporary, zoom, bounds } = desired;
-  const existed = views.has(tabId);
-  const loaded = views.get(tabId);
+  let existed = views.has(tabId);
+  let loaded = views.get(tabId);
   const previousTemporary = temporaryPages.get(tabId);
   const changingPage = existed && loaded !== entry;
   const resumed = resume.get(tabId);
@@ -544,6 +544,23 @@ async function applyView(desired: Desired): Promise<void> {
   };
   try {
     openedTabs.add(tabId);
+    // A private page must not remain reachable from a persistent page's native Back stack.
+    if (changingPage && previousTemporary !== undefined && previousTemporary !== temporary) {
+      // Let the existing view reject an address before discarding the page the reader can return to.
+      await call("browser_view_navigate", { tabId, url });
+      if (stale()) return;
+      await call("browser_view_close", { tabId });
+      if (stale()) return;
+      views.delete(tabId);
+      viewBounds.delete(tabId);
+      zooms.delete(tabId);
+      icons.delete(tabId);
+      pages.delete(tabId);
+      resume.delete(tabId);
+      temporaryPages.delete(tabId);
+      existed = false;
+      loaded = undefined;
+    }
     if (!existed || loaded !== entry) temporaryPages.set(tabId, temporary);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;

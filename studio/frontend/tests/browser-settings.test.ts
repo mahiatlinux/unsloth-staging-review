@@ -252,6 +252,19 @@ test("a fetched file keeps temporary provenance for a later toolbar download", a
   setPageDownload(tabId, null);
 });
 
+test("a local file keeps the temporary mode captured before its asynchronous load", () => {
+  useChatRuntimeStore.getState().setIncognito(false);
+  useBrowserStore.getState().openFile({
+    blob: new Blob(["private"]),
+    name: "private.txt",
+    contentType: "text/plain",
+    temporary: true,
+  });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  assert.equal(entry?.kind === "file" && entry.temporary, true);
+});
+
 test("expired visits take their sites' icons with them", () => {
   const now = Date.now();
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
