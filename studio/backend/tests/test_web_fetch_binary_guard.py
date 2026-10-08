@@ -453,31 +453,6 @@ def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
     assert "Actual article body" in out
 
 
-def test_bodyless_html_keeps_the_old_slow_link_budget(monkeypatch):
-    html = (
-        b"<html><head><title>t</title></head><main><h1>Bodyless page marker</h1></main>"
-        + b"x" * (2 * 1024 * 1024)
-    )
-    clock = {"time": 1000.0}
-    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
-    resp = _FakeResp(html, "text/html")
-    read = resp.read
-
-    def slow_read(n = None):
-        chunk = read(n)
-        clock["time"] += len(chunk) / (64 * 1024)
-        return chunk
-
-    resp.read = slow_read
-    monkeypatch.setattr(
-        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
-    )
-    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(resp))
-    out = tools._fetch_page_text("https://example.com/thing", timeout = 30)
-    assert "Bodyless page marker" in out
-    assert resp._pos <= tools._MAX_FETCH_BYTES + 65536
-
-
 @pytest.mark.parametrize(
     "content_type,body",
     [
@@ -489,9 +464,17 @@ def test_bodyless_html_keeps_the_old_slow_link_budget(monkeypatch):
             + b"x" * (4 * 1024 * 1024)
             + b"</script></body></html>",
         ),
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><main>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></main>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></html>",
+        ),
         ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
     ],
-    ids = ["html", "text"],
+    ids = ["html", "html-without-body-tag", "text"],
 )
 def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
     clock = {"time": 1000.0}
