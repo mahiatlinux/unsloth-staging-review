@@ -98,6 +98,14 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
+def _span_attr(attr_dict: dict, name: str) -> int:
+    try:
+        value = int(attr_dict.get(name) or 1)
+    except ValueError:
+        return 1
+    return value if value >= 0 else 1
+
+
 def _is_aria_heading(attr_dict: dict) -> bool:
     """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does.
 
@@ -190,6 +198,11 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+# rowspan/colspan repeat cells, so a few spanned cells could otherwise consume the 16K fetched-page result by
+# themselves. Leave half that result for source-backed content following the table.
+_MAX_SPAN_CHARS = 8_000
+# a long rowspan cell is usually page layout, so only its first row keeps the text
+_MAX_REPEATED_CELL_CHARS = 200
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -224,6 +237,7 @@ class _HeaderFrame:
         "outer_in_pre",
         "outer_in_code",
         "outer_bq_depth",
+        "outer_table_depth",
     )
 
     def __init__(
@@ -235,6 +249,7 @@ class _HeaderFrame:
         in_code: int,
         bq_depth: int,
         list_depth: int,
+        table_depth: int,
     ):
         self.depth = depth
         self.parts: list[str] = []
@@ -252,11 +267,16 @@ class _HeaderFrame:
         self.outer_in_pre = in_pre
         self.outer_in_code = in_code
         self.outer_bq_depth = bq_depth
+        self.outer_table_depth = table_depth
         # both exclude heading text: it is kept anyway, so it must not vote on dropping the rest
         self.text_chars: int = 0
         self.link_chars: int = 0
 
-    def render(self, closed_by_own_tag: bool) -> str:
+    def render(
+        self,
+        closed_by_own_tag: bool,
+        strip: bool | None = None,
+    ) -> str:
         """The buffer, or only its headings when the header is link furniture.
 
         Without a matching ``</header>`` the header may have adopted the page
@@ -268,11 +288,50 @@ class _HeaderFrame:
         # droppable chars only: headings survive, and blank structure _cleanup collapses must not inflate a tiny header
         droppable = self.rendered_chars - self.heading_chars
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
-        if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
+        if (
+            strip
+            if strip is not None
+            else (big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars)
+        ):
             self.stripped = True
             # the closing tag's blank line lands after the heading mark pops, so terminate it here
             return headings + "\n\n" if headings.strip() else headings
         return "".join(self.parts)
+
+
+class _TableFrame:
+    """Outer table state suspended while a nested table is rendered."""
+
+    __slots__ = (
+        "current_row",
+        "cell_parts",
+        "in_cell",
+        "cell_seq",
+        "header_row_done",
+        "row_has_th",
+        "is_first_row",
+        "cell_colspan",
+        "cell_rowspan",
+        "row_spans",
+        "in_row",
+        "outer_bq_depth",
+        "parts",
+    )
+
+    def __init__(self, renderer: _MarkdownRenderer):
+        self.current_row = renderer._current_row
+        self.cell_parts = renderer._cell_parts
+        self.in_cell = renderer._in_cell
+        self.cell_seq = renderer._cell_seq
+        self.header_row_done = renderer._header_row_done
+        self.row_has_th = renderer._row_has_th
+        self.is_first_row = renderer._is_first_row
+        self.cell_colspan = renderer._cell_colspan
+        self.cell_rowspan = renderer._cell_rowspan
+        self.row_spans = renderer._row_spans
+        self.in_row = renderer._in_row
+        self.outer_bq_depth = len(renderer._bq_stack)
+        self.parts: list[str] = []
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -287,6 +346,8 @@ class _MarkdownRenderer(HTMLParser):
         self,
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
+        span_char_limit: int = _MAX_SPAN_CHARS,
+        header_decisions: list[bool] | None = None,
     ):
         super().__init__(convert_charrefs = False)
         self._out: list[str] = []
@@ -309,6 +370,8 @@ class _MarkdownRenderer(HTMLParser):
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
+        self.header_decisions: list[bool] = []
+        self._header_decisions = header_decisions
         # Furniture chars removed, so a candidate is sized as the page wrote it.
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
@@ -342,9 +405,18 @@ class _MarkdownRenderer(HTMLParser):
         self._cell_parts: list[str] = []
         self._in_cell: bool = False
         self._cell_seq: int = 0
+        self._next_cell_seq: int = 0
         self._header_row_done: bool = False
         self._row_has_th: bool = False
         self._is_first_row: bool = False
+        self._cell_colspan: int = 1
+        self._cell_rowspan: int = 1
+        self._row_spans: dict[int, tuple[str, int]] = {}
+        self._table_stack: list[_TableFrame] = []
+        self._span_chars: int = 0
+        self._has_generated_spans: bool = False
+        self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
+        self._in_row: bool = False
 
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
@@ -366,6 +438,8 @@ class _MarkdownRenderer(HTMLParser):
             return self._cell_seq != frame.outer_cell_seq
         if self._in_pre:
             return not frame.outer_in_pre
+        if self._table_stack and self._table_depth() > frame.outer_table_depth:
+            return True
         return len(self._bq_stack) > frame.outer_bq_depth
 
     def _emit(self, text: str) -> None:
@@ -403,6 +477,8 @@ class _MarkdownRenderer(HTMLParser):
             self._cell_parts.append(text)
         elif self._in_pre:
             self._pre_parts.append(text)
+        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            self._table_stack[-1].parts.append(text)
         elif self._bq_stack:
             self._bq_stack[-1].append(text)
         else:
@@ -454,16 +530,109 @@ class _MarkdownRenderer(HTMLParser):
         return "\n".join(prefixed)
 
     # Table helpers: flush open cells/rows so omitted </td>/</tr> don't lose data.
+    def _table_depth(self) -> int:
+        return len(self._table_stack) + int(self._in_table)
+
+    def _start_table(self) -> None:
+        if self._in_table:
+            self._table_stack.append(_TableFrame(self))
+        self._in_table = True
+        self._current_row = []
+        self._cell_parts = []
+        self._in_cell = False
+        self._header_row_done = False
+        self._row_has_th = False
+        self._is_first_row = True
+        self._cell_colspan = 1
+        self._cell_rowspan = 1
+        self._row_spans = {}
+        self._in_row = False
+        self._emit("\n\n")
+
+    def _finish_table(self) -> None:
+        self._finish_cell()
+        self._finish_row()
+        self._row_spans = {}
+        self._emit("\n")
+        if not self._table_stack:
+            self._in_table = False
+            return
+
+        frame = self._table_stack.pop()
+        nested = "".join(frame.parts)
+        self._current_row = frame.current_row
+        self._cell_parts = frame.cell_parts
+        self._in_cell = frame.in_cell
+        self._cell_seq = frame.cell_seq
+        self._header_row_done = frame.header_row_done
+        self._row_has_th = frame.row_has_th
+        self._is_first_row = frame.is_first_row
+        self._cell_colspan = frame.cell_colspan
+        self._cell_rowspan = frame.cell_rowspan
+        self._row_spans = frame.row_spans
+        self._in_row = frame.in_row
+        self._in_table = True
+        self._emit_replay(nested)
+
     def _finish_cell(self) -> None:
         if not self._in_cell:
             return
         self._in_cell = False
         cell_text = "".join(self._cell_parts).strip().replace("\n", " ")
         cell_text = cell_text.replace("|", "\\|")
-        self._current_row.append(cell_text)
         self._cell_parts = []
+        self._fill_spanned_cells(0)
+        col = len(self._current_row)
+        self._current_row.append(cell_text)
+        if self._span_chars >= self._span_char_limit:
+            return
+        outer_cells = sum(frame.in_cell for frame in self._table_stack)
+        extra_col_cost = 9 + 2 * outer_cells if not self._header_row_done else 3 + outer_cells
+        extra_cols = min(
+            self._cell_colspan - 1,
+            (self._span_char_limit - self._span_chars) // extra_col_cost,
+        )
+        self._current_row.extend([""] * extra_cols)
+        generated = extra_col_cost * extra_cols
+        self._span_chars += generated
+        self._has_generated_spans |= bool(extra_cols)
+        if self._cell_rowspan > 1:
+            repeated = cell_text if len(cell_text) <= _MAX_REPEATED_CELL_CHARS else ""
+            for i in range(extra_cols + 1):
+                self._row_spans[col + i] = (repeated if i == 0 else "", self._cell_rowspan)
+
+    def _fill_spanned_cells(self, width: int) -> None:
+        outer_cells = sum(frame.in_cell for frame in self._table_stack)
+        while self._span_chars < self._span_char_limit and (
+            len(self._current_row) < width or len(self._current_row) in self._row_spans
+        ):
+            span = self._row_spans.get(len(self._current_row))
+            text = span[0] if span else ""
+            cost = len(text) + 3 + (text.count("|") + 1) * outer_cells
+            if self._span_chars + cost > self._span_char_limit:
+                self._span_chars = self._span_char_limit
+                break
+            self._current_row.append(text)
+            self._span_chars += cost
+            self._has_generated_spans = True
 
     def _finish_row(self) -> None:
+        in_row, self._in_row = self._in_row, False
+        if not self._current_row and not (in_row and self._row_spans):
+            return
+        if not self._current_row:
+            # a wholly generated row also adds its opening pipe, newline, and enclosing quote prefixes
+            row_cost = (
+                3 + 2 * len(self._bq_stack) + sum(frame.in_cell for frame in self._table_stack)
+            )
+            self._span_chars = min(self._span_char_limit, self._span_chars + row_cost)
+        self._fill_spanned_cells(max(self._row_spans, default = -1) + 1)
+        if self._span_chars >= self._span_char_limit:
+            self._row_spans = {}
+        else:
+            self._row_spans = {
+                col: (text, rows - 1) for col, (text, rows) in self._row_spans.items() if rows > 1
+            }
         if not self._current_row:
             return
         line = "| " + " | ".join(self._current_row) + " |"
@@ -556,7 +725,13 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
                 self._header_stack[-1].heading_chars += frame.heading_chars
-            out = frame.render(closed_by_own_tag)
+            strip = (
+                self._header_decisions[len(self.header_decisions)]
+                if self._header_decisions is not None
+                else None
+            )
+            out = frame.render(closed_by_own_tag, strip)
+            self.header_decisions.append(frame.stripped)
             if frame.stripped:
                 self._dropped_chars += max(0, frame.rendered_chars - frame.heading_chars)
             self._emit(out)
@@ -640,6 +815,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._inline_code_depth,
                         len(self._bq_stack),
                         len(self._list_stack),
+                        self._table_depth(),
                     )
                 )
         elif _is_hidden_element(attr_dict):
@@ -647,6 +823,7 @@ class _MarkdownRenderer(HTMLParser):
         if self._scope_tags is not None and tag in self._scope_tags:
             self._flush_header_frames()
             if self._scope_depth == 0:
+                self._span_chars = 0
                 self._scope_seg_start = len(self._out)
                 self._seg_dropped_start = self._dropped_chars
                 self._seg_heading_texts = []
@@ -773,20 +950,27 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("`")
 
         elif tag == "table":
-            self._in_table = True
-            self._header_row_done = False
-            self._is_first_row = True
-            self._emit("\n\n")
+            self._start_table()
 
         elif tag == "tr":
             self._finish_cell()
             self._finish_row()
+            self._in_row = True
+
+        elif tag in ("thead", "tbody", "tfoot"):
+            self._finish_cell()
+            self._finish_row()
+            self._row_spans = {}
 
         elif tag in ("th", "td"):
             self._finish_cell()
             self._cell_parts = []
             self._in_cell = True
-            self._cell_seq += 1
+            self._next_cell_seq += 1
+            self._cell_seq = self._next_cell_seq
+            self._cell_colspan = min(max(1, _span_attr(attr_dict, "colspan")), 1000)
+            # rowspan="0" runs to the end of the row group
+            self._cell_rowspan = _span_attr(attr_dict, "rowspan") or 65534
             if tag == "th":
                 self._row_has_th = True
 
@@ -853,11 +1037,13 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_cell()
             self._finish_row()
 
-        elif tag == "table":
+        elif tag in ("thead", "tbody", "tfoot"):
             self._finish_cell()
             self._finish_row()
-            self._in_table = False
-            self._emit("\n")
+            self._row_spans = {}
+
+        elif tag == "table":
+            self._finish_table()
 
     def _text_suppressed(self) -> bool:
         if self._skip_depth or self._hidden_marks:
@@ -916,6 +1102,8 @@ class _MarkdownRenderer(HTMLParser):
             self._inline_code_depth -= 1
             self._emit("`")
 
+        while self._table_stack:
+            self._finish_table()
         self._finish_cell()
         self._finish_row()
 
@@ -1052,9 +1240,19 @@ def _strip_boilerplate_lines(text: str) -> str:
 
 
 def _new_renderer(
-    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
+    source_html: str,
+    scope_tags: frozenset[str] | None,
+    strip_header: bool,
+    span_char_limit: int | None = None,
+    header_decisions: list[bool] | None = None,
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
+    # generated span cells stay proportional to their source and cannot consume the fetch cap alone
+    renderer = _MarkdownRenderer(
+        scope_tags = scope_tags,
+        strip_header = strip_header,
+        span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
+        header_decisions = header_decisions,
+    )
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
@@ -1084,16 +1282,28 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
-    dropped = renderer.scope_dropped
-    heading_prose = renderer.scope_heading_prose
+    # Generated span cells belong in the returned Markdown but must not help a tiny scope clear the content gate or
+    # outrank source-backed prose. Only span-bearing pages pay for this second, unexpanded scoring pass.
+    scoring = (
+        _new_renderer(
+            source_html,
+            frozenset({tag}),
+            strip_header = True,
+            span_char_limit = 0,
+            header_decisions = renderer.header_decisions,
+        )
+        if renderer._has_generated_spans
+        else renderer
+    )
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        prose = _visible_chars(rendered) - heading_prose[i]
+        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]))
+        prose = _visible_chars(scored) - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
-        size = len(rendered) + min(dropped[i], len(rendered))
+        size = len(scored) + min(scoring.scope_dropped[i], len(scored))
         if size > best_len:
             best_len = size
             best_render = rendered
