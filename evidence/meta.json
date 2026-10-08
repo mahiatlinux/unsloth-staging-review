@@ -1,8 +1,8 @@
 {
   "pr": 12964,
-  "head_ref": "192c2db673e3a60d2b0ac07e3529e420c7974c1a",
+  "head_ref": "f178b7df48c1ac1ff5dd8cea189ae2b977c81f3e",
   "base_sha": "8e0f3b5077989f005a7c6526c660bdeb25df31da",
-  "head_sha": "192c2db673e3a60d2b0ac07e3529e420c7974c1a",
+  "head_sha": "f178b7df48c1ac1ff5dd8cea189ae2b977c81f3e",
   "scene": "prompt_queue_text_attachment",
   "expect": "BEFORE keeps queue-note.txt parked in the composer and shows no queue row. AFTER clears the composer and shows one queue row containing both the prompt and queue-note.txt. Facts: queue_item_count 0 -> 1, queued_filename_visible false -> true, and composer_filename_visible true -> false.",
   "facts": {
