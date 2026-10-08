@@ -2872,6 +2872,16 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
+  // A ?new chat keeps its first thread id: leaving Chat blanks activeThreadId and coming back restores it.
+  const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
+  if (
+    search.new &&
+    activeThreadId &&
+    newChatBlankedRef.current === search.new &&
+    newChatRef.current?.nonce !== search.new
+  ) {
+    newChatRef.current = { nonce: search.new, threadId: activeThreadId };
+  }
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -3390,6 +3400,20 @@ export function ChatPage({
   useEffect(() => {
     clearAutoOpenedArtifacts();
   }, [artifactViewKey]);
+
+  const newChat = newChatRef.current;
+  const newChatShownId =
+    newChat && view.mode === "single" && view.newThreadNonce === newChat.nonce ? newChat.threadId : null;
+  const shownChatKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? `project:${view.projectId}:${projectNewThreadNonce}`
+        : artifactViewKey;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
+  useEffect(() => {
+    useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;

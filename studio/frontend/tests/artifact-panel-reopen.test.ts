@@ -108,3 +108,19 @@ test("a project's browser overlay stages Request edits in the project composer",
   assert.match(landing, /useStagedFixPrompt\(\s*useChatArtifactsStore\(\(state\) => state\.pendingFixPrompt\),\s*active,\s*\);/);
   assert.match(page, /useStagedFixPrompt\(pendingFixPrompt, chatActive\);/);
 });
+
+test("leaving Chat and coming back keeps a new chat's pages open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  // Off Chat, activeThreadId is blanked and then restored, so a ?new chat is keyed by the first id it showed.
+  assert.match(page, /newChatRef\.current\?\.nonce !== search\.new\s*\) \{\s*newChatRef\.current = \{ nonce: search\.new, threadId: activeThreadId \};/);
+  assert.match(page, /view\.newThreadNonce === newChat\.nonce \? newChat\.threadId : null;/);
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("a new chat started inside a project closes the previous project chat's pages", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  // The URL stays ?project=, so the project's chat nonce tells its chats apart.
+  assert.match(key, /`project:\$\{view\.projectId\}:\$\{projectNewThreadNonce\}`/);
+});
