@@ -398,9 +398,24 @@ if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
 
-# URL runs use mounted $PWD so unsloth-run saves survive --rm; local paths still use /workspace
+# a command whose first path is in the mounted $PWD, and unsloth-run URLs, start there so relative saves
+# survive --rm; a host value of a --option (not a .py/.sh script) only counts if no other path follows
 WORKDIR_FLAG=()
 RUN_USER_ENV=()
+_prev=""
+for _arg in "$@"; do
+    case "$_arg" in
+        /workspace/host | /workspace/host/*)
+            WORKDIR_FLAG=(-w /workspace/host)
+            [[ "$_prev" == --* && "$_arg" != *.py && "$_arg" != *.sh ]] || break
+            ;;
+        */*)
+            WORKDIR_FLAG=()
+            break
+            ;;
+    esac
+    _prev="$_arg"
+done
 if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     for _arg in "${@:2}"; do
         case "$_arg" in

@@ -340,7 +340,55 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
 )
 @pytest.mark.parametrize(
     "command",
-    [("jupyter", "lab"), ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb")],
+    [
+        ("python", "/workspace/host/train.py"),
+        ("python", "-u", "/workspace/host/train.py", "--data", "data/train.jsonl"),
+        ("accelerate", "launch", "--multi_gpu", "/workspace/host/train.py"),
+        (
+            "accelerate",
+            "launch",
+            "--multi_gpu",
+            "/workspace/host/train.py",
+            "--data",
+            "data/train.jsonl",
+        ),
+    ],
+)
+def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
+    argv = _run_sh_argv(tmp_path, *command)
+    image = argv.index("unsloth/unsloth:latest")
+    assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
+    assert argv[image + 1 :] == list(command)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
+)
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("jupyter", "lab"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
+        ("python", "/workspace/smoke_test.py"),
+        ("python", "/workspace/smoke_test.py", "--out", "/workspace/host/result"),
+        (
+            "jupyter",
+            "nbconvert",
+            "--execute",
+            "unsloth-notebooks/nb/Llama.ipynb",
+            "--output-dir",
+            "/workspace/host",
+        ),
+        (
+            "jupyter",
+            "nbconvert",
+            "--output-dir",
+            "/workspace/host",
+            "--execute",
+            "unsloth-notebooks/nb/Llama.ipynb",
+        ),
+    ],
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
     argv = _run_sh_argv(tmp_path, *command)
