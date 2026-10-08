@@ -316,6 +316,7 @@ type BrowserState = {
     request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
     options?: { replace?: boolean },
   ) => void;
+  retainTemporary: (tabId: string) => void;
   /** removes a page-sent download entry when the tab has not moved on. */
   leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
@@ -575,6 +576,15 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           return pushEntry(tab, entry, replace);
         }),
       }));
+    },
+    retainTemporary: (tabId) => {
+      if (!useChatRuntimeStore.getState().incognito) return;
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      const entry = tab ? currentEntry(tab) : null;
+      // provenance is latched in place so the page cache and native view keep their entry identity.
+      if (entry?.kind === "web") entry.temporary = true;
+      const download = pageDownloads.get(tabId);
+      if (download) download.temporary = true;
     },
     leaveDownload: (tabId, entry) =>
       set((state) => ({

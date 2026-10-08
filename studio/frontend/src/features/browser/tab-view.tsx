@@ -132,7 +132,10 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
         case "url":
           // require the loaded origin to prevent address-bar spoofing.
-          if (origin && sameOrigin(message.url, origin)) store.updateTab(tabId, { displayUrl: message.url });
+          if (origin && sameOrigin(message.url, origin)) {
+            store.retainTemporary(tabId);
+            store.updateTab(tabId, { displayUrl: message.url });
+          }
           break;
         case "reload":
           store.reload(tabId);
