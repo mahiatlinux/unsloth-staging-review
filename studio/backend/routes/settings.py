@@ -2896,6 +2896,15 @@ def _no_embedding_weights_error(candidates: list[str]) -> str:
     )
 
 
+def _st_cannot_load_error(model: str, candidates: list[str]) -> str:
+    """Error when no GGUF was found and the model's safetensors need a newer sentence-transformers or transformers."""
+    checked = " or ".join(repr(c) for c in candidates)
+    return (
+        f"No GGUF weights found in {checked}, and {model!r} needs a newer sentence-transformers or "
+        "transformers than this install has."
+    )
+
+
 @_owner_settings_router.get("/embedding-model", response_model = EmbeddingModelResponse)
 def get_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -2956,15 +2965,19 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
 
 
 def _with_embedding_resolve_budget(fn):
-    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+    """Give one GET/PUT resolution a deadline shared by every Hub fallback, and one scope for the
+    sentence-transformers load proofs, so a check the spent deadline skips cannot undo an earlier one."""
 
     @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
         if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
             return fn(*args, **kwargs)
+        from core.rag.embeddings import st_load_proof_scope
+
         marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
         try:
-            return fn(*args, **kwargs)
+            with st_load_proof_scope():
+                return fn(*args, **kwargs)
         finally:
             _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
 
@@ -3229,6 +3242,24 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
         return False
 
 
+def _sentence_transformers_can_load(model: str) -> bool:
+    """Whether the installed sentence-transformers can open ``model``, within the resolution's budget."""
+    try:
+        from core.rag import embeddings
+    except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
+        return True
+    # Before the budget, so a timeout cannot undo the plan's earlier proof.
+    if embeddings.sentence_transformers_known_unloadable(model):
+        return False
+    try:
+        return _call_with_embedding_resolve_budget(
+            lambda: embeddings.sentence_transformers_can_load(model),
+            name = "embed-settings-st-load-check",
+        )
+    except Exception:  # noqa: BLE001 - spent budget: no proof either way
+        return True
+
+
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
     """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the hub does not say."""
     try:
@@ -3441,11 +3472,10 @@ def _resolve_embedding_model_plan(
             )
         # No GGUF from this publisher: run it on its own safetensors only when
         # configuration/runtime policy can actually select ST for this model.
-        st_plan = (
-            _safetensors_plan(resolved, token)
-            if _sentence_transformers_fallback_allowed(resolved)
-            else None
-        )
+        st_allowed = _sentence_transformers_fallback_allowed(resolved)
+        # And only when ST can open it, or the download never loads.
+        st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved)
+        st_plan = _safetensors_plan(resolved, token) if st_allowed and not st_unloadable else None
         # The GGUF branches above are gated and this one was not. The plan answers with the
         # repo the snapshot is FILED under, which for a slashless alias is not the name the
         # caller typed, and the response then reports it cached: that is how a denied caller
@@ -3457,7 +3487,11 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
-                error = _no_embedding_weights_error(candidates),
+                error = (
+                    _st_cannot_load_error(resolved, candidates)
+                    if st_unloadable
+                    else _no_embedding_weights_error(candidates)
+                ),
             )
         st_repo, _st_files = st_plan
         return EmbeddingModelResolveResponse(
