@@ -1,0 +1,38 @@
+{
+  "pr": 12964,
+  "head_ref": "192c2db673e3a60d2b0ac07e3529e420c7974c1a",
+  "base_sha": "8e0f3b5077989f005a7c6526c660bdeb25df31da",
+  "head_sha": "192c2db673e3a60d2b0ac07e3529e420c7974c1a",
+  "scene": "prompt_queue_text_attachment",
+  "expect": "BEFORE keeps queue-note.txt parked in the composer and shows no queue row. AFTER clears the composer and shows one queue row containing both the prompt and queue-note.txt. Facts: queue_item_count 0 -> 1, queued_filename_visible false -> true, and composer_filename_visible true -> false.",
+  "facts": {
+    "BEFORE": {
+      "provider_id_len": 16,
+      "stream_model": "uidiff-queued-text",
+      "queue_item_count": 0,
+      "queue_item_text": "",
+      "queued_filename_visible": false,
+      "composer_filename_visible": true,
+      "composer_text_after_submit": "Summarize the attached note.",
+      "provider_request_count": 2,
+      "second_request_has_filename": true,
+      "second_request_has_file_body": true
+    },
+    "AFTER": {
+      "provider_id_len": 16,
+      "stream_model": "uidiff-queued-text",
+      "queue_item_count": 1,
+      "queue_item_text": "Drag to reorder\nSummarize the attached note. \u00b7 queue-note.txt\nSteer\nInterrupt the response and send this prompt next\nRemove from queue\nMore options",
+      "queued_filename_visible": true,
+      "composer_filename_visible": false,
+      "composer_text_after_submit": "",
+      "provider_request_count": 2,
+      "second_request_has_filename": true,
+      "second_request_has_file_body": true
+    }
+  },
+  "studio_env": {},
+  "pairs": [
+    "/home/masher/unsloth-work/temp/pr-review-fix-unsloth-12964/ui-evidence/combined/pr12964_before_after.png"
+  ]
+}
