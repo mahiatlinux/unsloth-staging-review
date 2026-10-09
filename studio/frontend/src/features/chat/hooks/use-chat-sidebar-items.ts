@@ -15,6 +15,7 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearBranchHead } from "../utils/branch-head";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
@@ -358,6 +359,8 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
+    // Only once the delete holds: a rejected one brings the chat back, and it should reopen where it was.
+    for (const id of threadIds) clearBranchHead(id);
     // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
     // no card to reach them from, and the chat is already gone, so this offer is the only notice
     // and the only retry.

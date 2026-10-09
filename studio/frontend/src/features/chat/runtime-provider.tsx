@@ -186,7 +186,12 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
-import { createParentResolver } from "./utils/message-order";
+import { useBranchHeadRecorder } from "./hooks/use-branch-head-recorder";
+import { savedBranchHead } from "./utils/branch-head";
+import {
+  createParentResolver,
+  orderBySelectedBranch,
+} from "./utils/message-order";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
@@ -2666,8 +2671,12 @@ function useStudioRuntimeAdapters(
           }
         }
 
+        // The branch left open, which the import below shows and the usage is restored from.
+        const headId = savedBranchHead(remoteId, msgs);
+        const branch = orderBySelectedBranch(msgs, headId);
+
         // Restore context usage from last assistant message if model matches.
-        const lastAssistant = [...msgs]
+        const lastAssistant = [...branch]
           .reverse()
           .find((m) => m.role === "assistant");
         const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
@@ -2699,7 +2708,7 @@ function useStudioRuntimeAdapters(
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        const shownUsage = restoredUsage ?? estimateContextUsage(branch);
         if (shownUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves: a switch
           // inside it would file this thread's usage under the incoming one.
@@ -2724,6 +2733,7 @@ function useStudioRuntimeAdapters(
           const resolveParent = createParentResolver();
           return completeLoad(
             {
+              headId,
               messages: msgs.map((m) => ({
                 parentId: resolveParent(m),
                 message: toThreadMessage(m),
@@ -3614,6 +3624,12 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// Every pane, hidden ones included: a reply streaming in the background moves the head too.
+function BranchHeadRecorder(): ReactElement | null {
+  useBranchHeadRecorder();
+  return null;
+}
+
 // Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
 // it: a model change empties contextUsageByThreadId while a mounted thread does not rerun
 // its history loader, and on a deep link the loader and status can each land before the other.
@@ -4045,6 +4061,7 @@ export function ChatRuntimeProvider({
           newThreadSwitchStateRef={newThreadSwitchStateRef}
         />
         <CancelRegistrar />
+        <BranchHeadRecorder />
         {initialThreadId && (
           <ThreadAutoSwitch
             threadId={initialThreadId}
