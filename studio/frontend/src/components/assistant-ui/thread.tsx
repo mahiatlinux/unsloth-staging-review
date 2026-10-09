@@ -178,6 +178,7 @@ import {
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
+import { collectGeminiThoughtReplayParts } from "@/features/chat/gemini-thought-replay";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
@@ -409,6 +410,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -7485,10 +7487,15 @@ function useContinuation() {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content, { thought: thoughtResumable }),
   );
-  // Gemini signs its text parts, and the resumed turn is replayed from this branch,
-  // so the signature travels with the partial.
+  // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
+  // so both kinds of replay metadata travel with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
+  );
+  const messageContent = useAuiState(({ message }) => message.content);
+  const thoughtParts = useMemo(
+    () => collectGeminiThoughtReplayParts(messageContent),
+    [messageContent],
   );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
@@ -7538,6 +7545,7 @@ function useContinuation() {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
+      ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({
@@ -7553,6 +7561,7 @@ function useContinuation() {
     carriedReasoning,
     reasoningDuration,
     thoughtSignature,
+    thoughtParts,
     metadata,
   ]);
 
