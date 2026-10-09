@@ -191,6 +191,7 @@ import { savedBranchHead } from "./utils/branch-head";
 import {
   createParentResolver,
   orderBySelectedBranch,
+  orderParentsFirst,
 } from "./utils/message-order";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
@@ -1813,18 +1814,9 @@ export async function ensureThreadRecord({
 function parentsFirst(
   items: readonly ExportedMessageRepositoryItem[],
 ): ExportedMessageRepositoryItem[] {
-  const byId = new Map(items.map((item) => [item.message.id, item]));
-  const seen = new Set<string>();
-  const ordered: ExportedMessageRepositoryItem[] = [];
-  const visit = (item: ExportedMessageRepositoryItem) => {
-    if (seen.has(item.message.id)) return;
-    seen.add(item.message.id);
-    const parent = item.parentId ? byId.get(item.parentId) : undefined;
-    if (parent) visit(parent);
-    ordered.push(item);
-  };
-  items.forEach(visit);
-  return ordered;
+  return orderParentsFirst(
+    items.map((item) => ({ item, id: item.message.id, parentId: item.parentId })),
+  ).map(({ item }) => item);
 }
 
 /** Save a temporary chat to history: its row, then every message on every branch in one batch,
@@ -2720,13 +2712,18 @@ function useStudioRuntimeAdapters(
         // rebuild branches when parentIds exist; infer sequential parents for mixed legacy threads
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
+          // resolve legacy parents in storage order before sorting parents ahead of children.
           const resolveParent = createParentResolver();
+          const ordered = orderParentsFirst(
+            msgs.map((m) => ({ record: m, id: m.id, parentId: resolveParent(m) })),
+          );
           return completeLoad(
             {
+              // savedBranchHead selects a leaf so import retains its descendants.
               headId,
-              messages: msgs.map((m) => ({
-                parentId: resolveParent(m),
-                message: toThreadMessage(m),
+              messages: ordered.map(({ record, parentId }) => ({
+                parentId,
+                message: toThreadMessage(record),
               })),
             },
             remoteId,
