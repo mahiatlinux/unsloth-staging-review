@@ -352,6 +352,29 @@ def test_template_that_ignores_tool_calls_drops_the_row():
     assert "did not serialize every tool call" in result["errors"][0]
 
 
+def test_overlapping_call_names_do_not_mask_a_dropped_call():
+    call = json.dumps(
+        [
+            {"name": "search", "arguments": {"query": "weather"}},
+            {"name": "search_web", "arguments": {"query": "weather"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"hits": 1}'})
+    template = """
+{%- for message in messages %}
+{%- for call in message.tool_calls or [] %}
+{%- if call.function.name == 'search_web' %}{{- '<call>' + call.function.name + '</call>' }}{%- endif %}
+{%- endfor %}
+{%- endfor %}
+"""
+
+    result = _format_sharegpt([row], template)
+
+    assert result["success"] is False
+    assert "did not serialize every tool call" in result["errors"][0]
+
+
 def test_sharegpt_function_call_list_trains_every_call():
     call = json.dumps(
         [

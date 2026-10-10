@@ -378,44 +378,42 @@ def _reasoning_render_score(tokenizer, rendered, conversation, kwargs):
     )
 
 
-def _tool_call_name_probe(conversation):
-    variant = []
-    targets = {}
+def _tool_call_name_probes(conversation):
+    probes = []
     probe_number = 0
-    for message in conversation:
+    for message_number, message in enumerate(conversation):
         calls = message.get("tool_calls") if isinstance(message, dict) else None
         if not calls:
-            variant.append(message)
             continue
-        probe_calls = []
-        for tool_call in calls:
-            if not isinstance(tool_call, dict):
-                probe_calls.append(tool_call)
-                continue
-            function = tool_call.get("function")
+        for call_number, tool_call in enumerate(calls):
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
             name = function.get("name") if isinstance(function, dict) else None
-            if isinstance(name, str) and name:
-                targets[name] = targets.get(name, 0) + 1
-                function = {**function, "name": f"__unsloth_call_probe_{probe_number}__"}
-                tool_call = {**tool_call, "function": function}
-                probe_number += 1
-            probe_calls.append(tool_call)
-        variant.append({**message, "tool_calls": probe_calls})
-    return variant, targets
+            if not isinstance(name, str) or not name:
+                continue
+            probe_calls = list(calls)
+            probe_calls[call_number] = {
+                **tool_call,
+                "function": {
+                    **function,
+                    "name": f"__unsloth_call_probe_{probe_number}__",
+                },
+            }
+            probe = list(conversation)
+            probe[message_number] = {**message, "tool_calls": probe_calls}
+            probes.append((probe, name))
+            probe_number += 1
+    return probes
 
 
 def _renders_all_tool_calls(tokenizer, rendered, conversation, kwargs):
-    probe, targets = _tool_call_name_probe(conversation)
-    if not targets:
-        return True
-    try:
-        probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
-    except Exception:
-        return False
-    return all(
-        rendered.count(name) - probe_rendered.count(name) >= count
-        for name, count in targets.items()
-    )
+    for probe, name in _tool_call_name_probes(conversation):
+        try:
+            probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+        except Exception:
+            return False
+        if rendered.count(name) <= probe_rendered.count(name):
+            return False
+    return True
 
 
 def _render_conversation(
