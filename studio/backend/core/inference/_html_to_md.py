@@ -212,42 +212,13 @@ _PLAIN_SUPERSCRIPT_WORDS = frozenset(
     {"st", "nd", "rd", "th", "tm", "sm", "er", "re", "ere", "ère", "eme", "ème"}
 )
 _ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
-_EXPONENT_BASE_WORDS = frozenset(
-    {
-        "cm",
-        "cos",
-        "ft",
-        "ghz",
-        "hz",
-        "in",
-        "km",
-        "khz",
-        "ln",
-        "log",
-        "m",
-        "mc",
-        "mhz",
-        "mi",
-        "mm",
-        "mol",
-        "mpa",
-        "ms",
-        "nm",
-        "ns",
-        "pa",
-        "pm",
-        "s",
-        "sin",
-        "tan",
-        "um",
-        "us",
-        "yd",
-        "µm",
-        "μm",
-    }
+_MATH_BASE_WORDS = frozenset({"cos", "ln", "log", "mc", "sin", "tan"})
+_UNIT_BASE = re.compile(
+    r"^(?:[YZEPTGMkhdcmunpfazyµμ]?m|[munpfazyµμ]?s|[kMGT]?Hz|[kMGT]?Pa|mol|in|ft|yd|mi)$"
 )
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
+_TRAILING_MARKDOWN_LINK = re.compile(r"\[(?P<label>[^\[\]\n]+)\]\([^()\n]*\)$")
 _NUMERIC_REFERENCE = re.compile(r"^\d+(?:\s*[,;]\s*\d+|\s*[-–—]\s*\d+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
@@ -621,14 +592,16 @@ class _MarkdownRenderer(HTMLParser):
             and ordinal_prefix[-1].isdigit()
             and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
         )
+        if prefix_link := _TRAILING_MARKDOWN_LINK.search(prefix):
+            prefix = prefix[: prefix_link.start()] + prefix_link.group("label")
         word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~"))
         word = word_match.group(1) if word_match else ""
         numeric_reference = bool(
             _NUMERIC_REFERENCE.fullmatch(label)
             and len(word) > 1
             and not math_context
-            and not (word.islower() and len(word) <= 3)
-            and word.lower() not in _EXPONENT_BASE_WORDS
+            and _UNIT_BASE.fullmatch(word) is None
+            and word.lower() not in _MATH_BASE_WORDS
         )
         if (
             not label

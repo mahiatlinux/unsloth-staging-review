@@ -750,6 +750,8 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "<strong>Alice</strong><sup>2</sup> and <em>Conclusion</em><sup>1</sup>",
             "**Alice**2 and *Conclusion*1",
         ),
+        ("see<sup>1</sup> and the<sup>1</sup>", "see1 and the1"),
+        ('<a href="/alice">Alice</a><sup>1</sup>', "[Alice](/alice)1"),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
