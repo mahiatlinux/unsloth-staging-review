@@ -453,6 +453,27 @@ def _renders_all_tool_calls(tokenizer, rendered, conversation, kwargs):
     return True
 
 
+def _renders_all_tool_results(tokenizer, rendered, conversation, kwargs):
+    probe_number = 0
+    for message_number, message in enumerate(conversation):
+        if not isinstance(message, dict) or message.get("role") not in ("tool", "ipython"):
+            continue
+        content = message.get("content")
+        if content in (None, "", [], {}):
+            continue
+        marker = _probe_marker(content, probe_number)
+        probe = list(conversation)
+        probe[message_number] = {**message, "content": marker}
+        try:
+            probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+        except Exception:
+            return False
+        if probe_rendered.count(marker) <= rendered.count(marker):
+            return False
+        probe_number += 1
+    return True
+
+
 def _render_conversation(
     tokenizer,
     conversation,
@@ -498,6 +519,10 @@ def _render_conversation(
             if first_error is None:
                 first_error = ValueError("Chat template did not serialize every tool call")
             continue
+        if not _renders_all_tool_results(tokenizer, rendered, attempt, kwargs):
+            if first_error is None:
+                first_error = ValueError("Chat template did not serialize every tool result")
+            continue
         if reasoning_variant is None:
             return rendered
         score = _reasoning_render_score(tokenizer, rendered, attempt, kwargs)
@@ -524,7 +549,7 @@ def _template_render_stats(tokenizer, rows, split_parallel_first = False):
     tool_rows = 0
     for conversation, tools in rows:
         try:
-            if tools:
+            if _decode_tools(tools):
                 tool_rows += 1
                 with_tools = _render_conversation(
                     tokenizer,
@@ -572,7 +597,7 @@ def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
                 break
         if (
             n_rows > limit
-            and not any(tools for _, tools in sampled)
+            and not any(_decode_tools(tools) for _, tools in sampled)
             and "tools" in (getattr(dataset, "column_names", None) or ())
         ):
             for index, value in enumerate(dataset["tools"]):

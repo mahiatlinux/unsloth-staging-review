@@ -369,6 +369,22 @@ def test_template_that_drops_nonempty_arguments_drops_the_row():
     assert "did not serialize every tool call" in result["errors"][0]
 
 
+def test_template_that_drops_tool_results_drops_the_row():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    template = """
+{%- for message in messages %}
+{%- for call in message.tool_calls or [] %}
+{{- '<call>' + call.function.name + ':' + (call.function.arguments | tojson) + '</call>' }}
+{%- endfor %}
+{%- endfor %}
+"""
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], template)
+
+    assert result["success"] is False
+    assert "did not serialize every tool result" in result["errors"][0]
+
+
 def test_overlapping_call_names_do_not_mask_a_dropped_call():
     call = json.dumps(
         [
