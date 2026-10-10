@@ -483,6 +483,11 @@ def test_discarded_sibling_button_formatting_does_not_wrap_the_selected_title():
     assert html_to_markdown(html) == "### **Create Artifacts**"
 
 
+def test_discarded_sibling_button_code_does_not_wrap_the_selected_title():
+    html = "<h3><code><button>Old</button></code><button>Title</button></h3>"
+    assert html_to_markdown(html) == "### Title"
+
+
 def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():
     html = (
         "<table><tr><td><h3><button>Title</button>"

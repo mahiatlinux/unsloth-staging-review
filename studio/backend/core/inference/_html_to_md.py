@@ -1279,7 +1279,14 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "code" and not self._in_pre:
             self._inline_code_depth += 1
-            self._emit("`")
+            if (
+                self._heading_marks
+                and self._heading_marks[-1] not in self._heading_text_marks
+                and self._heading_button_mark is None
+            ):
+                self._heading_pending_inline.append((len(self._open_tags) - 1, "`"))
+            else:
+                self._emit("`")
 
         elif tag == "table":
             self._start_table()
@@ -1322,14 +1329,15 @@ class _MarkdownRenderer(HTMLParser):
             (i for i in range(len(self._open_tags) - 1, -1, -1) if self._open_tags[i] == tag),
             None,
         )
+        inline_candidate_tag = tag in _INLINE_EMPHASIS or tag == "code"
         candidate_inline = (
             self._heading_candidate_inline.get(close_at)
-            if close_at is not None and tag in _INLINE_EMPHASIS
+            if close_at is not None and inline_candidate_tag
             else None
         )
         pending_inline = bool(
             close_at is not None
-            and tag in _INLINE_EMPHASIS
+            and inline_candidate_tag
             and any(mark == close_at for mark, _ in self._heading_pending_inline)
         )
         if (
@@ -1386,7 +1394,10 @@ class _MarkdownRenderer(HTMLParser):
         # already closed means a frame recovered it; a second backtick codes the rest of the page
         elif tag == "code" and not self._in_pre and self._inline_code_depth:
             self._inline_code_depth -= 1
-            self._emit("`")
+            if candidate_inline is not None and self._heading_button_parts is not None:
+                self._heading_button_parts.append(candidate_inline)
+            elif not pending_inline:
+                self._emit("`")
 
         elif tag in ("th", "td"):
             self._finish_cell()
