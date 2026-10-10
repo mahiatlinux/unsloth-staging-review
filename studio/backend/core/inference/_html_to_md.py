@@ -687,7 +687,7 @@ class _MarkdownRenderer(HTMLParser):
                     output.extend(candidate_parts)
                 else:
                     output.append(" ".join(part.strip() for part in accessible_parts if part.strip()))
-            if i < len(between_parts):
+            if i < len(between_parts) and (selected is None or i >= selected):
                 output.extend(between_parts[i])
         output.extend(trailing)
         if selected is not None:
@@ -1214,6 +1214,7 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
+            self._flush_pending_heading_inline()
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._link_heading_parts = []

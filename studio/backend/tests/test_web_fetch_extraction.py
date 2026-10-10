@@ -488,6 +488,16 @@ def test_discarded_sibling_button_code_does_not_wrap_the_selected_title():
     assert html_to_markdown(html) == "### Title"
 
 
+def test_emphasis_around_a_heading_link_stays_outside_the_link():
+    html = '<h3><em><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
+def test_break_between_sibling_buttons_does_not_break_the_selected_title():
+    html = "<h3><button>Old</button><br><button>Title</button></h3>"
+    assert html_to_markdown(html) == "### Title"
+
+
 def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():
     html = (
         "<table><tr><td><h3><button>Title</button>"
