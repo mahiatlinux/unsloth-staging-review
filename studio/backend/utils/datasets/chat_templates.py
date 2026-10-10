@@ -165,8 +165,7 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
-    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
-    # arguments lose their nulls; JSON-string arguments keep them.
+    # Loaded dicts conflate explicit nulls with keys from other rows; JSON strings retain nulls.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
