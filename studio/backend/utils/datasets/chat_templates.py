@@ -173,6 +173,17 @@ def _drop_none_values(value):
     return value
 
 
+def _single_text_block(value):
+    if (
+        isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], dict)
+        and value[0].get("type") == "text"
+    ):
+        return value[0].get("text")
+    return value
+
+
 def _sharegpt_tool_turns(conversation):
     turns = []
     pending_calls = []
@@ -180,13 +191,17 @@ def _sharegpt_tool_turns(conversation):
     for message in conversation:
         role = message.get("role") if isinstance(message, dict) else None
         if role == "observation":
-            message = {**message, "role": "tool"}
+            message = {
+                **message,
+                "role": "tool",
+                "content": _single_text_block(message.get("content")),
+            }
             if pending_calls:
                 call_id, name = pending_calls.pop(0)
                 message.update(name = name, tool_call_id = call_id)
         elif role == "function_call":
             try:
-                calls = json.loads(message.get("content"))
+                calls = json.loads(_single_text_block(message.get("content")))
             except (TypeError, ValueError):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]

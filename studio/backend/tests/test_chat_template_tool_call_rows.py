@@ -94,6 +94,16 @@ _FIRST_TOOL_ONLY_TEMPLATE = """
 {%- endfor %}
 """
 
+_VLM_TOOL_TEMPLATE = """
+{%- for message in messages %}
+{%- if message.role == 'assistant' and message.tool_calls %}
+{%- for call in message.tool_calls %}{{- '<call>' + call.function.name + ':' + call.function.arguments + '</call>' }}{%- endfor %}
+{%- elif message.role == 'tool' %}{{- '<result>' + message.content + '</result>' }}
+{%- else %}{{- '<' + message.role + '>' + message.content[0].text }}
+{%- endif %}
+{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -123,6 +133,10 @@ class _JinjaTokenizer:
             add_generation_prompt = add_generation_prompt,
             bos_token = "",
         )
+
+
+class _VLMJinjaTokenizer(_JinjaTokenizer):
+    image_processor = object()
 
 
 def _tool_call_row(arguments):
@@ -358,6 +372,22 @@ def test_gpt_oss_splits_parallel_calls_before_a_silent_first_call_render():
     assert '"city": "Paris"' in text
     assert '"city": "Rome"' in text
     assert text.count("<result>") == 2
+
+
+def test_vlm_processor_unwraps_sharegpt_tool_text_blocks():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = format_and_template_dataset(
+        Dataset.from_list([_sharegpt_tool_row(call)]),
+        model_name = "stub-vlm",
+        tokenizer = _VLMJinjaTokenizer(_VLM_TOOL_TEMPLATE),
+        num_proc = 1,
+    )
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '<call>get_weather:{"city": "Paris"}</call>' in text
+    assert '<result>{"temp": 18}</result>' in text
 
 
 def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():
