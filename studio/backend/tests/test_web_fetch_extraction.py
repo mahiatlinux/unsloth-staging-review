@@ -746,6 +746,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Conclusion<sup>1,2</sup>, Alice<sup>1-3</sup>", "Conclusion1,2, Alice1-3"),
         ("Alice<sup>a</sup>, Bob<sup>b,c</sup>, x<sup>n</sup>", "Alicea, Bobb,c, x^n"),
         ("Alice<sup>ii</sup>, Claim<sup>1a</sup>, x<sup>ii</sup>", "Aliceii, Claim1a, x^ii"),
+        ("Claim<sup>(1)</sup>, Alice<sup>(a)</sup>, x<sup>(n)</sup>", "Claim(1), Alice(a), x^(n)"),
         ("Published in 2020<sup>1</sup>; 10<sup>2</sup>", "Published in 20201; 10^2"),
         ("Published: 2020<sup>1</sup>; x = 10<sup>2</sup>", "Published: 20201; x = 10^2"),
         (
@@ -773,6 +774,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "“Claim”1, Claim)1, (x)^2",
         ),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        (
+            "now $19<sup>99</sup> only; 19<sup>99</sup> combinations",
+            "now $1999 only; 19^99 combinations",
+        ),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
     ],

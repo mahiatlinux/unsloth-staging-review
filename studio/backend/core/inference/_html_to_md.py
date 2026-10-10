@@ -646,6 +646,7 @@ class _MarkdownRenderer(HTMLParser):
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
         bracketed_reference = re.fullmatch(r"\[[^\]\n]+\]", shown) is not None
+        reference_label = label[1:-1] if label.startswith("(") and label.endswith(")") else label
         adjacent_base = bool(prefix and not prefix[-1].isspace())
         prefix = prefix.rstrip()
         ordinal_prefix = prefix[:-1] if prefix.endswith(".") else prefix
@@ -659,7 +660,7 @@ class _MarkdownRenderer(HTMLParser):
             prefix = prefix[:link_start] + link_label
         word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~\"')]}»’”"))
         word = word_match.group(1) if word_match else ""
-        marker = _REFERENCE_MARKER.fullmatch(label) is not None
+        marker = _REFERENCE_MARKER.fullmatch(reference_label) is not None
         prose_reference = bool(
             marker
             and len(word) > 1
@@ -679,6 +680,11 @@ class _MarkdownRenderer(HTMLParser):
             and numeric_word
             and len(numeric_word.group(1)) > 1
         )
+        price = bool(
+            label.isdigit()
+            and len(label) == 2
+            and re.search(r"[$£€¥₹₩₽₺₴₪₫₦₱฿]\d+(?:[.,]\d+)?$", prefix)
+        )
         if (
             not label
             or "\n" in label
@@ -690,6 +696,7 @@ class _MarkdownRenderer(HTMLParser):
             or ordinal
             or prose_reference
             or numeric_prose_reference
+            or price
         ):
             return True
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
