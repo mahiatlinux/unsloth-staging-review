@@ -183,7 +183,6 @@ def _single_text_block(value):
         return value[0].get("text")
     return value
 
-
 def _function_call_content(value):
     value = _single_text_block(value)
     if not isinstance(value, str):
@@ -295,7 +294,7 @@ def _sharegpt_tool_turns(conversation):
 
 
 def _decode_tools(tools):
-    structured = not isinstance(tools, str)
+    catalog_from_json = isinstance(tools, str)
     if isinstance(tools, str):
         if not tools.strip():
             return None
@@ -309,13 +308,21 @@ def _decode_tools(tools):
         return None
     decoded = []
     for tool in tools:
+        tool_from_json = catalog_from_json or isinstance(tool, str)
+        if isinstance(tool, str):
+            try:
+                tool = json.loads(tool)
+            except ValueError as error:
+                raise ValueError("Tools must be valid JSON") from error
         if not isinstance(tool, dict):
             decoded.append(tool)
             continue
-        if structured:
+        if not tool_from_json:
             tool = _drop_none_values(tool)
         function = tool.get("function")
         if isinstance(function, dict):
+            if tool.get("type") is None:
+                tool = {**tool, "type": "function"}
             decoded.append(tool)
             continue
         flat = {key: value for key, value in tool.items() if key != "function"}
@@ -323,7 +330,13 @@ def _decode_tools(tools):
     return decoded
 
 
-def _render_conversation(tokenizer, conversation, tools = None, split_parallel_first = False):
+def _render_conversation(
+    tokenizer,
+    conversation,
+    tools = None,
+    split_parallel_first = False,
+    fallback_without_tools = True,
+):
     from core.inference.chat_template_helpers import (
         _normalize_tool_call_arguments,
         _split_parallel_tool_calls,
@@ -343,34 +356,63 @@ def _render_conversation(tokenizer, conversation, tools = None, split_parallel_f
     for attempt in attempts:
         try:
             kwargs = {"tokenize": False, "add_generation_prompt": False}
-            if tools is not None:
+            if tools:
                 kwargs["tools"] = tools
             return tokenizer.apply_chat_template(attempt, **kwargs)
         except Exception as error:
-            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
-            # error is usually a key the loader filled with None, so report the cleaned row's.
+            # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    if tools and fallback_without_tools:
+        return _render_conversation(
+            tokenizer,
+            conversation,
+            split_parallel_first = split_parallel_first,
+            fallback_without_tools = False,
+        )
     raise first_error
 
 
-def _count_renderable(tokenizer, conversations, split_parallel_first = False):
+def _template_render_stats(tokenizer, rows, split_parallel_first = False):
     rendered = 0
-    for conversation, tools in conversations:
+    advertised = 0
+    tool_rows = 0
+    for conversation, tools in rows:
         try:
-            _render_conversation(
-                tokenizer, conversation, tools, split_parallel_first = split_parallel_first
-            )
+            if tools:
+                tool_rows += 1
+                with_tools = _render_conversation(
+                    tokenizer,
+                    conversation,
+                    tools,
+                    split_parallel_first = split_parallel_first,
+                )
+                try:
+                    without_tools = _render_conversation(
+                        tokenizer,
+                        conversation,
+                        split_parallel_first = split_parallel_first,
+                    )
+                except Exception:
+                    advertised += 1
+                else:
+                    advertised += with_tools != without_tools
+            else:
+                _render_conversation(
+                    tokenizer,
+                    conversation,
+                    split_parallel_first = split_parallel_first,
+                )
             rendered += 1
         except Exception:
             pass
-    return rendered
+    return rendered, advertised, tool_rows
 
 
-def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
-    """Sample across the dataset, or from the start for streaming datasets."""
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
-    conversations = []
+    sampled = []
     try:
         if n_rows > limit:
             step = (n_rows - 1) / (limit - 1)
@@ -380,51 +422,67 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
         for row in rows:
             conversation = row.get(chat_column)
             if conversation:
-                conversations.append((conversation, row.get("tools")))
-            if len(conversations) >= limit:
+                sampled.append((conversation, row.get("tools")))
+            if len(sampled) >= limit:
                 break
+        if (
+            n_rows > limit
+            and not any(tools for _, tools in sampled)
+            and "tools" in (getattr(dataset, "column_names", None) or ())
+        ):
+            for index, value in enumerate(dataset["tools"]):
+                tools = _decode_tools(value)
+                if not tools:
+                    continue
+                conversation = dataset[index].get(chat_column)
+                if conversation:
+                    sampled.append((conversation, value))
+                    break
     except Exception:
         return []
-    return conversations
+    return sampled
 
 
 def keep_renderable_chat_template(
     tokenizer, dataset, chat_column, own_template, split_parallel_first = False
 ):
-    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
+    """Restore the checkpoint template when it renders more rows or preserves tool catalogs."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
         return None
 
-    conversations = _sample_conversations(dataset, chat_column)
-    if not conversations:
+    sampled = _sample_template_rows(dataset, chat_column)
+    if not sampled:
         return None
 
-    rendered_by_override = _count_renderable(
-        tokenizer, conversations, split_parallel_first = split_parallel_first
+    override_rendered, override_advertised, tool_rows = _template_render_stats(
+        tokenizer, sampled, split_parallel_first = split_parallel_first
     )
-    if rendered_by_override == len(conversations):
+    if override_rendered == len(sampled) and override_advertised == tool_rows:
         return None
 
     _set_chat_template(tokenizer, own_template)
-    if (
-        _count_renderable(
-            tokenizer, conversations, split_parallel_first = split_parallel_first
-        )
-        <= rendered_by_override
-    ):
+    own_rendered, own_advertised, _ = _template_render_stats(
+        tokenizer, sampled, split_parallel_first = split_parallel_first
+    )
+    restores_tools = (
+        tool_rows
+        and override_advertised < tool_rows
+        and own_advertised == tool_rows
+        and own_rendered == len(sampled)
+    )
+    if own_rendered <= override_rendered and not restores_tools:
         _set_chat_template(tokenizer, override)
         return None
 
     return (
-        "📝 The Unsloth chat template cannot render this dataset's conversations "
-        "(tool calls or consecutive same-role turns); using the model's own chat "
-        "template instead"
+        "📝 The Unsloth chat template cannot render every conversation or tool catalog; "
+        "using the model's own chat template instead"
     )
 
 
 def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
-    """Choose on the first split and reuse for evaluation and saving."""
+    """choose a template on the first split and reuse it for evaluation and saving."""
     remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
     if remembered is not None and remembered[0] == model_name:
         _set_chat_template(tokenizer, remembered[1])
@@ -693,10 +751,7 @@ def apply_chat_template_to_dataset(
 
         streamed_failures = []
 
-        # Never clobber a real column: a dataset is allowed to already carry one named
-        # like our marker, and remove_columns would then delete the user's own data.
-        # A generator-backed IterableDataset reports column_names AND features as None,
-        # so resolve_column_names' first-row probe is what sees the column there.
+        # protect real marker columns; generator-backed IterableDataset needs a first-row probe.
         from .raw_text import resolve_column_names
 
         existing_columns = set(resolve_column_names(dataset))
@@ -720,9 +775,10 @@ def apply_chat_template_to_dataset(
                             with_system,
                             tools,
                             split_parallel_first = split_parallel_first,
+                            fallback_without_tools = with_system is convo,
                         )
                     except Exception:
-                        # A template without a system role still trains the conversation.
+                        # unsupported system turns are omitted so the original conversation renders.
                         if with_system is convo:
                             raise
                         text = _render_conversation(
