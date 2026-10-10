@@ -330,6 +330,39 @@ def _decode_tools(tools):
     return decoded
 
 
+def _reasoning_content_variant(conversation):
+    variant = []
+    changed = False
+    for message in conversation:
+        if (
+            isinstance(message, dict)
+            and message.get("content") is None
+            and message.get("reasoning_content")
+            and message.get("tool_calls")
+        ):
+            message = {**message, "content": message["reasoning_content"]}
+            changed = True
+        variant.append(message)
+    return variant if changed else None
+
+
+def _tool_reasoning_targets(conversation):
+    reasoning_targets = []
+    tool_targets = []
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            reasoning_targets.append(reasoning)
+        for tool_call in message.get("tool_calls") or ():
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and name:
+                tool_targets.append(name)
+    return reasoning_targets, tool_targets
+
+
 def _render_conversation(
     tokenizer,
     conversation,
@@ -343,26 +376,45 @@ def _render_conversation(
     )
 
     conversation = _sharegpt_tool_turns(conversation)
+    reasoning_variant = _reasoning_content_variant(conversation)
     tools = _decode_tools(tools)
     attempts = []
-    for messages in (_drop_none_values(conversation), conversation):
-        for attempt in (_normalize_tool_call_arguments(messages), messages):
-            split = _split_parallel_tool_calls(attempt)
-            candidates = (split, attempt) if split_parallel_first else (attempt, split)
-            for candidate in candidates:
-                if not any(candidate is seen for seen in attempts):
-                    attempts.append(candidate)
+    conversations = (conversation, reasoning_variant) if reasoning_variant is not None else (conversation,)
+    for variant in conversations:
+        for messages in (_drop_none_values(variant), variant):
+            for attempt in (_normalize_tool_call_arguments(messages), messages):
+                split = _split_parallel_tool_calls(attempt)
+                candidates = (split, attempt) if split_parallel_first else (attempt, split)
+                for candidate in candidates:
+                    if not any(candidate is seen for seen in attempts):
+                        attempts.append(candidate)
     first_error = None
+    best_rendered = None
+    best_score = -1
+    reasoning_targets, tool_targets = _tool_reasoning_targets(conversation)
+    maximum_score = len(reasoning_targets) + 2 * len(tool_targets)
     for attempt in attempts:
         try:
             kwargs = {"tokenize": False, "add_generation_prompt": False}
             if tools:
                 kwargs["tools"] = tools
-            return tokenizer.apply_chat_template(attempt, **kwargs)
+            rendered = tokenizer.apply_chat_template(attempt, **kwargs)
         except Exception as error:
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+            continue
+        if reasoning_variant is None:
+            return rendered
+        score = sum(target in rendered for target in reasoning_targets)
+        score += 2 * sum(target in rendered for target in tool_targets)
+        if score > best_score:
+            best_rendered = rendered
+            best_score = score
+        if score == maximum_score:
+            return rendered
+    if best_rendered is not None:
+        return best_rendered
     if tools and fallback_without_tools:
         return _render_conversation(
             tokenizer,

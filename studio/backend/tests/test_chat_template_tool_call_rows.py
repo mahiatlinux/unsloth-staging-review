@@ -424,6 +424,20 @@ def test_reasoning_wrapped_sharegpt_function_calls_are_decoded(wrapped_call, rea
     assert '<result>{"temp": 18}</result>' in text
 
 
+def test_content_only_template_preserves_wrapped_tool_reasoning():
+    call = (
+        '<think>Check the requested city.</think>'
+        '{"name":"get_weather","arguments":{"city":"Paris"}}'
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "Check the requested city." in text
+    assert "<function=get_weather>" in text
+
+
 @pytest.mark.parametrize("tag", ["think", "tool_call"])
 def test_literal_reasoning_tags_inside_tool_arguments_are_preserved(tag):
     call = json.dumps(
