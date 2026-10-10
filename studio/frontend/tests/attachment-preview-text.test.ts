@@ -1692,6 +1692,7 @@ test("an html rowspan keeps its full standards-defined range", async () => {
 
 test("a Word numbered list keeps its numbers", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const w15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"';
   const lvl = (ilvl: number, format: string, text: string, options = "") =>
     `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>${options}<w:lvlText w:val="${text}"/></w:lvl>`;
   const p = (text: string, pPr = "") => `<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>${text}</w:t></w:r></w:p>`;
@@ -1729,10 +1730,18 @@ test("a Word numbered list keeps its numbers", async () => {
         p("Bounded roman", numPr(10)) +
         p("Bounded letter", numPr(11)) +
         p("Unsupported ordinal", numPr(12)) +
+        p("Linked numbering style", numPr(13)) +
+        p("Restart before break", numPr(15)) +
+        p("Continue before break", `${numPr(16)}<w:sectPr/>`) +
+        p("Restart after break", numPr(15)) +
+        p("Continue after break", numPr(16)) +
+        `<w:p><w:pPr>${numPr(17)}<w:rPr><w:del w:id="1" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"/></w:rPr></w:pPr>` +
+        '<w:del w:id="2" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"><w:r><w:delText>Deleted list item</w:delText></w:r></w:del></w:p>' +
+        p("Visible after deletion", numPr(17)) +
         "</w:body></w:document>",
     ),
     "word/numbering.xml": strToU8(
-      `<w:numbering ${w}>` +
+      `<w:numbering ${w} ${w15}>` +
         `<w:abstractNum w:abstractNumId="1">${lvl(0, "decimal", "%1.")}${lvl(1, "lowerLetter", "(%2)")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="2">${lvl(0, "bullet", "\u2022")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="3">` +
@@ -1748,6 +1757,11 @@ test("a Word numbered list keeps its numbers", async () => {
         `<w:abstractNum w:abstractNumId="5">${lvl(0, "lowerRoman", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="6">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="7">${lvl(0, "ordinal", "%1.")}</w:abstractNum>` +
+        '<w:abstractNum w:abstractNumId="8"><w:numStyleLink w:val="LinkedNumbering"/></w:abstractNum>' +
+        `<w:abstractNum w:abstractNumId="9">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="10" w15:restartNumberingAfterBreak="1">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="11">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="12">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
@@ -1760,6 +1774,11 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:num w:numId="10"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1000001"/></w:lvlOverride></w:num>' +
         '<w:num w:numId="11"><w:abstractNumId w:val="6"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="26001"/></w:lvlOverride></w:num>' +
         '<w:num w:numId="12"><w:abstractNumId w:val="7"/></w:num>' +
+        '<w:num w:numId="13"><w:abstractNumId w:val="8"/></w:num>' +
+        '<w:num w:numId="14"><w:abstractNumId w:val="9"/></w:num>' +
+        '<w:num w:numId="15"><w:abstractNumId w:val="10"/></w:num>' +
+        '<w:num w:numId="16"><w:abstractNumId w:val="11"/></w:num>' +
+        '<w:num w:numId="17"><w:abstractNumId w:val="12"/></w:num>' +
         "</w:numbering>",
     ),
     "word/styles.xml": strToU8(
@@ -1767,6 +1786,7 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>' +
         '<w:style w:type="paragraph" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="8"/></w:numPr></w:pPr></w:style>' +
         '<w:style w:type="paragraph" w:styleId="DerivedList"><w:basedOn w:val="BaseList"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="numbering" w:styleId="LinkedNumbering"><w:pPr><w:numPr><w:numId w:val="14"/></w:numPr></w:pPr></w:style>' +
         "</w:styles>",
     ),
   });
@@ -1787,7 +1807,9 @@ test("a Word numbered list keeps its numbers", async () => {
         "2.1.3. Continuing level three\n\n1. Selective level one\n\n1.A. Selective level two\n\n" +
         "1.A.i. Selective level three\n\n1.B. Second selective level two\n\n1.B.ii. Continuing selective level three\n\n" +
         "2. Second selective level one\n\n2.A.i. Restarted selective level three\n\n1.a. Inherited style numbering\n\n" +
-        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n",
+        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n" +
+        "a. Linked numbering style\n\n1. Restart before break\n\n1. Continue before break\n\n" +
+        "1. Restart after break\n\n2. Continue after break\n\n1. Visible after deletion\n\n",
     );
   } finally {
     Object.assign(globals, original);

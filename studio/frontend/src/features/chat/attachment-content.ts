@@ -1144,6 +1144,30 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
     return wordValue(numPr, name) ?? styleNumberValue(wordValue(style, "basedOn"), name, depth + 1);
   };
+  const abstractFor = (num: Element | undefined): Element | undefined => {
+    let id = wordValue(num, "abstractNumId");
+    const seen = new Set<string>();
+    while (id !== undefined && !seen.has(id) && seen.size <= 20) {
+      seen.add(id);
+      const abstract = abstracts.get(id);
+      if (!abstract) return undefined;
+      const linkedStyle = wordValue(abstract, "numStyleLink");
+      if (linkedStyle === undefined) return abstract;
+      const linkedNum = nums.get(styleNumberValue(linkedStyle, "numId") ?? "");
+      id = wordValue(linkedNum, "abstractNumId");
+    }
+    return undefined;
+  };
+  const restartsAfterSection = (abstract: Element | undefined) => {
+    const value = abstract?.getAttributeNS(
+      "http://schemas.microsoft.com/office/word/2012/wordml",
+      "restartNumberingAfterBreak",
+    );
+    return Boolean(value) && !["0", "false", "off"].includes(value ?? "");
+  };
+  const numRestartsAfterSection = (num: Element | undefined) =>
+    restartsAfterSection(abstracts.get(wordValue(num, "abstractNumId") ?? "")) ||
+    restartsAfterSection(abstractFor(num));
 
   const rewritten: Record<string, Uint8Array> = {};
   for (const body of bodies) {
@@ -1151,14 +1175,40 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     const { doc, w } = body;
     const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
     let found = false;
+    let afterSectionBreak = false;
     for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+      if (afterSectionBreak) {
+        for (const key of counters.keys()) {
+          if (numRestartsAfterSection(nums.get(key.slice(4)))) counters.delete(key);
+        }
+      }
       const pPr = childElements(p, w, "pPr")[0];
+      afterSectionBreak = Boolean(pPr && childElements(pPr, w, "sectPr").length);
+      const removed = ["del", "moveFrom"].some((name) => p.getElementsByTagNameNS(w, name).length);
+      const hasAcceptedContent = (node: Element): boolean => {
+        for (const item of Array.from(node.childNodes)) {
+          const child = item as Element;
+          if (!child.localName) continue;
+          if (child === pPr) continue;
+          if (child.namespaceURI === w && ["del", "moveFrom"].includes(child.localName)) continue;
+          if (
+            child.namespaceURI === w &&
+            ["t", "tab", "br", "cr", "drawing", "object", "pict", "sym", "noBreakHyphen", "softHyphen"].includes(
+              child.localName,
+            )
+          ) {
+            return true;
+          }
+          if (hasAcceptedContent(child)) return true;
+        }
+        return false;
+      };
+      if (removed && !hasAcceptedContent(p)) continue;
       const direct = pPr && childElements(pPr, w, "numPr")[0];
       const styleId = wordValue(pPr, "pStyle");
       const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
       const num = numId === undefined ? undefined : nums.get(numId);
-      const abstractId = wordValue(num, "abstractNumId") ?? "";
-      const abstract = abstracts.get(abstractId);
+      const abstract = abstractFor(num);
       if (!num || !abstract) continue;
       const ilvl = Number(wordValue(direct, "ilvl") ?? styleNumberValue(styleId, "ilvl") ?? 0);
       if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
