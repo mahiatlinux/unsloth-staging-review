@@ -455,6 +455,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_is_noteref: bool = False
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
@@ -780,6 +781,7 @@ class _MarkdownRenderer(HTMLParser):
         self._in_link = False
         self._link_text_parts = []
         self._link_heading_parts = []
+        self._link_is_noteref = False
         # an anchor wrapping a heading AND other content tees the title alone, else the nav rides
         partial = bool(heading_text) and heading_text != text
         self._emit_as_heading = self._link_had_heading and not partial
@@ -1025,7 +1027,8 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            if self._sup_starts and "doc-noteref" in (attr_dict.get("role") or "").lower().split():
+            self._link_is_noteref = "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+            if self._sup_starts and self._link_is_noteref:
                 _, start, heading_target, heading_start, depth = self._sup_starts[-1]
                 self._sup_starts[-1] = (None, start, heading_target, heading_start, depth)
             self._link_href = attr_dict.get("href")
@@ -1043,7 +1046,9 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "sup":
             target = self._emit_target()
-            reference = "reference" in (attr_dict.get("class") or "").split()
+            reference = (
+                self._link_is_noteref or "reference" in (attr_dict.get("class") or "").split()
+            )
             heading_target = None
             if self._heading_marks:
                 frame = self._header_stack[-1] if self._header_stack else None

@@ -783,9 +783,15 @@ def test_footnote_superscripts_render_unchanged():
     assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
 
 
-def test_semantic_footnote_link_does_not_become_an_exponent():
-    html = '<p>Claim<sup><a role="doc-noteref" href="#fn1">1</a></sup></p>'
-    assert html_to_markdown(html) == "Claim[1](#fn1)"
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<sup><a role="doc-noteref" href="#fn1">1</a></sup>',
+        '<a role="doc-noteref" href="#fn1"><sup>1</sup></a>',
+    ],
+)
+def test_semantic_footnote_link_does_not_become_an_exponent(markup):
+    assert html_to_markdown(f"<p>Claim{markup}</p>") == "Claim[1](#fn1)"
 
 
 def test_misnested_superscript_does_not_capture_following_text():
