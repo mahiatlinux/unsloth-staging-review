@@ -195,7 +195,7 @@ def _sharegpt_tool_turns(conversation):
                 for call in calls:
                     arguments = call.get("arguments", {})
                     if isinstance(arguments, dict):
-                        arguments = json.dumps(arguments)
+                        arguments = json.dumps(arguments, ensure_ascii = False)
                     call_id = f"call{call_number:05d}"
                     call_number += 1
                     tool_calls.append(
@@ -219,10 +219,24 @@ def _sharegpt_tool_turns(conversation):
     return turns
 
 
-def _render_conversation(tokenizer, conversation):
+def _decode_tools(tools):
+    if isinstance(tools, str):
+        if not tools.strip():
+            return None
+        try:
+            tools = json.loads(tools)
+        except ValueError as error:
+            raise ValueError("Tools must be valid JSON") from error
+    if tools is not None and not isinstance(tools, list):
+        raise ValueError("Tools must be a JSON list")
+    return tools
+
+
+def _render_conversation(tokenizer, conversation, tools = None):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     conversation = _sharegpt_tool_turns(conversation)
+    tools = _decode_tools(tools)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
@@ -231,9 +245,10 @@ def _render_conversation(tokenizer, conversation):
     first_error = None
     for attempt in attempts:
         try:
-            return tokenizer.apply_chat_template(
-                attempt, tokenize = False, add_generation_prompt = False
-            )
+            kwargs = {"tokenize": False, "add_generation_prompt": False}
+            if tools is not None:
+                kwargs["tools"] = tools
+            return tokenizer.apply_chat_template(attempt, **kwargs)
         except Exception as error:
             # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
             # error is usually a key the loader filled with None, so report the cleaned row's.
@@ -244,9 +259,9 @@ def _render_conversation(tokenizer, conversation):
 
 def _count_renderable(tokenizer, conversations):
     rendered = 0
-    for conversation in conversations:
+    for conversation, tools in conversations:
         try:
-            _render_conversation(tokenizer, conversation)
+            _render_conversation(tokenizer, conversation, tools)
             rendered += 1
         except Exception:
             pass
@@ -266,7 +281,7 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
         for row in rows:
             conversation = row.get(chat_column)
             if conversation:
-                conversations.append(conversation)
+                conversations.append((conversation, row.get("tools")))
             if len(conversations) >= limit:
                 break
     except Exception:
@@ -576,19 +591,20 @@ def apply_chat_template_to_dataset(
         def _format_chatml(examples):
             convos = examples[chat_column]
             systems = examples.get("system") or [None] * len(convos)
+            tool_catalogs = examples.get("tools") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo, system in zip(convos, systems):
+            for convo, system, tools in zip(convos, systems, tool_catalogs):
                 try:
                     with_system = _with_system_turn(convo, system)
                     try:
-                        text = _render_conversation(tokenizer, with_system)
+                        text = _render_conversation(tokenizer, with_system, tools)
                     except Exception:
                         # A template without a system role still trains the conversation.
                         if with_system is convo:
                             raise
-                        text = _render_conversation(tokenizer, convo)
+                        text = _render_conversation(tokenizer, convo, tools)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')

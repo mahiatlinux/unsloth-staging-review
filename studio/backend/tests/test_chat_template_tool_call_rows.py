@@ -77,6 +77,13 @@ _MISTRAL_TOOL_ID_TEMPLATE = """
 {%- endfor %}
 """
 
+_TOOLS_TEMPLATE = """
+{%- if tools %}
+{%- for tool in tools %}{{- '<tool>' + tool.name + ':' + (tool.parameters | tojson) + '</tool>' }}{%- endfor %}
+{%- endif %}
+{%- for message in messages %}{{- '<' + message.role + '>' + (message.content or '') }}{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -102,6 +109,7 @@ class _JinjaTokenizer:
         env.globals["raise_exception"] = _raise
         return env.from_string(self.chat_template).render(
             messages = conversation,
+            tools = _kwargs.get("tools"),
             add_generation_prompt = add_generation_prompt,
             bos_token = "",
         )
@@ -303,6 +311,45 @@ def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():
 
     assert result["success"] is True, result["errors"]
     assert '<call>get_weather\n{"city": "Paris"}</call>' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_preserves_unicode_arguments():
+    call = json.dumps(
+        {"name": "get_weather", "arguments": {"city": "München"}},
+        ensure_ascii = False,
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '"city": "München"' in text
+    assert "\\u00fc" not in text
+
+
+def test_sharegpt_row_tool_catalog_is_decoded_and_rendered():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    row = _sharegpt_tool_row(call)
+    row["tools"] = json.dumps(
+        [
+            {
+                "name": "get_weather",
+                "description": "Get the weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ]
+    )
+
+    result = _format_sharegpt([row], _TOOLS_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '<tool>get_weather:{"type": "object"' in text
+    assert "<assistant>" in text
 
 
 def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():
