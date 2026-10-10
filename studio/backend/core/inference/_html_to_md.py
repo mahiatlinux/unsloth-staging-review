@@ -1386,11 +1386,12 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
-) -> tuple[int, str]:
+) -> tuple[int, str, int]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree. Sizing candidates one at a time stops many tiny sibling cards from
-    clearing the threshold together, and returning that one subtree keeps
-    unrelated siblings (related cards, comment threads) out of the output.
+    subtree, and how many such subtrees render any text. Sizing candidates
+    one at a time stops many tiny sibling cards from clearing the threshold
+    together, and returning that one subtree keeps unrelated siblings (related
+    cards, comment threads) out of the output.
 
     A candidate earns its place on the prose it RETAINED, then gets its dropped
     header furniture added back to rank against siblings. Furniture must not buy
@@ -1433,7 +1434,7 @@ def _select_main_scope_render(
         if size > best_len:
             best_len = size
             best_render = rendered
-    return best_len, best_render
+    return best_len, best_render, sum(1 for seg in renderer.scope_segments if seg.strip())
 
 
 def _visible_chars(text: str) -> int:
@@ -1510,10 +1511,11 @@ def html_to_markdown(
     subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
 
     ``main_content=True`` applies a readability-style heuristic for page
-    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
-    then ``<main>``, falling back to the whole document, reduce a link-only
-    ``<header>`` to the heading it carries, and strip known boilerplate
-    fragments from the result.
+    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there)
+    unless it is one of several articles holding under half of ``<main>``'s
+    text, then ``<main>``, falling back to the whole document, reduce a
+    link-only ``<header>`` to the heading it carries, and strip known
+    boilerplate fragments from the result.
 
     ``site_links`` records the links back into the page's own site; the output is unchanged.
 
@@ -1526,14 +1528,20 @@ def html_to_markdown(
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
     if main_content:
-        for scope_tag in ("article", "main"):
-            # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(
-                source_html, scope_tag, site_links, span_limit
+        length, rendered, articles = _select_main_scope_render(
+            source_html, "article", site_links, span_limit
+        )
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            main_length, main_rendered, _ = _select_main_scope_render(
+                source_html, "main", site_links, span_limit
             )
-            if length >= _MIN_MAIN_CONTENT_CHARS:
-                break
-        else:
+            clean = site_links.clean if site_links is not None else str
+            if main_length >= _MIN_MAIN_CONTENT_CHARS and (
+                length < _MIN_MAIN_CONTENT_CHARS
+                or _visible_chars(clean(main_rendered)) > 2 * _visible_chars(clean(rendered))
+            ):
+                length, rendered = main_length, main_rendered
+        if length < _MIN_MAIN_CONTENT_CHARS:
             rendered = _strip_boilerplate_lines(
                 _render(
                     source_html,
