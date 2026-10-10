@@ -448,6 +448,14 @@ def test_an_accessible_only_sibling_does_not_replace_a_visible_button_title():
     assert out == "### Question?"
 
 
+def test_screen_reader_only_utility_does_not_replace_a_visible_button_title():
+    html = (
+        '<h3><button>Question?</button><button><span class="sr-only">'
+        "Copy link</span></button></h3>"
+    )
+    assert html_to_markdown(html) == "### Question?"
+
+
 @pytest.mark.parametrize(
     "button",
     [
@@ -457,6 +465,22 @@ def test_an_accessible_only_sibling_does_not_replace_a_visible_button_title():
 )
 def test_an_accessible_only_heading_button_supplies_the_title(button):
     assert html_to_markdown(f"<h3>{button}</h3>") == "### Question?"
+
+
+def test_a_button_aria_label_overrides_descendant_accessible_labels():
+    html = (
+        '<h3><button aria-label="Question?"><span role="img" '
+        'aria-label="Expand"></span></button></h3>'
+    )
+    assert html_to_markdown(html) == "### Question?"
+
+
+def test_discarded_sibling_button_formatting_does_not_wrap_the_selected_title():
+    html = (
+        "<h3><em><button>More information</button></em>"
+        "<strong><button>Create Artifacts</button></strong></h3>"
+    )
+    assert html_to_markdown(html) == "### **Create Artifacts**"
 
 
 def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():

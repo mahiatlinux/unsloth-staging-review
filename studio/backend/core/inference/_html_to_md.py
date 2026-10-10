@@ -100,6 +100,14 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
+def _is_accessibility_only_element(attr_dict: dict) -> bool:
+    classes = set((attr_dict.get("class") or "").lower().split())
+    return bool(
+        classes
+        & {"sr-only", "sr-only-focusable", "visually-hidden", "screen-reader-only"}
+    )
+
+
 def _span_attr(attr_dict: dict, name: str) -> int:
     try:
         value = int(attr_dict.get(name) or 1)
@@ -434,6 +442,7 @@ class _MarkdownRenderer(HTMLParser):
         # Open tags that can be closed implicitly; zero lets _close_implicit skip the scan.
         self._closable_open: int = 0
         self._hidden_marks: list[int] = []
+        self._accessibility_only_marks: list[int] = []
 
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
@@ -457,6 +466,9 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_button_between_parts: list[list[str]] = []
         self._heading_button_accessible_parts: list[str] = []
         self._heading_button_has_visible_text: bool = False
+        self._heading_button_has_own_accessible_name: bool = False
+        self._heading_pending_inline: list[tuple[int, str]] = []
+        self._heading_candidate_inline: dict[int, str] = {}
         self._heading_button_mark: int | None = None
         self._heading_button_owner_mark: int | None = None
 
@@ -582,6 +594,7 @@ class _MarkdownRenderer(HTMLParser):
     def _mark_heading_text(self, text: str) -> None:
         if self._heading_marks and self._heading_button_mark is None and text.strip():
             self._discard_heading_button()
+            self._flush_pending_heading_inline()
             self._heading_text_marks.update(self._heading_marks)
 
     def _discard_heading_button(self) -> None:
@@ -595,14 +608,30 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_button_between_parts = []
         self._heading_button_accessible_parts = []
         self._heading_button_has_visible_text = False
+        self._heading_button_has_own_accessible_name = False
         self._heading_button_mark = None
         self._heading_button_owner_mark = None
-        if had_button and literal_parts:
-            self._emit("".join(literal_parts))
+        owned_inline = list(self._heading_candidate_inline.values())
+        self._heading_candidate_inline = {}
+        if had_button and (owned_inline or literal_parts):
+            self._emit("".join(owned_inline + literal_parts))
+
+    def _flush_pending_heading_inline(self) -> None:
+        if not self._heading_pending_inline:
+            return
+        parts = [part for _, part in self._heading_pending_inline]
+        self._heading_pending_inline = []
+        self._emit("".join(parts))
 
     def _stash_heading_button(self) -> None:
         if self._heading_button_parts is None:
             return
+        if self._heading_candidate_inline:
+            self._heading_button_parts.extend(
+                reversed(self._heading_candidate_inline.values())
+            )
+            self._heading_pending_inline = list(self._heading_candidate_inline.items())
+            self._heading_candidate_inline = {}
         self._heading_button_candidates.append(
             (
                 self._heading_button_parts,
@@ -615,6 +644,7 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_button_trailing_parts = []
         self._heading_button_accessible_parts = []
         self._heading_button_has_visible_text = False
+        self._heading_button_has_own_accessible_name = False
         self._heading_button_mark = None
 
     def _flush_heading_button(self) -> None:
@@ -623,6 +653,8 @@ class _MarkdownRenderer(HTMLParser):
         candidates = self._heading_button_candidates
         between_parts = self._heading_button_between_parts
         if parts is not None:
+            if self._heading_candidate_inline:
+                parts.extend(reversed(self._heading_candidate_inline.values()))
             candidates = candidates + [
                 (parts, self._heading_button_accessible_parts, self._heading_button_has_visible_text)
             ]
@@ -632,6 +664,9 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_button_between_parts = []
         self._heading_button_accessible_parts = []
         self._heading_button_has_visible_text = False
+        self._heading_button_has_own_accessible_name = False
+        self._heading_pending_inline = []
+        self._heading_candidate_inline = {}
         self._heading_button_mark = None
         self._heading_button_owner_mark = None
 
@@ -881,6 +916,12 @@ class _MarkdownRenderer(HTMLParser):
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
+        self._heading_pending_inline = [
+            (mark, part) for mark, part in self._heading_pending_inline if mark < index
+        ]
+        self._heading_candidate_inline = {
+            mark: part for mark, part in self._heading_candidate_inline.items() if mark < index
+        }
 
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
@@ -913,6 +954,11 @@ class _MarkdownRenderer(HTMLParser):
             self._truncate_open_tags(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
+            while (
+                self._accessibility_only_marks
+                and self._accessibility_only_marks[-1] >= close_at
+            ):
+                self._accessibility_only_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_text_marks.discard(self._heading_marks.pop())
             self._close_header_frames(close_at)
@@ -1005,6 +1051,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._closable_open += 1
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
+            if _is_accessibility_only_element(attr_dict):
+                self._accessibility_only_marks.append(len(self._open_tags) - 1)
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 if not self._heading_marks:
                     self._heading_text_marks.clear()
@@ -1014,6 +1062,9 @@ class _MarkdownRenderer(HTMLParser):
                     self._heading_button_between_parts = []
                     self._heading_button_accessible_parts = []
                     self._heading_button_has_visible_text = False
+                    self._heading_button_has_own_accessible_name = False
+                    self._heading_pending_inline = []
+                    self._heading_candidate_inline = {}
                     self._heading_button_mark = None
                     self._heading_button_owner_mark = None
                 self._heading_marks.append(len(self._open_tags) - 1)
@@ -1077,6 +1128,11 @@ class _MarkdownRenderer(HTMLParser):
                     self._truncate_open_tags(i)
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
+                    while (
+                        self._accessibility_only_marks
+                        and self._accessibility_only_marks[-1] >= i
+                    ):
+                        self._accessibility_only_marks.pop()
                     while self._heading_marks and self._heading_marks[-1] >= i:
                         self._heading_text_marks.discard(self._heading_marks.pop())
                     self._close_header_frames(i, own_tag = tag == "header")
@@ -1131,8 +1187,13 @@ class _MarkdownRenderer(HTMLParser):
             self._heading_button_trailing_parts = []
             self._heading_button_accessible_parts = []
             self._heading_button_has_visible_text = False
+            self._heading_button_has_own_accessible_name = False
             self._heading_button_mark = len(self._open_tags) - 1
             self._heading_button_owner_mark = self._heading_marks[-1]
+            for mark, part in self._heading_pending_inline:
+                self._heading_button_parts.append(part)
+                self._heading_candidate_inline[mark] = part
+            self._heading_pending_inline = []
         accessible_text = attr_dict.get("aria-label") or ""
         if not accessible_text and (
             tag == "img"
@@ -1140,7 +1201,11 @@ class _MarkdownRenderer(HTMLParser):
         ):
             accessible_text = attr_dict.get("alt") or ""
         if self._heading_button_mark is not None and accessible_text.strip():
-            self._heading_button_accessible_parts.append(accessible_text.strip())
+            if heading_button:
+                self._heading_button_accessible_parts = [accessible_text.strip()]
+                self._heading_button_has_own_accessible_name = True
+            elif not self._heading_button_has_own_accessible_name:
+                self._heading_button_accessible_parts.append(accessible_text.strip())
         else:
             self._mark_heading_text(accessible_text)
 
@@ -1157,7 +1222,16 @@ class _MarkdownRenderer(HTMLParser):
             self._link_header_chars = 0
 
         elif tag in _INLINE_EMPHASIS:
-            self._emit(_INLINE_EMPHASIS[tag])
+            if (
+                self._heading_marks
+                and self._heading_marks[-1] not in self._heading_text_marks
+                and self._heading_button_mark is None
+            ):
+                self._heading_pending_inline.append(
+                    (len(self._open_tags) - 1, _INLINE_EMPHASIS[tag])
+                )
+            else:
+                self._emit(_INLINE_EMPHASIS[tag])
 
         elif tag == "br":
             self._emit("\n")
@@ -1248,6 +1322,16 @@ class _MarkdownRenderer(HTMLParser):
             (i for i in range(len(self._open_tags) - 1, -1, -1) if self._open_tags[i] == tag),
             None,
         )
+        candidate_inline = (
+            self._heading_candidate_inline.get(close_at)
+            if close_at is not None and tag in _INLINE_EMPHASIS
+            else None
+        )
+        pending_inline = bool(
+            close_at is not None
+            and tag in _INLINE_EMPHASIS
+            and any(mark == close_at for mark, _ in self._heading_pending_inline)
+        )
         if (
             close_at is not None
             and self._heading_button_owner_mark is not None
@@ -1272,7 +1356,10 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_link()
 
         elif tag in _INLINE_EMPHASIS:
-            self._emit(_INLINE_EMPHASIS[tag])
+            if candidate_inline is not None and self._heading_button_parts is not None:
+                self._heading_button_parts.append(candidate_inline)
+            elif not pending_inline:
+                self._emit(_INLINE_EMPHASIS[tag])
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")
@@ -1324,6 +1411,10 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
+        if self._heading_button_mark is not None and self._accessibility_only_marks:
+            if data.strip() and not self._heading_button_has_own_accessible_name:
+                self._heading_button_accessible_parts.append(re.sub(r"\s+", " ", data).strip())
+            return
         if self._heading_button_mark is not None and data.strip():
             self._heading_button_has_visible_text = True
         self._mark_heading_text(data)
@@ -1356,6 +1447,10 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&{name};")
+        if self._heading_button_mark is not None and self._accessibility_only_marks:
+            if text.strip() and not self._heading_button_has_own_accessible_name:
+                self._heading_button_accessible_parts.append(text.strip())
+            return
         if self._heading_button_mark is not None and text.strip():
             self._heading_button_has_visible_text = True
         self._mark_heading_text(text)
@@ -1366,6 +1461,10 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&#{name};")
+        if self._heading_button_mark is not None and self._accessibility_only_marks:
+            if text.strip() and not self._heading_button_has_own_accessible_name:
+                self._heading_button_accessible_parts.append(text.strip())
+            return
         if self._heading_button_mark is not None and text.strip():
             self._heading_button_has_visible_text = True
         self._mark_heading_text(text)
