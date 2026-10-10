@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
+
 import json
 import warnings as python_warnings
 
 from .cells import cell_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
-from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
+from .model_mappings import MODEL_TO_TEMPLATE_MAPPER, is_gpt_oss_model_name
 from loggers import get_logger
 logger = get_logger(__name__)
 
@@ -163,7 +165,7 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
-    # loaded dicts cannot distinguish nulls from keys added by another row, unlike JSON strings.
+    # Loaded dicts conflate explicit nulls with keys from other rows; JSON strings retain nulls.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
@@ -171,76 +173,406 @@ def _drop_none_values(value):
     return value
 
 
-def _json_cell(value):
+def _single_text_block(value):
+    if (
+        isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], dict)
+        and value[0].get("type") == "text"
+    ):
+        return value[0].get("text")
+    return value
+
+def _function_call_content(value):
+    value = _single_text_block(value)
     if not isinstance(value, str):
-        return value
+        return value, None
+
+    content = value.strip()
     try:
-        return json.loads(value)
-    except ValueError:
-        return None
-
-
-def _row_tools(tools):
-    if isinstance(tools, list):
-        tools = [tool if isinstance(tool, str) else _drop_none_values(tool) for tool in tools]
+        json.loads(content)
+    except (TypeError, ValueError):
+        pass
     else:
-        tools = _json_cell(tools)
-    if not isinstance(tools, list):
+        return content, None
+
+    reasoning = []
+    while content.startswith("<think>"):
+        end = content.find("</think>", len("<think>"))
+        if end < 0:
+            break
+        thought = content[len("<think>"):end].strip()
+        if thought:
+            reasoning.append(thought)
+        content = content[end + len("</think>"):].strip()
+
+    tool_calls = []
+    outside = []
+    cursor = 0
+    while True:
+        start = content.find("<tool_call>", cursor)
+        if start < 0:
+            outside.append(content[cursor:])
+            break
+        outside.append(content[cursor:start])
+        payload_start = start + len("<tool_call>")
+        end = content.find("</tool_call>", payload_start)
+        while end >= 0:
+            candidate = content[payload_start:end].strip()
+            try:
+                json.loads(candidate)
+            except (TypeError, ValueError):
+                end = content.find("</tool_call>", end + 1)
+                continue
+            tool_calls.append(candidate)
+            cursor = end + len("</tool_call>")
+            break
+        else:
+            tool_calls = []
+            break
+
+    if tool_calls:
+        outside = "".join(outside).strip()
+        if outside:
+            reasoning.append(outside)
+        content = tool_calls[0] if len(tool_calls) == 1 else f"[{','.join(tool_calls)}]"
+
+    return content.strip(), "\n".join(reasoning) or None
+
+
+def _sharegpt_tool_turns(conversation):
+    turns = []
+    pending_calls = []
+    call_number = 0
+    for message in conversation:
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "observation":
+            message = {
+                **message,
+                "role": "tool",
+                "content": _single_text_block(message.get("content")),
+            }
+            if pending_calls:
+                call_id, name = pending_calls.pop(0)
+                message.update(name = name, tool_call_id = call_id)
+        elif role == "function_call":
+            call_content, reasoning = _function_call_content(message.get("content"))
+            try:
+                calls = json.loads(call_content)
+            except (TypeError, ValueError):
+                calls = None
+            calls = calls if isinstance(calls, list) else [calls]
+            if calls and all(isinstance(call, dict) and call.get("name") for call in calls):
+                tool_calls = []
+                for call in calls:
+                    arguments = call.get("arguments", {})
+                    if isinstance(arguments, dict):
+                        arguments = json.dumps(arguments, ensure_ascii = False)
+                    call_id = f"call{call_number:05d}"
+                    call_number += 1
+                    tool_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": arguments},
+                        }
+                    )
+                    pending_calls.append((call_id, call["name"]))
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                }
+                if reasoning:
+                    message["reasoning_content"] = reasoning
+            else:
+                pending_calls.clear()
+        else:
+            pending_calls.clear()
+        turns.append(message)
+    return turns
+
+
+def _decode_tools(tools):
+    catalog_from_json = isinstance(tools, str)
+    if isinstance(tools, str):
+        if not tools.strip():
+            return None
+        try:
+            tools = json.loads(tools)
+        except ValueError as error:
+            raise ValueError("Tools must be valid JSON") from error
+    if tools is not None and not isinstance(tools, list):
+        raise ValueError("Tools must be a JSON list")
+    if tools is None:
         return None
-    tools = [_json_cell(tool) for tool in tools]
-    if not tools or not all(isinstance(tool, dict) for tool in tools):
-        return None
-    normalized = []
+    decoded = []
     for tool in tools:
-        if tool.get("type") is None and isinstance(tool.get("function"), dict):
-            tool = {**tool, "type": "function"}
-        elif "function" not in tool and "name" in tool:
-            tool = {"type": "function", "function": tool}
-        normalized.append(tool)
-    return normalized
+        tool_from_json = catalog_from_json or isinstance(tool, str)
+        if isinstance(tool, str):
+            try:
+                tool = json.loads(tool)
+            except ValueError as error:
+                raise ValueError("Tools must be valid JSON") from error
+        if not isinstance(tool, dict):
+            decoded.append(tool)
+            continue
+        if not tool_from_json:
+            tool = _drop_none_values(tool)
+        function = tool.get("function")
+        if isinstance(function, dict):
+            if tool.get("type") is None:
+                tool = {**tool, "type": "function"}
+            decoded.append(tool)
+            continue
+        flat = {key: value for key, value in tool.items() if key != "function"}
+        decoded.append({"type": "function", "function": flat})
+    return decoded
 
 
-def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
-    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+def _reasoning_content_variant(conversation):
+    variant = []
+    changed = False
+    for message in conversation:
+        if (
+            isinstance(message, dict)
+            and message.get("content") is None
+            and message.get("reasoning_content")
+            and message.get("tool_calls")
+        ):
+            message = {**message, "content": message["reasoning_content"]}
+            changed = True
+        variant.append(message)
+    return variant if changed else None
 
+
+def _reasoning_probe(conversation):
+    variant = []
+    targets = {}
+    probe_number = 0
+    for message in conversation:
+        if not isinstance(message, dict):
+            variant.append(message)
+            continue
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            targets[reasoning] = targets.get(reasoning, 0) + 1
+            probe = f"__unsloth_reasoning_probe_{probe_number}__"
+            message = {**message, "reasoning_content": probe}
+            if message.get("content") == reasoning:
+                message["content"] = probe
+            probe_number += 1
+        variant.append(message)
+    return variant, targets
+
+
+def _reasoning_render_score(tokenizer, rendered, conversation, kwargs):
+    probe, targets = _reasoning_probe(conversation)
+    try:
+        probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+    except Exception:
+        return -1
+    return sum(
+        min(count, max(0, rendered.count(reasoning) - probe_rendered.count(reasoning)))
+        for reasoning, count in targets.items()
+    )
+
+
+def _probe_marker(value, probe_number):
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii = False, sort_keys = True)
+    marker_character = next(
+        (character for character in "abcdefghijklmnopqrstuvwxyz0123456789_-" if character not in text),
+        "x",
+    )
+    return marker_character * (max(32, len(text) + 1) + probe_number)
+
+
+def _replace_argument_values(value, marker):
+    if isinstance(value, dict):
+        return {key: _replace_argument_values(item, marker) for key, item in value.items()} or marker
+    if isinstance(value, list):
+        return [_replace_argument_values(item, marker) for item in value] or marker
+    return marker
+
+
+def _tool_call_probes(conversation):
+    probes = []
+    probe_number = 0
+    for message_number, message in enumerate(conversation):
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not calls:
+            continue
+        for call_number, tool_call in enumerate(calls):
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(name, str) or not name:
+                continue
+            marker = _probe_marker(name, probe_number)
+            probe_calls = list(calls)
+            probe_calls[call_number] = {
+                **tool_call,
+                "function": {
+                    **function,
+                    "name": marker,
+                },
+            }
+            probe = list(conversation)
+            probe[message_number] = {**message, "tool_calls": probe_calls}
+            probes.append((probe, name, False))
+            probe_number += 1
+            arguments = function.get("arguments")
+            if arguments in (None, "", [], {}):
+                continue
+            marker = _probe_marker(arguments, probe_number)
+            probe_calls = list(calls)
+            probe_calls[call_number] = {
+                **tool_call,
+                "function": {
+                    **function,
+                    "arguments": _replace_argument_values(arguments, marker),
+                },
+            }
+            probe = list(conversation)
+            probe[message_number] = {**message, "tool_calls": probe_calls}
+            probes.append((probe, marker, True))
+            probe_number += 1
+    return probes
+
+
+def _renders_all_tool_calls(tokenizer, rendered, conversation, kwargs):
+    for probe, target, expect_probe in _tool_call_probes(conversation):
+        try:
+            probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+        except Exception:
+            return False
+        if expect_probe:
+            if probe_rendered.count(target) <= rendered.count(target):
+                return False
+        elif rendered.count(target) <= probe_rendered.count(target):
+            return False
+    return True
+
+
+def _renders_all_tool_results(tokenizer, rendered, conversation, kwargs):
+    probe_number = 0
+    for message_number, message in enumerate(conversation):
+        if not isinstance(message, dict) or message.get("role") not in ("tool", "ipython"):
+            continue
+        content = message.get("content")
+        if content in (None, "", [], {}):
+            continue
+        marker = _probe_marker(content, probe_number)
+        probe = list(conversation)
+        probe[message_number] = {**message, "content": marker}
+        try:
+            probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+        except Exception:
+            return False
+        if probe_rendered.count(marker) <= rendered.count(marker):
+            return False
+        probe_number += 1
+    return True
+
+
+def _render_conversation(
+    tokenizer,
+    conversation,
+    tools = None,
+    split_parallel_first = False,
+    fallback_without_tools = True,
+):
+    from core.inference.chat_template_helpers import (
+        _normalize_tool_call_arguments,
+        _split_parallel_tool_calls,
+    )
+
+    conversation = _sharegpt_tool_turns(conversation)
+    reasoning_variant = _reasoning_content_variant(conversation)
+    tools = _decode_tools(tools)
     attempts = []
-    for messages in (_drop_none_values(conversation), conversation):
-        for attempt in (_normalize_tool_call_arguments(messages), messages):
-            if not any(attempt is seen for seen in attempts):
-                attempts.append(attempt)
-    tools_kwargs = {"tools": tools} if tools else {}
+    conversations = (conversation, reasoning_variant) if reasoning_variant is not None else (conversation,)
+    for variant in conversations:
+        for messages in (_drop_none_values(variant), variant):
+            for attempt in (_normalize_tool_call_arguments(messages), messages):
+                split = _split_parallel_tool_calls(attempt)
+                candidates = (split, attempt) if split_parallel_first else (attempt, split)
+                for candidate in candidates:
+                    if not any(candidate is seen for seen in attempts):
+                        attempts.append(candidate)
     first_error = None
+    best_rendered = None
+    best_score = -1
+    _, reasoning_targets = _reasoning_probe(conversation)
+    maximum_score = sum(reasoning_targets.values())
     for attempt in attempts:
         try:
-            return tokenizer.apply_chat_template(
-                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
-            )
+            kwargs = {"tokenize": False, "add_generation_prompt": False}
+            if tools:
+                kwargs["tools"] = tools
+            rendered = tokenizer.apply_chat_template(attempt, **kwargs)
         except Exception as error:
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+            continue
+        if not _renders_all_tool_calls(tokenizer, rendered, attempt, kwargs):
+            if first_error is None:
+                first_error = ValueError("Chat template did not serialize every tool call")
+            continue
+        if not _renders_all_tool_results(tokenizer, rendered, attempt, kwargs):
+            if first_error is None:
+                first_error = ValueError("Chat template did not serialize every tool result")
+            continue
+        if reasoning_variant is None:
+            return rendered
+        score = _reasoning_render_score(tokenizer, rendered, attempt, kwargs)
+        if score > best_score:
+            best_rendered = rendered
+            best_score = score
+        if score == maximum_score:
+            return rendered
+    if best_rendered is not None:
+        return best_rendered
     if tools and fallback_without_tools:
-        return _render_conversation(tokenizer, conversation)
+        return _render_conversation(
+            tokenizer,
+            conversation,
+            split_parallel_first = split_parallel_first,
+            fallback_without_tools = False,
+        )
     raise first_error
 
 
-def _template_render_stats(tokenizer, rows):
+def _template_render_stats(tokenizer, rows, split_parallel_first = False):
     rendered = 0
     advertised = 0
     tool_rows = 0
     for conversation, tools in rows:
         try:
-            if tools:
+            if _decode_tools(tools):
                 tool_rows += 1
-                with_tools = _render_conversation(tokenizer, conversation, tools)
+                with_tools = _render_conversation(
+                    tokenizer,
+                    conversation,
+                    tools,
+                    split_parallel_first = split_parallel_first,
+                )
                 try:
-                    without_tools = _render_conversation(tokenizer, conversation)
+                    without_tools = _render_conversation(
+                        tokenizer,
+                        conversation,
+                        split_parallel_first = split_parallel_first,
+                    )
                 except Exception:
                     advertised += 1
                 else:
                     advertised += with_tools != without_tools
             else:
-                _render_conversation(tokenizer, conversation)
+                _render_conversation(
+                    tokenizer,
+                    conversation,
+                    split_parallel_first = split_parallel_first,
+                )
             rendered += 1
         except Exception:
             pass
@@ -260,29 +592,31 @@ def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
         for row in rows:
             conversation = row.get(chat_column)
             if conversation:
-                sampled.append((conversation, _row_tools(row.get("tools"))))
+                sampled.append((conversation, row.get("tools")))
             if len(sampled) >= limit:
                 break
         if (
             n_rows > limit
-            and not any(tools for _, tools in sampled)
+            and not any(_decode_tools(tools) for _, tools in sampled)
             and "tools" in (getattr(dataset, "column_names", None) or ())
         ):
             for index, value in enumerate(dataset["tools"]):
-                tools = _row_tools(value)
+                tools = _decode_tools(value)
                 if not tools:
                     continue
                 conversation = dataset[index].get(chat_column)
                 if conversation:
-                    sampled.append((conversation, tools))
+                    sampled.append((conversation, value))
                     break
     except Exception:
         return []
     return sampled
 
 
-def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
-    """restore the checkpoint template when it renders more rows or preserves tool catalogs."""
+def keep_renderable_chat_template(
+    tokenizer, dataset, chat_column, own_template, split_parallel_first = False
+):
+    """Restore the checkpoint template when it renders more rows or preserves tool catalogs."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
         return None
@@ -292,13 +626,15 @@ def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
         return None
 
     override_rendered, override_advertised, tool_rows = _template_render_stats(
-        tokenizer, sampled
+        tokenizer, sampled, split_parallel_first = split_parallel_first
     )
     if override_rendered == len(sampled) and override_advertised == tool_rows:
         return None
 
     _set_chat_template(tokenizer, own_template)
-    own_rendered, own_advertised, _ = _template_render_stats(tokenizer, sampled)
+    own_rendered, own_advertised, _ = _template_render_stats(
+        tokenizer, sampled, split_parallel_first = split_parallel_first
+    )
     restores_tools = (
         tool_rows
         and override_advertised < tool_rows
@@ -324,7 +660,13 @@ def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
 
     own_template = getattr(tokenizer, "chat_template", None)
     tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
-    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    note = keep_renderable_chat_template(
+        tokenizer,
+        dataset,
+        chat_column,
+        own_template,
+        split_parallel_first = is_gpt_oss_model_name(model_name),
+    )
     try:
         chosen = (model_name, getattr(tokenizer, "chat_template", None))
         setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
@@ -568,6 +910,8 @@ def apply_chat_template_to_dataset(
         if not is_standardized:
             warnings.append("Dataset may not be fully standardized")
 
+        split_parallel_first = is_gpt_oss_model_name(model_name)
+
         if model_name:
             tokenizer, kept_own_template = resolve_dataset_chat_template(
                 tokenizer, model_name, dataset, chat_column
@@ -588,26 +932,31 @@ def apply_chat_template_to_dataset(
         def _format_chatml(examples):
             convos = examples[chat_column]
             systems = examples.get("system") or [None] * len(convos)
-            row_tools = examples.get("tools") or [None] * len(convos)
+            tool_catalogs = examples.get("tools") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo, system, tools in zip(convos, systems, row_tools):
+            for convo, system, tools in zip(convos, systems, tool_catalogs):
                 try:
                     with_system = _with_system_turn(convo, system)
-                    tools = _row_tools(tools)
                     try:
                         text = _render_conversation(
                             tokenizer,
                             with_system,
                             tools,
+                            split_parallel_first = split_parallel_first,
                             fallback_without_tools = with_system is convo,
                         )
                     except Exception:
                         # unsupported system turns are omitted so the original conversation renders.
                         if with_system is convo:
                             raise
-                        text = _render_conversation(tokenizer, convo, tools)
+                        text = _render_conversation(
+                            tokenizer,
+                            convo,
+                            tools,
+                            split_parallel_first = split_parallel_first,
+                        )
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')

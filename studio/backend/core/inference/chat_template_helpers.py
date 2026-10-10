@@ -2698,6 +2698,7 @@ def _split_parallel_tool_calls(messages: list) -> list:
             piece = {**msg, "tool_calls": [call]}
             if idx:
                 piece["content"] = ""
+                piece.pop("reasoning_content", None)
             out.append(piece)
             result = _take_tool_result(pending, call.get("id") if isinstance(call, dict) else None)
             if result is not None:
