@@ -745,7 +745,9 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Conclusion<sup>1</sup>, Alice<sup>2</sup>", "Conclusion1, Alice2"),
         ("Conclusion<sup>1,2</sup>, Alice<sup>1-3</sup>", "Conclusion1,2, Alice1-3"),
         ("Alice<sup>a</sup>, Bob<sup>b,c</sup>, x<sup>n</sup>", "Alicea, Bobb,c, x^n"),
+        ("Alice<sup>ii</sup>, Claim<sup>1a</sup>, x<sup>ii</sup>", "Aliceii, Claim1a, x^ii"),
         ("Published in 2020<sup>1</sup>; 10<sup>2</sup>", "Published in 20201; 10^2"),
+        ("5x10<sup>3</sup> and x10<sup>3</sup>", "5x10^3 and x10^3"),
         ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
         ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
         ("kg<sup>2</sup> and rad<sup>2</sup>", "kg^2 and rad^2"),
@@ -798,6 +800,14 @@ def test_unlinked_header_title_keeps_exponent_when_navigation_is_stripped():
 
 def test_linked_numeric_superscript_keeps_link_and_exponent():
     assert html_to_markdown('<p>x<sup><a href="/power">2</a></sup></p>') == "x^[2](/power)"
+
+
+def test_long_site_link_before_citation_keeps_visible_context():
+    href = "/" + "long-path/" * 30 + "123"
+    site_links = SiteLinks("https://example.com/article")
+    html = f'<p><a href="{href}">Alice</a><sup>1</sup></p>'
+
+    assert html_to_markdown(html, site_links = site_links) == f"[Alice]({href})1"
 
 
 def test_footnote_superscripts_render_unchanged():

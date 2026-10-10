@@ -220,9 +220,7 @@ _UNIT_BASE = re.compile(
 )
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
-_REFERENCE_MARKER = re.compile(
-    r"^(?:\d+|[A-Za-z])(?:\s*[,;]\s*(?:\d+|[A-Za-z])|\s*[-–—]\s*(?:\d+|[A-Za-z]))*$"
-)
+_REFERENCE_MARKER = re.compile(r"^[^\W_]+(?:\s*[,;]\s*[^\W_]+|\s*[-–—]\s*[^\W_]+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
 )
@@ -639,7 +637,14 @@ class _MarkdownRenderer(HTMLParser):
         )
         number_base = re.search(r"\d+(?:[.,]\d+)?$", prefix)
         before_number = prefix[: number_base.start()].rstrip() if number_base else ""
-        numeric_prose_reference = bool(marker and before_number and before_number[-1].isalpha())
+        numeric_prose_reference = bool(
+            marker
+            and number_base
+            and number_base.start() > 0
+            and prefix[number_base.start() - 1].isspace()
+            and before_number
+            and before_number[-1].isalpha()
+        )
         if (
             not label
             or "\n" in label
@@ -671,8 +676,16 @@ class _MarkdownRenderer(HTMLParser):
     ) -> str:
         tail = ""
         for part in reversed(target):
-            snippet = part[-(limit + 96) :]
-            if self._site_links is not None:
+            snippet = part
+            marked = self._site_links is not None and "\x00" in snippet
+            if marked:
+                snippet = self._site_links.clean(snippet)
+            if marked or snippet.startswith("["):
+                if link := _trailing_markdown_link(snippet):
+                    link_start, link_label = link
+                    snippet = snippet[:link_start] + link_label
+            snippet = snippet[-(limit + 96) :]
+            if self._site_links is not None and not marked:
                 snippet = self._site_links.clean(snippet)
             if not tail:
                 snippet = snippet.rstrip()
