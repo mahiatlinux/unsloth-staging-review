@@ -848,6 +848,11 @@ class _MarkdownRenderer(HTMLParser):
                     break
             if close_at is None:
                 break
+            if (
+                self._heading_button_owner_mark is not None
+                and close_at <= self._heading_button_owner_mark
+            ):
+                self._flush_heading_button()
             self._truncate_open_tags(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()

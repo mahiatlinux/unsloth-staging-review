@@ -433,6 +433,16 @@ def test_a_later_sibling_heading_button_replaces_the_provisional_title(first_but
     assert "Body text." in out
 
 
+def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():
+    html = (
+        "<table><tr><td><h3><button>Title</button>"
+        "<td>Body</td></tr></table>"
+    )
+    out = html_to_markdown(html)
+    assert "TitleBody" not in out
+    assert out.index("Title") < out.index("Body")
+
+
 @pytest.mark.parametrize(
     "heading_content",
     [
