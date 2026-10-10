@@ -421,6 +421,18 @@ def test_a_heading_button_keeps_its_position_and_own_heading_boundary(html, expe
     assert expected in out
 
 
+@pytest.mark.parametrize("first_button", ["More information", ""])
+def test_a_later_sibling_heading_button_replaces_the_provisional_title(first_button):
+    html = (
+        f"<h4><button>{first_button}</button><button>Create Artifacts</button></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "More information" not in out
+    assert "Body text." in out
+
+
 @pytest.mark.parametrize(
     "heading_content",
     [

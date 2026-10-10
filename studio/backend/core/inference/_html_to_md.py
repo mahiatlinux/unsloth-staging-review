@@ -577,14 +577,18 @@ class _MarkdownRenderer(HTMLParser):
 
     def _mark_heading_text(self, text: str) -> None:
         if self._heading_marks and self._heading_button_mark is None and text.strip():
-            trailing = self._heading_button_trailing_parts
-            self._heading_button_trailing_parts = []
-            self._heading_button_owner_mark = None
-            had_button = self._heading_button_parts is not None
-            self._heading_button_parts = None
+            self._discard_heading_button()
             self._heading_has_text = True
-            if had_button and trailing:
-                self._emit("".join(trailing))
+
+    def _discard_heading_button(self) -> None:
+        trailing = self._heading_button_trailing_parts
+        had_button = self._heading_button_parts is not None
+        self._heading_button_parts = None
+        self._heading_button_trailing_parts = []
+        self._heading_button_mark = None
+        self._heading_button_owner_mark = None
+        if had_button and trailing:
+            self._emit("".join(trailing))
 
     def _flush_heading_button(self) -> None:
         parts = self._heading_button_parts
@@ -1031,6 +1035,15 @@ class _MarkdownRenderer(HTMLParser):
         # Recover optional end tags before the skip decision: a skipped <nav>/<footer> still implicitly closes an open
         # <p>, releasing its hidden mark so following siblings render.
         self._close_implicit(tag)
+
+        if (
+            tag == "button"
+            and self._heading_marks
+            and not self._heading_has_text
+            and self._heading_button_parts is not None
+            and self._heading_button_mark is None
+        ):
+            self._discard_heading_button()
 
         # Keep a possible accordion title until the rest of the heading proves whether it is a utility button.
         heading_button = (
