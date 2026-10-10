@@ -327,9 +327,7 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # skipped blocks close <p>, so optional-close bookkeeping must run before skipping them
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
@@ -426,7 +424,6 @@ def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
 
 
 def test_visible_void_hr_still_renders():
-    # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
     out = html_to_markdown(html)
     assert "---" in out
