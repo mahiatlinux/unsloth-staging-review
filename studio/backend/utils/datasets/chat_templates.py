@@ -235,6 +235,7 @@ def _sharegpt_tool_turns(conversation):
 
 
 def _decode_tools(tools):
+    structured = not isinstance(tools, str)
     if isinstance(tools, str):
         if not tools.strip():
             return None
@@ -251,15 +252,13 @@ def _decode_tools(tools):
         if not isinstance(tool, dict):
             decoded.append(tool)
             continue
+        if structured:
+            tool = _drop_none_values(tool)
         function = tool.get("function")
         if isinstance(function, dict):
-            decoded.append({key: value for key, value in tool.items() if value is not None})
+            decoded.append(tool)
             continue
-        flat = {
-            key: value
-            for key, value in tool.items()
-            if key != "function" and value is not None
-        }
+        flat = {key: value for key, value in tool.items() if key != "function"}
         decoded.append({"type": "function", "function": flat})
     return decoded
 

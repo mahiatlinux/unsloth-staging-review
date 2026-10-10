@@ -423,7 +423,7 @@ def test_sharegpt_row_tool_catalog_is_decoded_and_rendered():
                 "description": "Get the weather for a city",
                 "parameters": {
                     "type": "object",
-                    "properties": {"city": {"type": "string"}},
+                    "properties": {"city": {"type": "string", "default": None}},
                     "required": ["city"],
                 },
             }
@@ -435,6 +435,7 @@ def test_sharegpt_row_tool_catalog_is_decoded_and_rendered():
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
     assert '<tool>get_weather:{"type": "object"' in text
+    assert '"default": null' in text
     assert "<assistant>" in text
 
     gemma_result = _format_sharegpt([row], _GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
@@ -463,6 +464,40 @@ def test_mixed_flat_and_wrapped_tool_catalogs_ignore_arrow_null_fields():
     assert result["success"] is True, result["errors"]
     assert len(result["dataset"]) == 2
     assert all("<tool>get_weather:" in text for text in result["dataset"]["text"])
+
+
+def test_structured_tool_catalogs_drop_arrow_null_schema_fields():
+    weather = _sharegpt_tool_row(
+        json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    )
+    weather["tools"] = [
+        {
+            "name": "get_weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            },
+        }
+    ]
+    search = _sharegpt_tool_row(
+        json.dumps({"name": "web_search", "arguments": {"query": "weather"}})
+    )
+    search["tools"] = [
+        {
+            "name": "web_search",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        }
+    ]
+
+    result = _format_sharegpt([weather, search], _TOOLS_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    weather_text, search_text = result["dataset"]["text"]
+    assert '"query": null' not in weather_text
+    assert '"city": null' not in search_text
 
 
 def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():
