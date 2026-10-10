@@ -384,6 +384,34 @@ def test_buttons_that_are_not_a_heading_title_are_still_dropped():
 
 
 @pytest.mark.parametrize(
+    "heading_content",
+    [
+        '<img src="feature.png" alt="Create Artifacts">',
+        '<input type="image" src="feature.png" alt="Create Artifacts">',
+        '<span role="img" aria-label="Create Artifacts"></span>',
+    ],
+)
+def test_a_button_after_accessible_heading_content_is_dropped(heading_content):
+    html = (
+        f"<h4>{heading_content}<button aria-expanded='false'>More information</button></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+def test_a_button_inside_an_accessibly_named_heading_is_dropped():
+    html = (
+        '<h4 aria-label="Create Artifacts"><button>More information</button></h4>'
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
     "html",
     [
         "<h4>&#67;&#114;&#101;&#97;&#116;&#101;<button>More information</button></h4><p>Body text.</p>",

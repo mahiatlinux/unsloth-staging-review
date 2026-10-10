@@ -995,6 +995,14 @@ class _MarkdownRenderer(HTMLParser):
         attr_dict = dict(attrs)
         if not self._enter_tag(tag, attr_dict):
             return
+        if self._heading_marks and (
+            (attr_dict.get("aria-label") or "").strip()
+            or (
+                (tag == "img" or (tag == "input" and attr_dict.get("type", "").lower() == "image"))
+                and (attr_dict.get("alt") or "").strip()
+            )
+        ):
+            self._heading_has_text = True
 
         if tag in _HEADING_TAGS:
             level = int(tag[1])
