@@ -66,7 +66,12 @@ const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
-const DOCX_MAIN_DOCUMENT_TYPE = `${DOCX_RELATIONSHIP_NAMESPACE}officeDocument`;
+const DOCX_STRICT_RELATIONSHIP_NAMESPACE =
+  "http://purl.oclc.org/ooxml/officeDocument/relationships/";
+const DOCX_RELATIONSHIP_NAMESPACES = [
+  DOCX_RELATIONSHIP_NAMESPACE,
+  DOCX_STRICT_RELATIONSHIP_NAMESPACE,
+];
 const DOCX_RELATED_PART_NAMES = [
   "comments",
   "endnotes",
@@ -599,6 +604,15 @@ function readDocxXmlTargets(
   return targets;
 }
 
+function docxRelationshipTargets(
+  targets: Map<string, string[]>,
+  name: string,
+): string[] {
+  return DOCX_RELATIONSHIP_NAMESPACES.flatMap(
+    (namespace) => targets.get(`${namespace}${name}`) ?? [],
+  );
+}
+
 // The .rels part that names the XML parts of the part at `path`.
 function docxRelationshipsPath(path: string): string {
   const cut = path.lastIndexOf("/");
@@ -654,11 +668,14 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
     readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
-  const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const main = resolve(
+    docxRelationshipTargets(targetsOf(""), "officeDocument"),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
   const mainTargets = targetsOf(main);
   const used = new Set([...mainTargets.values()].flat());
   for (const name of DOCX_BODY_PART_NAMES) {
-    const path = resolve(mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`);
+    const path = resolve(docxRelationshipTargets(mainTargets, name), `word/${name}.xml`);
     for (const target of [...targetsOf(path).values()].flat()) used.add(target);
   }
   return { isImage, used };
@@ -719,8 +736,9 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   bound(DOCX_CONTENT_TYPES_PART);
   bound(DOCX_PACKAGE_RELATIONSHIPS);
   const mainDocument = resolve(
-    readDocxXmlTargets(entries[DOCX_PACKAGE_RELATIONSHIPS], "").get(
-      DOCX_MAIN_DOCUMENT_TYPE,
+    docxRelationshipTargets(
+      readDocxXmlTargets(entries[DOCX_PACKAGE_RELATIONSHIPS], ""),
+      "officeDocument",
     ),
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
@@ -735,7 +753,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   );
   for (const name of DOCX_RELATED_PART_NAMES) {
     const path = resolve(
-      documentTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
+      docxRelationshipTargets(documentTargets, name),
       `word/${name}.xml`,
     );
     bound(path);
@@ -1054,6 +1072,287 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
+function wordListNumber(n: number, format: string | undefined): string | undefined {
+  const lower = format === "lowerLetter" || format === "lowerRoman";
+  const roman = format === "lowerRoman" || format === "upperRoman";
+  if (roman || format === "lowerLetter" || format === "upperLetter") {
+    if (n < 1) return String(n);
+    const length = roman ? Math.floor(n / 1000) + 12 : Math.ceil(n / 26);
+    const text = length <= 1_000
+      ? roman
+        ? romanNumeral(n)
+        : String.fromCharCode(97 + ((n - 1) % 26)).repeat(length)
+      : String(n);
+    return lower ? text : text.toUpperCase();
+  }
+  if (format === undefined || format === "decimal") return String(n);
+  if (format === "decimalZero") return n >= 1 && n < 10 ? `0${n}` : String(n);
+  return undefined;
+}
+
+function htmlListNumber(n: number, format: string | undefined): string {
+  if (n < 1 || !format) return String(n);
+  const lower = format.startsWith("lower");
+  if (format.endsWith("Roman")) {
+    const groups: number[] = [];
+    for (let value = n; value; value = Math.floor(value / 1000)) groups.unshift(value % 1000);
+    const text = n < 4000
+      ? romanNumeral(n)
+      : groups
+          .map((group, index) => {
+            const overline = "\u0305".repeat(groups.length - index - 1);
+            return Array.from(romanNumeral(group), (digit) => digit + overline).join("");
+          })
+          .join("");
+    return lower ? text : text.toUpperCase();
+  }
+  let value = n;
+  let text = "";
+  while (value > 0) {
+    value--;
+    text = String.fromCharCode(97 + (value % 26)) + text;
+    value = Math.floor(value / 26);
+  }
+  return lower ? text : text.toUpperCase();
+}
+
+function htmlListInteger(value: string | null): number | undefined {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function wordValue(node: Element | undefined, name: string): string | undefined {
+  const ns = node?.namespaceURI ?? "";
+  return (node && childElements(node, ns, name)[0]?.getAttributeNS(ns, "val")) || undefined;
+}
+
+export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
+  const names = new Set<string>();
+  const relationshipParts = unzipSync(archive, {
+    filter: (entry) => {
+      names.add(entry.name);
+      return entry.name === DOCX_PACKAGE_RELATIONSHIPS || /\.rels$/i.test(entry.name);
+    },
+  });
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const packageTargets = readDocxXmlTargets(
+    relationshipParts[DOCX_PACKAGE_RELATIONSHIPS],
+    "",
+  );
+  const main = resolve(
+    docxRelationshipTargets(packageTargets, "officeDocument"),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
+  const targets = readDocxXmlTargets(
+    relationshipParts[docxRelationshipsPath(main)],
+    main.slice(0, Math.max(0, main.lastIndexOf("/"))),
+  );
+  const relatedPath = (name: string) =>
+    resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`);
+  const bodyPaths = new Set([
+    main,
+    ...["footnotes", "endnotes"].map(relatedPath),
+  ]);
+  const selectedPaths = new Set([
+    ...bodyPaths,
+    relatedPath("numbering"),
+    relatedPath("styles"),
+  ]);
+  const parts = {
+    ...relationshipParts,
+    ...unzipSync(archive, {
+      filter: (entry) => selectedPaths.has(entry.name),
+    }),
+  };
+  const parse = (path: string) => {
+    const bytes = Object.hasOwn(parts, path) ? parts[path] : undefined;
+    if (!bytes) return null;
+    const doc = new DOMParser().parseFromString(strFromU8(bytes), "application/xml");
+    const root = doc.documentElement;
+    if (!WORDPROCESSINGML_NAMESPACES.has(root?.namespaceURI ?? "") || doc.getElementsByTagName("parsererror").length) return null;
+    return { doc, root, w: root.namespaceURI ?? "" };
+  };
+  const related = (name: string) =>
+    parse(relatedPath(name));
+  const numbering = related("numbering");
+  if (!numbering) return archive;
+  const bodies: Array<ReturnType<typeof parse> & { path: string }> = [];
+  for (const path of bodyPaths) {
+    const body = parse(path);
+    if (body) bodies.push({ ...body, path });
+  }
+  if (!bodies.length) return archive;
+
+  const byId = (parent: Element, ns: string, name: string, id: string) =>
+    new Map(childElements(parent, ns, name).map((node) => [node.getAttributeNS(ns, id) ?? "", node]));
+  const n = numbering.w;
+  const abstracts = byId(numbering.root, n, "abstractNum", "abstractNumId");
+  const nums = byId(numbering.root, n, "num", "numId");
+  const styles = related("styles");
+  const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
+  const defaultParagraphStyleId = styles
+    ? childElements(styles.root, styles.w, "style")
+        .find(
+          (style) =>
+            style.getAttributeNS(styles.w, "type") === "paragraph" &&
+            !["", "0", "false", "off"].includes(style.getAttributeNS(styles.w, "default") ?? ""),
+        )
+        ?.getAttributeNS(styles.w, "styleId") ?? undefined
+    : undefined;
+  const styleNumberValue = (id: string | undefined, name: string, depth = 0): string | undefined => {
+    const style = id === undefined ? undefined : styleById.get(id);
+    if (!style || depth > 20) return undefined;
+    const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
+    const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
+    return wordValue(numPr, name) ?? styleNumberValue(wordValue(style, "basedOn"), name, depth + 1);
+  };
+  const abstractFor = (num: Element | undefined): Element | undefined => {
+    let id = wordValue(num, "abstractNumId");
+    const seen = new Set<string>();
+    while (id !== undefined && !seen.has(id) && seen.size <= 20) {
+      seen.add(id);
+      const abstract = abstracts.get(id);
+      if (!abstract) return undefined;
+      const linkedStyle = wordValue(abstract, "numStyleLink");
+      if (linkedStyle === undefined) return abstract;
+      const linkedNum = nums.get(styleNumberValue(linkedStyle, "numId") ?? "");
+      id = wordValue(linkedNum, "abstractNumId");
+    }
+    return undefined;
+  };
+  const restartsAfterSection = (abstract: Element | undefined) => {
+    const value = abstract?.getAttributeNS(
+      "http://schemas.microsoft.com/office/word/2012/wordml",
+      "restartNumberingAfterBreak",
+    );
+    return Boolean(value) && !["0", "false", "off"].includes(value ?? "");
+  };
+  const numRestartsAfterSection = (num: Element | undefined) =>
+    restartsAfterSection(abstracts.get(wordValue(num, "abstractNumId") ?? "")) ||
+    restartsAfterSection(abstractFor(num));
+
+  const rewritten: Record<string, Uint8Array> = {};
+  for (const body of bodies) {
+    const counters = new Map<string, Array<number | undefined>>();
+    const { doc, w } = body;
+    const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
+    let found = false;
+    let afterSectionBreak = false;
+    for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+      if (afterSectionBreak) {
+        for (const key of counters.keys()) {
+          if (numRestartsAfterSection(nums.get(key.slice(4)))) counters.delete(key);
+        }
+      }
+      const pPr = childElements(p, w, "pPr")[0];
+      afterSectionBreak = Boolean(pPr && childElements(pPr, w, "sectPr").length);
+      const removed = ["del", "moveFrom"].some((name) => p.getElementsByTagNameNS(w, name).length);
+      const hasAcceptedContent = (node: Element): boolean => {
+        for (const item of Array.from(node.childNodes)) {
+          const child = item as Element;
+          if (!child.localName) continue;
+          if (child === pPr) continue;
+          if (child.namespaceURI === w && ["del", "moveFrom"].includes(child.localName)) continue;
+          if (
+            child.namespaceURI === w &&
+            [
+              "t",
+              "tab",
+              "br",
+              "cr",
+              "drawing",
+              "object",
+              "pict",
+              "sym",
+              "noBreakHyphen",
+              "softHyphen",
+              "footnoteReference",
+              "endnoteReference",
+            ].includes(
+              child.localName,
+            )
+          ) {
+            return true;
+          }
+          if (hasAcceptedContent(child)) return true;
+        }
+        return false;
+      };
+      if (removed && !hasAcceptedContent(p)) continue;
+      const direct = pPr && childElements(pPr, w, "numPr")[0];
+      const styleId = wordValue(pPr, "pStyle") ?? defaultParagraphStyleId;
+      const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
+      const num = numId === undefined ? undefined : nums.get(numId);
+      const abstract = abstractFor(num);
+      if (!num || !abstract) continue;
+      const overrides = childElements(num, n, "lvlOverride");
+      const level = (index: number) => {
+        const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
+        const override = overrides.find(matches);
+        const abstractLevel = childElements(abstract, n, "lvl").find(matches);
+        const lvl = (override && childElements(override, n, "lvl")[0]) ?? abstractLevel;
+        const parsedStart = Number(wordValue(override, "startOverride") ?? wordValue(abstractLevel, "start") ?? 0);
+        const start = Number.isSafeInteger(parsedStart) && parsedStart >= 0 ? parsedStart : 0;
+        const parsedRestart = Number(wordValue(abstractLevel, "lvlRestart") ?? index);
+        const restart = Number.isInteger(parsedRestart) && parsedRestart >= 0 ? parsedRestart : index;
+        return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
+      };
+      let styleLevel: number | undefined;
+      for (let index = 0; styleId !== undefined && index <= 8; index++) {
+        if (wordValue(level(index).lvl, "pStyle") === styleId) {
+          styleLevel = index;
+          break;
+        }
+      }
+      const ilvl = Number(
+        wordValue(direct, "ilvl") ?? styleLevel ?? styleNumberValue(styleId, "ilvl") ?? 0,
+      );
+      if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
+      const { lvl, format } = level(ilvl);
+      if (!lvl) continue;
+      const key = `num:${numId}`;
+      const counts = counters.get(key) ?? [];
+      for (let i = ilvl + 1; i < counts.length; i++) {
+        const restart = level(i).restart;
+        if (restart > 0 && ilvl < restart) counts[i] = undefined;
+      }
+      for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
+      counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
+      counters.set(key, counts);
+      if (format === "bullet") continue;
+      const legal = childElements(lvl, n, "isLgl").some(
+        (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
+      );
+      let complete = true;
+      const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
+        const index = Number(digit) - 1;
+        if (index > ilvl) {
+          complete = false;
+          return "";
+        }
+        const target = level(index);
+        const value = wordListNumber(
+          counts[index] ?? target.start,
+          legal && target.format !== "none" ? "decimal" : target.format,
+        );
+        if (value === undefined) complete = false;
+        return value ?? "";
+      });
+      if (!complete || !label.trim()) continue;
+      const run = doc.createElementNS(w, tag("r"));
+      const text = doc.createElementNS(w, tag("t"));
+      text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      text.appendChild(doc.createTextNode(`${label} `));
+      run.appendChild(text);
+      p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
+      found = true;
+    }
+    if (found) rewritten[body.path] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  return Object.keys(rewritten).length ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
+}
+
 const DOCX_NOTE_REFERENCE_RE =
   /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
@@ -1102,7 +1401,7 @@ export function markDocxNotes(archive: Uint8Array): {
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
   const main = resolve(
-    targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE),
+    docxRelationshipTargets(targetsOf(""), "officeDocument"),
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
   const mainTargets = targetsOf(main);
@@ -1120,7 +1419,7 @@ export function markDocxNotes(archive: Uint8Array): {
   for (const [kind, notes] of Object.entries(kinds)) {
     const xml = read(
       resolve(
-        mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${kind}s`),
+        docxRelationshipTargets(mainTargets, `${kind}s`),
         `word/${kind}s.xml`,
       ),
     );
@@ -1579,7 +1878,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
-  const marked = markDocxNotes(linearizeDocxMath(repacked));
+  const marked = markDocxNotes(writeDocxListNumbers(linearizeDocxMath(repacked)));
   const { value } = await mammoth.extractRawText({
     arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(marked.archive))),
   });
@@ -1767,7 +2066,7 @@ function collectHtmlBlockText(
     for (let i = slots.length; i < covered.length; i++) {
       if (covered[i] > 0) covered[i]--;
     }
-    // preformatted code keeps its line breaks on the fallback path.
+    // preformatted code needs the normal path to preserve line breaks.
     if (slots.length > 1 && !cells.some(containsPre)) {
       const row = slots
         .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))
@@ -1781,13 +2080,33 @@ function collectHtmlBlockText(
   }
 
   const groupSpans = HTML_ROW_GROUP_TAGS.has(tag) ? [] : rowSpans;
+  const isItem = (child: Node) =>
+    tag === "ol" && child.nodeType === ELEMENT_NODE && (child as Element).tagName.toLowerCase() === "li";
+  const reversed = tag === "ol" && element.getAttribute("reversed") !== null;
+  const start = tag === "ol" ? htmlListInteger(element.getAttribute("start")) : undefined;
+  let number = start ?? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1);
+  const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
   const text = Array.from(element.childNodes)
-    .map((child) => collectHtmlBlockText(child, preformatted, groupSpans))
+    .map((child) => {
+      const inner = collectHtmlBlockText(child, preformatted, groupSpans);
+      if (!isItem(child)) return inner;
+      const value = htmlListInteger((child as Element).getAttribute("value"));
+      if (value !== undefined) number = value;
+      const label = htmlListNumber(number, format);
+      number += reversed ? -1 : 1;
+      return `\n${label}. ${inner.trimStart()}`;
+    })
     .join("");
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
 }
 
 const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
+const HTML_LIST_FORMATS: Record<string, string> = {
+  a: "lowerLetter",
+  A: "upperLetter",
+  i: "lowerRoman",
+  I: "upperRoman",
+};
 
 function containsPre(node: Node): boolean {
   return Array.from(node.childNodes).some(

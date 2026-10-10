@@ -37,6 +37,7 @@ const {
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
   writeDocxBreaksAndCheckboxes,
+  writeDocxListNumbers,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
@@ -800,12 +801,15 @@ test("readAttachmentText refuses an oversized docx part outside word/*.xml", asy
   }
 });
 
-function relationships(entries: Array<[string, string]>): Uint8Array {
+function relationships(
+  entries: Array<[string, string]>,
+  typeNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
+): Uint8Array {
   return strToU8(
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries
       .map(
         ([type, target], index) =>
-          `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}"/>`,
+          `<Relationship Id="rId${index + 1}" Type="${typeNamespace}${type}" Target="${target}"/>`,
       )
       .join("")}</Relationships>`,
   );
@@ -1174,8 +1178,9 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
 
 test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
-  const note = (kind: string, id: number, text: string) =>
-    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const note = (kind: string, id: number, text: string, numbered = false) =>
+    `<w:${kind} w:id="${id}"><w:p>${numbered ? '<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>' : ""}` +
+    `<w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
   const notes = (kind: string, body: string) =>
     strToU8(
       `<w:${kind}s ${w}>` +
@@ -1204,10 +1209,16 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
       "word/_rels/document.xml.rels": relationships([
         ["footnotes", "notes/foot.xml"],
         ["endnotes", "endnotes.xml"],
+        ["numbering", "numbering.xml"],
       ]),
+      "word/numbering.xml": strToU8(
+        `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+          '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+          '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+      ),
       "word/notes/foot.xml": notes(
         "footnote",
-        note("footnote", 1, "Source: LATER") +
+        note("footnote", 1, "Source: LATER", true) +
           note("footnote", 2, "Source: EARLIER") +
           note("footnote", 3, "Source: LOCALLY DECLARED") +
           note("footnote", 4, "Source: DELETED"),
@@ -1215,10 +1226,12 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
       "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
     }),
   );
-  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
-  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
   try {
-    const marked = markDocxNotes(archive);
+    const marked = markDocxNotes(writeDocxListNumbers(archive));
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({
       buffer: Buffer.from(marked.archive),
@@ -1226,11 +1239,11 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
     assert.equal(
       marked.label(value),
       "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
-        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] 1. Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
         "Endnotes\n[i] Source: ENDNOTEBODY",
     );
   } finally {
-    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+    Object.assign(globals, original);
   }
 });
 
@@ -1680,13 +1693,287 @@ test("an html rowspan keeps its full standards-defined range", async () => {
   assert.equal(extracted, ["Group\trow 0", ...labels.map((label) => `\t${label}`)].join("\n\n"));
 });
 
+test("a Word numbered list keeps its numbers", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const w15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"';
+  const lvl = (ilvl: number, format: string, text: string, options = "") =>
+    `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>${options}<w:lvlText w:val="${text}"/></w:lvl>`;
+  const p = (text: string, pPr = "") => `<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const numPr = (numId: number, ilvl = 0) => `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>` +
+        p("Terms") +
+        p("Payment is due within 30 days.", numPr(2)) +
+        p("By bank transfer", numPr(2, 1)) +
+        p("Late payments incur a 2% fee.", numPr(2)) +
+        p("Termination", '<w:pStyle w:val="ListNumber"/>') +
+        p("Restarted", numPr(3)) +
+        p("Bullet", numPr(4)) +
+        p("Independent list", numPr(5)) +
+        p("Level one", numPr(6)) +
+        p("Level two", numPr(6, 1)) +
+        p("Level three", numPr(6, 2)) +
+        p("Level three again", numPr(6, 2)) +
+        p("Next level one", numPr(6)) +
+        p("Next level two", numPr(6, 1)) +
+        p("Continuing level three", numPr(6, 2)) +
+        p("Selective level one", numPr(7)) +
+        p("Selective level two", numPr(7, 1)) +
+        p("Selective level three", numPr(7, 2)) +
+        p("Second selective level two", numPr(7, 1)) +
+        p("Continuing selective level three", numPr(7, 2)) +
+        p("Second selective level one", numPr(7)) +
+        p("Restarted selective level three", numPr(7, 2)) +
+        p("Inherited style numbering", '<w:pStyle w:val="DerivedList"/>') +
+        p("Roman four thousand", numPr(9)) +
+        p("Bounded roman", numPr(10)) +
+        p("Bounded letter", numPr(11)) +
+        p("Unsupported ordinal", numPr(12)) +
+        p("Linked numbering style", numPr(13)) +
+        p("Restart before break", numPr(15)) +
+        p("Continue before break", `${numPr(16)}<w:sectPr/>`) +
+        p("Restart after break", numPr(15)) +
+        p("Continue after break", numPr(16)) +
+        `<w:p><w:pPr>${numPr(17)}<w:rPr><w:del w:id="1" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"/></w:rPr></w:pPr>` +
+        '<w:del w:id="2" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"><w:r><w:delText>Deleted list item</w:delText></w:r></w:del></w:p>' +
+        p("Visible after deletion", numPr(17)) +
+        p("First bullet parent", numPr(18)) +
+        p("First numbered child", numPr(18, 1)) +
+        p("Second bullet parent", numPr(18)) +
+        p("Second numbered child", numPr(18, 1)) +
+        p("Style-associated level", '<w:pStyle w:val="AssociatedList"/>') +
+        p("Invalid deeper placeholder", numPr(21)) +
+        "</w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w} ${w15}>` +
+        `<w:abstractNum w:abstractNumId="1">${lvl(0, "decimal", "%1.")}${lvl(1, "lowerLetter", "(%2)")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="2">${lvl(0, "bullet", "\u2022")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="3">` +
+        lvl(0, "decimal", "%1.") +
+        lvl(1, "lowerLetter", "%1.%2.") +
+        lvl(2, "lowerRoman", "%1.%2.%3.", '<w:lvlRestart w:val="0"/><w:isLgl/>') +
+        "</w:abstractNum>" +
+        `<w:abstractNum w:abstractNumId="4">` +
+        lvl(0, "decimal", "%1.") +
+        lvl(1, "upperLetter", "%1.%2.") +
+        lvl(2, "lowerRoman", "%1.%2.%3.", '<w:lvlRestart w:val="1"/>') +
+        "</w:abstractNum>" +
+        `<w:abstractNum w:abstractNumId="5">${lvl(0, "lowerRoman", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="6">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="7">${lvl(0, "ordinal", "%1.")}</w:abstractNum>` +
+        '<w:abstractNum w:abstractNumId="8"><w:numStyleLink w:val="LinkedNumbering"/></w:abstractNum>' +
+        `<w:abstractNum w:abstractNumId="9">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="10" w15:restartNumberingAfterBreak="1">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="11">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="12">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="13">${lvl(0, "bullet", "•")}${lvl(1, "decimal", "%2.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="14">${lvl(0, "decimal", "%1.")}${lvl(1, "upperLetter", "%1.%2.", '<w:pStyle w:val="AssociatedList"/>')}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="15">${lvl(0, "decimal", "%2.")}${lvl(1, "decimal", "%2.")}</w:abstractNum>` +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="4"><w:abstractNumId w:val="2"/></w:num>' +
+        '<w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>' +
+        '<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>' +
+        '<w:num w:numId="8"><w:abstractNumId w:val="3"/></w:num>' +
+        '<w:num w:numId="9"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="4000"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="10"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1000001"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="11"><w:abstractNumId w:val="6"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="26001"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="12"><w:abstractNumId w:val="7"/></w:num>' +
+        '<w:num w:numId="13"><w:abstractNumId w:val="8"/></w:num>' +
+        '<w:num w:numId="14"><w:abstractNumId w:val="9"/></w:num>' +
+        '<w:num w:numId="15"><w:abstractNumId w:val="10"/></w:num>' +
+        '<w:num w:numId="16"><w:abstractNumId w:val="11"/></w:num>' +
+        '<w:num w:numId="17"><w:abstractNumId w:val="12"/></w:num>' +
+        '<w:num w:numId="18"><w:abstractNumId w:val="13"/></w:num>' +
+        '<w:num w:numId="20"><w:abstractNumId w:val="14"/></w:num>' +
+        '<w:num w:numId="21"><w:abstractNumId w:val="15"/></w:num>' +
+        "</w:numbering>",
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}>` +
+        '<w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="8"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="DerivedList"><w:basedOn w:val="BaseList"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="numbering" w:styleId="LinkedNumbering"><w:pPr><w:numPr><w:numId w:val="14"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="AssociatedList"><w:pPr><w:numPr><w:numId w:val="20"/></w:numPr></w:pPr></w:style>' +
+        "</w:styles>",
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(bytes)))),
+    });
+    assert.equal(
+      value,
+      "Terms\n\n1. Payment is due within 30 days.\n\n(a) By bank transfer\n\n2. Late payments incur a 2% fee.\n\n" +
+        "1. Termination\n\n1. Restarted\n\nBullet\n\n1. Independent list\n\n1. Level one\n\n1.a. Level two\n\n" +
+        "1.1.1. Level three\n\n1.1.2. Level three again\n\n2. Next level one\n\n2.a. Next level two\n\n" +
+        "2.1.3. Continuing level three\n\n1. Selective level one\n\n1.A. Selective level two\n\n" +
+        "1.A.i. Selective level three\n\n1.B. Second selective level two\n\n1.B.ii. Continuing selective level three\n\n" +
+        "2. Second selective level one\n\n2.A.i. Restarted selective level three\n\n1.a. Inherited style numbering\n\n" +
+        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n" +
+        "a. Linked numbering style\n\n1. Restart before break\n\n1. Continue before break\n\n" +
+        "1. Restart after break\n\n2. Continue after break\n\n1. Visible after deletion\n\n" +
+        "First bullet parent\n\n1. First numbered child\n\nSecond bullet parent\n\n1. Second numbered child\n\n" +
+        "1.A. Style-associated level\n\nInvalid deeper placeholder\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a Strict Word numbered list resolves custom part targets", () => {
+  const strict = "http://purl.oclc.org/ooxml/officeDocument/relationships/";
+  const w = "http://purl.oclc.org/ooxml/wordprocessingml/main";
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "custom/main.data"]], strict),
+    "custom/_rels/main.data.rels": relationships([["numbering", "defs/nums.data"]], strict),
+    "custom/main.data": strToU8(
+      `<w:document xmlns:w="${w}"><w:body><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Strict item</w:t></w:r></w:p></w:body></w:document>`,
+    ),
+    "custom/defs/nums.data": strToU8(
+      `<w:numbering xmlns:w="${w}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["custom/main.data"]);
+    assert.match(main, /<w:t xml:space="preserve">1\. <\/w:t>/);
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a numbered paragraph keeps a surviving Word note reference", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const numPr = '<w:numPr><w:numId w:val="1"/></w:numPr>';
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>` +
+        `<w:p><w:pPr>${numPr}</w:pPr><w:del w:id="1"><w:r><w:delText>Removed</w:delText></w:r></w:del>` +
+        '<w:r><w:footnoteReference w:id="1"/></w:r></w:p>' +
+        `<w:p><w:pPr>${numPr}</w:pPr><w:r><w:t>Visible item</w:t></w:r></w:p>` +
+        "</w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+        '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["word/document.xml"]);
+    assert.deepEqual(
+      Array.from(main.matchAll(/<w:t xml:space="preserve">([12]\. )<\/w:t>/g), (match) => match[1]),
+      ["1. ", "2. "],
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("the default Word paragraph style supplies numbering", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([
+      ["numbering", "numbering.xml"],
+      ["styles", "styles.xml"],
+    ]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body><w:p><w:r><w:t>Default one</w:t></w:r></w:p>` +
+        "<w:p><w:r><w:t>Default two</w:t></w:r></w:p></w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+        '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}><w:style w:type="paragraph" w:default="1" w:styleId="Normal">` +
+        '<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style></w:styles>',
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["word/document.xml"]);
+    assert.deepEqual(
+      Array.from(main.matchAll(/<w:t xml:space="preserve">([12]\. )<\/w:t>/g), (match) => match[1]),
+      ["1. ", "2. "],
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html ordered list keeps its numbers", async () => {
+  const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
+    Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
+  const item = (text: string, attributes?: Record<string, string>) =>
+    withAttributes(element("li", textNode(text)), attributes);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("Steps:")),
+        withAttributes(element("ol", textNode("\n  "), item("Build the image"), textNode("\n  "), item("Push the image"))),
+        withAttributes(element("ol", item("five"), item("nine", { value: "9" }), item("ten")), { start: "5" }),
+        withAttributes(element("ol", item("third"), item("second"), item("first")), { reversed: "", type: "I" }),
+        withAttributes(element("ol", item("z"), item("aa"), item("ab")), { start: "26", type: "a" }),
+        withAttributes(element("ol", item("last roman"), item("extended roman"), item("next roman")), {
+          start: "3999",
+          type: "i",
+        }),
+        withAttributes(element("ol", item("parsed start"), item("parsed value", { value: "9x" }), item("next")), {
+          start: "5x",
+        }),
+        element("ul", element("li", textNode("bullet"))),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nz. z\n\naa. aa\n\nab. ab\n\nmmmcmxcix. last roman\n\ni̅v̅. extended roman\n\ni̅v̅i. next roman\n\n5. parsed start\n\n9. parsed value\n\n10. next\n\nbullet",
+  );
+});
+
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");
   assert.equal(attachmentTextLanguage("Chart.YAML", null), "yaml");
   assert.equal(attachmentTextLanguage("page.html", null), "html");
   assert.equal(attachmentTextLanguage("notes.txt", null), null);
   assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
-  // parsed adapter labels keep sent extractions unhighlighted
   assert.equal(
     attachmentTextLanguage(
       "page.html",
