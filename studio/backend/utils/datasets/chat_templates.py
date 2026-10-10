@@ -4,6 +4,7 @@
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
 import json
+import re
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -184,6 +185,30 @@ def _single_text_block(value):
     return value
 
 
+def _function_call_content(value):
+    value = _single_text_block(value)
+    if not isinstance(value, str):
+        return value, None
+
+    reasoning = []
+
+    def _remove_thought(match):
+        thought = match.group(1).strip()
+        if thought:
+            reasoning.append(thought)
+        return ""
+
+    content = re.sub(r"<think>(.*?)</think>", _remove_thought, value, flags = re.DOTALL)
+    tool_calls = re.findall(r"<tool_call>(.*?)</tool_call>", content, flags = re.DOTALL)
+    if tool_calls:
+        outside = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags = re.DOTALL).strip()
+        if outside:
+            reasoning.append(outside)
+        content = tool_calls[0] if len(tool_calls) == 1 else f"[{','.join(tool_calls)}]"
+
+    return content.strip(), "\n".join(reasoning) or None
+
+
 def _sharegpt_tool_turns(conversation):
     turns = []
     pending_calls = []
@@ -200,8 +225,9 @@ def _sharegpt_tool_turns(conversation):
                 call_id, name = pending_calls.pop(0)
                 message.update(name = name, tool_call_id = call_id)
         elif role == "function_call":
+            call_content, reasoning = _function_call_content(message.get("content"))
             try:
-                calls = json.loads(_single_text_block(message.get("content")))
+                calls = json.loads(call_content)
             except (TypeError, ValueError):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]
@@ -226,6 +252,8 @@ def _sharegpt_tool_turns(conversation):
                     "content": None,
                     "tool_calls": tool_calls,
                 }
+                if reasoning:
+                    message["reasoning_content"] = reasoning
             else:
                 pending_calls.clear()
         else:

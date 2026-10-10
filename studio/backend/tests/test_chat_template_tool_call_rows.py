@@ -104,6 +104,17 @@ _VLM_TOOL_TEMPLATE = """
 {%- endfor %}
 """
 
+_REASONING_TOOL_TEMPLATE = """
+{%- for message in messages %}
+{%- if message.role == 'assistant' and message.tool_calls %}
+{{- '<reasoning>' + (message.reasoning_content or '') + '</reasoning>' }}
+{%- for call in message.tool_calls %}{{- '<call>' + call.function.name + ':' + (call.function.arguments | tojson) + '</call>' }}{%- endfor %}
+{%- elif message.role == 'tool' %}{{- '<result>' + message.content + '</result>' }}
+{%- else %}{{- '<' + message.role + '>' + (message.content or '') }}
+{%- endif %}
+{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -386,6 +397,29 @@ def test_vlm_processor_unwraps_sharegpt_tool_text_blocks():
 
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
+    assert '<call>get_weather:{"city": "Paris"}</call>' in text
+    assert '<result>{"temp": 18}</result>' in text
+
+
+@pytest.mark.parametrize(
+    "wrapped_call, reasoning",
+    [
+        (
+            '<think>Check the requested city.</think>{"name":"get_weather","arguments":{"city":"Paris"}}',
+            "Check the requested city.",
+        ),
+        (
+            'Check the requested city.<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>',
+            "Check the requested city.",
+        ),
+    ],
+)
+def test_reasoning_wrapped_sharegpt_function_calls_are_decoded(wrapped_call, reasoning):
+    result = _format_sharegpt([_sharegpt_tool_row(wrapped_call)], _REASONING_TOOL_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert f"<reasoning>{reasoning}</reasoning>" in text
     assert '<call>get_weather:{"city": "Paris"}</call>' in text
     assert '<result>{"temp": 18}</result>' in text
 
