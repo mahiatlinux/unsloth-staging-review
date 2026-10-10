@@ -763,6 +763,18 @@ def test_linked_header_title_keeps_one_exponent(title):
     assert "E=mc^2](/p)" in out
 
 
+def test_unlinked_header_title_keeps_exponent_when_navigation_is_stripped():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "# E=mc^2" in out
+
+
+def test_linked_numeric_superscript_keeps_link_and_exponent():
+    assert html_to_markdown('<p>x<sup><a href="/power">2</a></sup></p>') == "x^[2](/power)"
+
+
 def test_footnote_superscripts_render_unchanged():
     html = (
         '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
@@ -774,6 +786,10 @@ def test_footnote_superscripts_render_unchanged():
 def test_misnested_superscript_does_not_capture_following_text():
     html = "<p><span>10<sup>2</span> times</sup></p>"
     assert html_to_markdown(html) == "10^2 times"
+
+
+def test_truncated_superscript_keeps_exponent():
+    assert html_to_markdown("<article><p>10<sup>2") == "10^2"
 
 
 def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):

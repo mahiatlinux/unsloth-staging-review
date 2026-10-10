@@ -210,6 +210,7 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _PLAIN_SUPERSCRIPT_WORDS = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
+_SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
@@ -496,7 +497,7 @@ class _MarkdownRenderer(HTMLParser):
         # a buffer stack preserves the correct ">" depth for nested blockquotes
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str] | None, int, int, int]] = []
+        self._sup_starts: list[tuple[list[str] | None, int, list[str] | None, int, int]] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """true while an inner side buffer holds content; enclosing buffers must not capture it."""
@@ -558,25 +559,34 @@ class _MarkdownRenderer(HTMLParser):
         return self._out
 
     def _finish_sup(self) -> None:
-        target, start, heading_start, _depth = self._sup_starts.pop()
+        target, start, heading_target, heading_start, _depth = self._sup_starts.pop()
         if target is None or target is not self._emit_target():
             return
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
+        label = link.group("label") if link else shown
         if (
-            not shown
-            or "\n" in shown
-            or shown[0] in "[."
-            or not any(c.isalnum() for c in shown)
-            or shown.lower() in _PLAIN_SUPERSCRIPT_WORDS
+            not label
+            or "\n" in label
+            or label[0] in "[."
+            or not any(c.isalnum() for c in label)
+            or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
         ):
             return
-        exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
+        exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
-        if target is self._link_text_parts and len(self._link_heading_parts) > heading_start:
-            self._link_heading_parts[heading_start:] = [exponent]
+        if heading_target is not None and len(heading_target) > heading_start:
+            heading_target[heading_start:] = [exponent]
+
+    def _finish_current_supers(self) -> None:
+        target = self._emit_target()
+        while self._sup_starts and (
+            self._sup_starts[-1][0] is None or self._sup_starts[-1][0] is target
+        ):
+            self._finish_sup()
 
     def _seg_heading_prose(self) -> int:
         """heading characters the gate reads as prose; ATX headings include ``#`` so score zero."""
@@ -797,7 +807,7 @@ class _MarkdownRenderer(HTMLParser):
         del self._open_tags[index:]
 
     def _finish_supers_from_depth(self, depth: int) -> None:
-        while self._sup_starts and self._sup_starts[-1][3] >= depth:
+        while self._sup_starts and self._sup_starts[-1][4] >= depth:
             self._finish_sup()
 
     def _close_implicit(self, tag: str) -> None:
@@ -834,6 +844,7 @@ class _MarkdownRenderer(HTMLParser):
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
+            self._finish_current_supers()
             frame = self._header_stack.pop()
             if self._header_stack:
                 # nested text must count toward the enclosing header decision
@@ -883,6 +894,7 @@ class _MarkdownRenderer(HTMLParser):
         """Emit every open header unchanged, abandoning the strip."""
         while self._header_stack:
             self._finalize_nested_buffers(self._header_stack[-1])
+            self._finish_current_supers()
             self._emit("".join(self._header_stack.pop().parts))
 
     def _count_header_text(self, text: str) -> None:
@@ -1029,11 +1041,22 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "sup":
             target = self._emit_target()
             reference = "reference" in (attr_dict.get("class") or "").split()
+            heading_target = None
+            if self._heading_marks:
+                frame = self._header_stack[-1] if self._header_stack else None
+                if frame is not None:
+                    nested_link = self._in_link and self._link_seq != frame.outer_link_seq
+                    heading_target = (
+                        self._link_heading_parts if nested_link else frame.heading_parts
+                    )
+                elif self._in_link:
+                    heading_target = self._link_heading_parts
             self._sup_starts.append(
                 (
                     None if reference else target,
                     len(target),
-                    len(self._link_heading_parts),
+                    heading_target,
+                    len(heading_target) if heading_target is not None else 0,
                     len(self._open_tags) - 1,
                 )
             )
@@ -1225,12 +1248,15 @@ class _MarkdownRenderer(HTMLParser):
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        self._finish_current_supers()
         # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
         # still be open here; it is finalized below.
         self._flush_header_frames()
+        self._finish_current_supers()
 
         if self._in_link:
             self._finish_link()
+            self._finish_current_supers()
 
         while self._inline_code_depth:
             self._inline_code_depth -= 1
@@ -1238,11 +1264,14 @@ class _MarkdownRenderer(HTMLParser):
 
         while self._table_stack:
             self._finish_table()
+            self._finish_current_supers()
         self._finish_cell()
         self._finish_row()
+        self._finish_current_supers()
 
         if self._in_pre:
             self._drain_pre()
+            self._finish_current_supers()
 
         while self._bq_stack:
             content = "".join(self._bq_stack.pop())
@@ -1253,6 +1282,9 @@ class _MarkdownRenderer(HTMLParser):
                 self._bq_stack[-1].append("\n\n" + prefixed + "\n\n")
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
+            self._finish_current_supers()
+
+        self._finish_current_supers()
 
         # A scope left open by truncated HTML never reached _exit_tag, so its output never joined scope_segments and
         # would score 0. Flush the still-open segment here (after the side-buffers) so a truncated main-content page is
