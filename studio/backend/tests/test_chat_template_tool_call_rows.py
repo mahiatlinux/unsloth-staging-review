@@ -424,6 +424,21 @@ def test_reasoning_wrapped_sharegpt_function_calls_are_decoded(wrapped_call, rea
     assert '<result>{"temp": 18}</result>' in text
 
 
+@pytest.mark.parametrize("tag", ["think", "tool_call"])
+def test_literal_reasoning_tags_inside_tool_arguments_are_preserved(tag):
+    call = json.dumps(
+        {"name": "web_search", "arguments": {"query": f"<{tag}>draft</{tag}>"}}
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert (
+        f'<call>web_search\n{{"query": "<{tag}>draft</{tag}>"}}</call>'
+        in result["dataset"][0]["text"]
+    )
+
+
 def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 

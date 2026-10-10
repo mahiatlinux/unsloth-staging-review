@@ -4,7 +4,6 @@
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
 import json
-import re
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -190,18 +189,51 @@ def _function_call_content(value):
     if not isinstance(value, str):
         return value, None
 
-    reasoning = []
+    content = value.strip()
+    try:
+        json.loads(content)
+    except (TypeError, ValueError):
+        pass
+    else:
+        return content, None
 
-    def _remove_thought(match):
-        thought = match.group(1).strip()
+    reasoning = []
+    while content.startswith("<think>"):
+        end = content.find("</think>", len("<think>"))
+        if end < 0:
+            break
+        thought = content[len("<think>"):end].strip()
         if thought:
             reasoning.append(thought)
-        return ""
+        content = content[end + len("</think>"):].strip()
 
-    content = re.sub(r"<think>(.*?)</think>", _remove_thought, value, flags = re.DOTALL)
-    tool_calls = re.findall(r"<tool_call>(.*?)</tool_call>", content, flags = re.DOTALL)
+    tool_calls = []
+    outside = []
+    cursor = 0
+    while True:
+        start = content.find("<tool_call>", cursor)
+        if start < 0:
+            outside.append(content[cursor:])
+            break
+        outside.append(content[cursor:start])
+        payload_start = start + len("<tool_call>")
+        end = content.find("</tool_call>", payload_start)
+        while end >= 0:
+            candidate = content[payload_start:end].strip()
+            try:
+                json.loads(candidate)
+            except (TypeError, ValueError):
+                end = content.find("</tool_call>", end + 1)
+                continue
+            tool_calls.append(candidate)
+            cursor = end + len("</tool_call>")
+            break
+        else:
+            tool_calls = []
+            break
+
     if tool_calls:
-        outside = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags = re.DOTALL).strip()
+        outside = "".join(outside).strip()
         if outside:
             reasoning.append(outside)
         content = tool_calls[0] if len(tool_calls) == 1 else f"[{','.join(tool_calls)}]"
