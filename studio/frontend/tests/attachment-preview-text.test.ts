@@ -1831,12 +1831,12 @@ test("a Strict Word numbered list resolves custom part targets", () => {
   const w = "http://purl.oclc.org/ooxml/wordprocessingml/main";
   const bytes = zipSync({
     "[Content_Types].xml": strToU8("<Types/>"),
-    "_rels/.rels": relationships([["officeDocument", "custom/main.xml"]], strict),
-    "custom/_rels/main.xml.rels": relationships([["numbering", "defs/nums.xml"]], strict),
-    "custom/main.xml": strToU8(
+    "_rels/.rels": relationships([["officeDocument", "custom/main.data"]], strict),
+    "custom/_rels/main.data.rels": relationships([["numbering", "defs/nums.data"]], strict),
+    "custom/main.data": strToU8(
       `<w:document xmlns:w="${w}"><w:body><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Strict item</w:t></w:r></w:p></w:body></w:document>`,
     ),
-    "custom/defs/nums.xml": strToU8(
+    "custom/defs/nums.data": strToU8(
       `<w:numbering xmlns:w="${w}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
     ),
   });
@@ -1846,8 +1846,44 @@ test("a Strict Word numbered list resolves custom part targets", () => {
   globals.DOMParser = XmlDomParser;
   globals.XMLSerializer = XmlSerializer;
   try {
-    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["custom/main.xml"]);
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["custom/main.data"]);
     assert.match(main, /<w:t xml:space="preserve">1\. <\/w:t>/);
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a numbered paragraph keeps a surviving Word note reference", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const numPr = '<w:numPr><w:numId w:val="1"/></w:numPr>';
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>` +
+        `<w:p><w:pPr>${numPr}</w:pPr><w:del w:id="1"><w:r><w:delText>Removed</w:delText></w:r></w:del>` +
+        '<w:r><w:footnoteReference w:id="1"/></w:r></w:p>' +
+        `<w:p><w:pPr>${numPr}</w:pPr><w:r><w:t>Visible item</w:t></w:r></w:p>` +
+        "</w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+        '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["word/document.xml"]);
+    assert.deepEqual(
+      Array.from(main.matchAll(/<w:t xml:space="preserve">([12]\. )<\/w:t>/g), (match) => match[1]),
+      ["1. ", "2. "],
+    );
   } finally {
     Object.assign(globals, original);
   }

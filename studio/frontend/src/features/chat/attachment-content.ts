@@ -1119,15 +1119,44 @@ function wordValue(node: Element | undefined, name: string): string | undefined 
 }
 
 export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
-  const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
+  const names = new Set<string>();
+  const relationshipParts = unzipSync(archive, {
+    filter: (entry) => {
+      names.add(entry.name);
+      return entry.name === DOCX_PACKAGE_RELATIONSHIPS || /\.rels$/i.test(entry.name);
+    },
+  });
   const resolve = (targets: string[] | undefined, fallback: string) =>
-    targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
-  const packageTargets = readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "");
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const packageTargets = readDocxXmlTargets(
+    relationshipParts[DOCX_PACKAGE_RELATIONSHIPS],
+    "",
+  );
   const main = resolve(
     docxRelationshipTargets(packageTargets, "officeDocument"),
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
-  const targets = readDocxXmlTargets(parts[docxRelationshipsPath(main)], main.slice(0, Math.max(0, main.lastIndexOf("/"))));
+  const targets = readDocxXmlTargets(
+    relationshipParts[docxRelationshipsPath(main)],
+    main.slice(0, Math.max(0, main.lastIndexOf("/"))),
+  );
+  const relatedPath = (name: string) =>
+    resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`);
+  const bodyPaths = new Set([
+    main,
+    ...["footnotes", "endnotes"].map(relatedPath),
+  ]);
+  const selectedPaths = new Set([
+    ...bodyPaths,
+    relatedPath("numbering"),
+    relatedPath("styles"),
+  ]);
+  const parts = {
+    ...relationshipParts,
+    ...unzipSync(archive, {
+      filter: (entry) => selectedPaths.has(entry.name),
+    }),
+  };
   const parse = (path: string) => {
     const bytes = Object.hasOwn(parts, path) ? parts[path] : undefined;
     if (!bytes) return null;
@@ -1137,15 +1166,9 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     return { doc, root, w: root.namespaceURI ?? "" };
   };
   const related = (name: string) =>
-    parse(resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`));
+    parse(relatedPath(name));
   const numbering = related("numbering");
   if (!numbering) return archive;
-  const bodyPaths = new Set([
-    main,
-    ...["footnotes", "endnotes"].map((name) =>
-      resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`),
-    ),
-  ]);
   const bodies: Array<ReturnType<typeof parse> & { path: string }> = [];
   for (const path of bodyPaths) {
     const body = parse(path);
@@ -1216,7 +1239,20 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
           if (child.namespaceURI === w && ["del", "moveFrom"].includes(child.localName)) continue;
           if (
             child.namespaceURI === w &&
-            ["t", "tab", "br", "cr", "drawing", "object", "pict", "sym", "noBreakHyphen", "softHyphen"].includes(
+            [
+              "t",
+              "tab",
+              "br",
+              "cr",
+              "drawing",
+              "object",
+              "pict",
+              "sym",
+              "noBreakHyphen",
+              "softHyphen",
+              "footnoteReference",
+              "endnoteReference",
+            ].includes(
               child.localName,
             )
           ) {
