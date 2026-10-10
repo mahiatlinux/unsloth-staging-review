@@ -506,9 +506,22 @@ def test_heading_link_wrapper_stays_outside_after_a_button_is_discarded():
     assert html_to_markdown(html) == "### *[Title](x)*"
 
 
+def test_shared_button_and_link_wrapper_stays_outside_the_link():
+    html = '<h3><em><button>Info</button><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
 def test_break_between_sibling_buttons_does_not_break_the_selected_title():
     html = "<h3><button>Old</button><br><button>Title</button></h3>"
     assert html_to_markdown(html) == "### Title"
+
+
+def test_nested_heading_prefix_survives_candidate_replacement():
+    html = (
+        "<hgroup><p><button>Category</button></p>"
+        "<h1><button>Title</button></h1></hgroup>"
+    )
+    assert html_to_markdown(html) == "# Title"
 
 
 def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():

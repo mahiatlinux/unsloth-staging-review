@@ -1189,6 +1189,14 @@ class _MarkdownRenderer(HTMLParser):
 
         if not self._enter_tag(tag, attr_dict):
             return
+        if (
+            self._heading_button_parts is not None
+            and self._heading_button_mark is None
+            and self._heading_button_owner_mark is not None
+            and self._heading_marks
+            and self._heading_button_owner_mark != self._heading_marks[-1]
+        ):
+            self._stash_heading_button()
         if heading_button:
             self._heading_button_parts = []
             self._heading_button_trailing_parts = []
@@ -1221,9 +1229,15 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            self._link_outer_prefix = "".join(
-                part for _, part in self._heading_pending_inline
-            )
+            outer_parts: list[str] = []
+            if self._heading_candidate_inline and self._heading_button_parts is not None:
+                outer_parts.extend(self._heading_candidate_inline.values())
+                self._heading_button_parts.extend(
+                    reversed(self._heading_candidate_inline.values())
+                )
+                self._heading_candidate_inline = {}
+            outer_parts.extend(part for _, part in self._heading_pending_inline)
+            self._link_outer_prefix = "".join(outer_parts)
             self._heading_pending_inline = []
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
