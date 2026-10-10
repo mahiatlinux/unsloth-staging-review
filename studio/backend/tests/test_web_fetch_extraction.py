@@ -807,6 +807,21 @@ def test_nested_superscript_keeps_mathematical_context():
     assert html_to_markdown("<p>x<sup>y<sup>2</sup></sup></p>") == "x^(y^2)"
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("<p><sup>1</sup> Department of Physics</p>", "1 Department of Physics"),
+        ("<ul><li><sup>a</sup> University</li></ul>", "* a University"),
+        (
+            "<table><tr><td><sup>1</sup> Department</td></tr></table>",
+            "| 1 Department |\n| --- |",
+        ),
+    ],
+)
+def test_baseless_superscript_stays_a_plain_marker(markup, expected):
+    assert html_to_markdown(markup) == expected
+
+
 def test_long_site_link_before_citation_keeps_visible_context():
     href = "/" + "long-path/" * 30 + "123"
     site_links = SiteLinks("https://example.com/article")

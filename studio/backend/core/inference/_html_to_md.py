@@ -642,6 +642,7 @@ class _MarkdownRenderer(HTMLParser):
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
+        adjacent_base = bool(prefix and not prefix[-1].isspace())
         prefix = prefix.rstrip()
         ordinal_prefix = prefix[:-1] if prefix.endswith(".") else prefix
         ordinal = bool(
@@ -677,6 +678,7 @@ class _MarkdownRenderer(HTMLParser):
             or "\n" in label
             or label[0] in "[."
             or not any(c.isalnum() for c in label)
+            or not adjacent_base
             or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
             or ordinal
             or prose_reference
@@ -714,8 +716,6 @@ class _MarkdownRenderer(HTMLParser):
             snippet = snippet[-(limit + 96) :]
             if self._site_links is not None and not marked:
                 snippet = self._site_links.clean(snippet)
-            if not tail:
-                snippet = snippet.rstrip()
             if not snippet:
                 continue
             tail = snippet[-(limit - len(tail)) :] + tail
