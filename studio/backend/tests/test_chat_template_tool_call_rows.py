@@ -58,6 +58,13 @@ _DEEPSEEK_TEMPLATE = """
 {%- endfor %}
 """
 
+_CATALOG_DEEPSEEK_TEMPLATE = (
+    "{%- if tools %}{%- for tool in tools %}"
+    "{{- '<catalog>' + tool.function.name + '</catalog>' }}"
+    "{%- endfor %}{%- endif %}"
+    + _DEEPSEEK_TEMPLATE
+)
+
 _MISTRAL_TOOL_ID_TEMPLATE = """
 {%- for message in messages %}
 {%- if message.role == 'assistant' and message.tool_calls %}
@@ -385,6 +392,26 @@ def test_gpt_oss_splits_parallel_calls_before_a_silent_first_call_render():
     assert text.count("<result>") == 2
 
 
+def test_parallel_call_split_does_not_repeat_reasoning():
+    call = '<think>Compare both cities.</think>' + json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"temp": 24}'})
+
+    result = _format_sharegpt(
+        [row], _REASONING_TOOL_TEMPLATE, model_name = "openai/gpt-oss-20b"
+    )
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert text.count("<reasoning>Compare both cities.</reasoning>") == 1
+    assert text.count("<call>get_weather:") == 2
+
+
 def test_vlm_processor_unwraps_sharegpt_tool_text_blocks():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
@@ -436,6 +463,23 @@ def test_content_only_template_preserves_wrapped_tool_reasoning():
     text = result["dataset"][0]["text"]
     assert "Check the requested city." in text
     assert "<function=get_weather>" in text
+
+
+def test_catalog_name_does_not_mask_a_dropped_tool_call():
+    call = (
+        '<think>Check the requested city.</think>'
+        '{"name":"get_weather","arguments":{"city":"Paris"}}'
+    )
+    row = _sharegpt_tool_row(call)
+    row["tools"] = json.dumps(
+        [{"name": "get_weather", "parameters": {"type": "object"}}]
+    )
+
+    result = _format_sharegpt([row], _CATALOG_DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '<call>get_weather\n{"city": "Paris"}</call>' in text
 
 
 @pytest.mark.parametrize("tag", ["think", "tool_call"])

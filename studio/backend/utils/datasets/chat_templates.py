@@ -346,21 +346,55 @@ def _reasoning_content_variant(conversation):
     return variant if changed else None
 
 
-def _tool_reasoning_targets(conversation):
+def _reasoning_targets(conversation):
     reasoning_targets = []
-    tool_targets = []
     for message in conversation:
         if not isinstance(message, dict):
             continue
         reasoning = message.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning:
             reasoning_targets.append(reasoning)
-        for tool_call in message.get("tool_calls") or ():
-            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+    return reasoning_targets
+
+
+def _tool_call_name_probe(conversation):
+    variant = []
+    targets = {}
+    probe_number = 0
+    for message in conversation:
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not calls:
+            variant.append(message)
+            continue
+        probe_calls = []
+        for tool_call in calls:
+            if not isinstance(tool_call, dict):
+                probe_calls.append(tool_call)
+                continue
+            function = tool_call.get("function")
             name = function.get("name") if isinstance(function, dict) else None
             if isinstance(name, str) and name:
-                tool_targets.append(name)
-    return reasoning_targets, tool_targets
+                targets[name] = targets.get(name, 0) + 1
+                function = {**function, "name": f"__unsloth_call_probe_{probe_number}__"}
+                tool_call = {**tool_call, "function": function}
+                probe_number += 1
+            probe_calls.append(tool_call)
+        variant.append({**message, "tool_calls": probe_calls})
+    return variant, targets
+
+
+def _renders_all_tool_calls(tokenizer, rendered, conversation, kwargs):
+    probe, targets = _tool_call_name_probe(conversation)
+    if not targets:
+        return True
+    try:
+        probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+    except Exception:
+        return False
+    return all(
+        rendered.count(name) - probe_rendered.count(name) >= count
+        for name, count in targets.items()
+    )
 
 
 def _render_conversation(
@@ -391,8 +425,8 @@ def _render_conversation(
     first_error = None
     best_rendered = None
     best_score = -1
-    reasoning_targets, tool_targets = _tool_reasoning_targets(conversation)
-    maximum_score = len(reasoning_targets) + 2 * len(tool_targets)
+    reasoning_targets = _reasoning_targets(conversation)
+    maximum_score = len(reasoning_targets)
     for attempt in attempts:
         try:
             kwargs = {"tokenize": False, "add_generation_prompt": False}
@@ -406,8 +440,11 @@ def _render_conversation(
             continue
         if reasoning_variant is None:
             return rendered
+        if not _renders_all_tool_calls(tokenizer, rendered, attempt, kwargs):
+            if first_error is None:
+                first_error = ValueError("Chat template did not serialize every tool call")
+            continue
         score = sum(target in rendered for target in reasoning_targets)
-        score += 2 * sum(target in rendered for target in tool_targets)
         if score > best_score:
             best_rendered = rendered
             best_score = score
