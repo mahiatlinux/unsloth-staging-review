@@ -375,6 +375,15 @@ def test_overlapping_call_names_do_not_mask_a_dropped_call():
     assert "did not serialize every tool call" in result["errors"][0]
 
 
+def test_probe_marker_does_not_overlap_the_function_name():
+    call = json.dumps({"name": "call", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert "<function=call>" in result["dataset"][0]["text"]
+
+
 def test_sharegpt_function_call_list_trains_every_call():
     call = json.dumps(
         [

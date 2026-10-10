@@ -390,12 +390,17 @@ def _tool_call_name_probes(conversation):
             name = function.get("name") if isinstance(function, dict) else None
             if not isinstance(name, str) or not name:
                 continue
+            marker_character = next(
+                (character for character in "abcdefghijklmnopqrstuvwxyz0123456789_-" if character not in name),
+                "x",
+            )
+            marker = marker_character * (max(32, len(name) + 1) + probe_number)
             probe_calls = list(calls)
             probe_calls[call_number] = {
                 **tool_call,
                 "function": {
                     **function,
-                    "name": f"__unsloth_call_probe_{probe_number}__",
+                    "name": marker,
                 },
             }
             probe = list(conversation)
