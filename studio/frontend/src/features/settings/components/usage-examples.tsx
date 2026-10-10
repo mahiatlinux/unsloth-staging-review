@@ -385,13 +385,24 @@ const CATALOG_RETRY_MS = 15000;
 // touching the store, so residency is never settled for good.
 const CATALOG_IDLE_MS = 60000;
 
-function readUseTunnelPref(): boolean {
+/** Whether the API tab offers the tunnel URL, shared with the agent access (MCP) snippet. */
+export function readUseTunnelPref(): boolean {
   if (typeof window === "undefined") return true;
   try {
     return window.localStorage.getItem(USE_TUNNEL_KEY) !== "false";
   } catch {
     return true;
   }
+}
+
+// The agent access (MCP) section reads the same preference, so a toggle here must reach it.
+const useTunnelListeners = new Set<() => void>();
+
+export function subscribeUseTunnelPref(listener: () => void): () => void {
+  useTunnelListeners.add(listener);
+  return () => {
+    useTunnelListeners.delete(listener);
+  };
 }
 
 function writeUseTunnelPref(value: boolean): void {
@@ -401,6 +412,7 @@ function writeUseTunnelPref(value: boolean): void {
   } catch {
     // Non-fatal
   }
+  for (const listener of useTunnelListeners) listener();
 }
 
 // A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
