@@ -631,17 +631,21 @@ class _MarkdownRenderer(HTMLParser):
             return self._bq_stack[-1]
         return self._out
 
-    def _finish_sup(self) -> None:
+    def _finish_sup(self) -> bool:
         target, start, heading_target, heading_start, prefix, math_context, _depth = (
-            self._sup_starts.pop()
+            self._sup_starts[-1]
         )
-        if target is None or target is not self._emit_target():
-            return
+        if target is not None and target is not self._emit_target():
+            return False
+        self._sup_starts.pop()
+        if target is None:
+            return True
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
+        bracketed_reference = re.fullmatch(r"\[[^\]\n]+\]", shown) is not None
         adjacent_base = bool(prefix and not prefix[-1].isspace())
         prefix = prefix.rstrip()
         ordinal_prefix = prefix[:-1] if prefix.endswith(".") else prefix
@@ -669,6 +673,7 @@ class _MarkdownRenderer(HTMLParser):
         numeric_prose_reference = bool(
             marker
             and number_base
+            and re.fullmatch(r"\d{4}", number_base.group())
             and number_base.start() > 0
             and prefix[number_base.start() - 1].isspace()
             and numeric_word
@@ -677,7 +682,8 @@ class _MarkdownRenderer(HTMLParser):
         if (
             not label
             or "\n" in label
-            or label[0] in "[."
+            or label.startswith(".")
+            or bracketed_reference
             or not any(c.isalnum() for c in label)
             or not adjacent_base
             or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
@@ -685,19 +691,21 @@ class _MarkdownRenderer(HTMLParser):
             or prose_reference
             or numeric_prose_reference
         ):
-            return
+            return True
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         if heading_target is not None and len(heading_target) > heading_start:
             heading_target[heading_start:] = [exponent]
+        return True
 
     def _finish_current_supers(self) -> None:
         target = self._emit_target()
         while self._sup_starts and (
             self._sup_starts[-1][0] is None or self._sup_starts[-1][0] is target
         ):
-            self._finish_sup()
+            if not self._finish_sup():
+                break
 
     def _visible_tail(
         self,
@@ -945,7 +953,8 @@ class _MarkdownRenderer(HTMLParser):
 
     def _finish_supers_from_depth(self, depth: int) -> None:
         while self._sup_starts and self._sup_starts[-1][6] >= depth:
-            self._finish_sup()
+            if not self._finish_sup():
+                break
 
     def _close_implicit(self, tag: str) -> None:
         """recover HTML5 end tags through inline tags to barriers, including skipped nav/footer."""
@@ -1323,6 +1332,7 @@ class _MarkdownRenderer(HTMLParser):
             if self._header_stack:
                 self._header_stack[-1].link_chars += self._link_header_chars
             self._finish_link()
+            self._finish_supers_from_depth(len(self._open_tags))
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
