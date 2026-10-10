@@ -538,8 +538,11 @@ class _MarkdownRenderer(HTMLParser):
 
         # a buffer stack preserves the correct ">" depth for nested blockquotes
         self._bq_stack: list[list[str]] = []
+        self._last_var_base: bool = False
 
-        self._sup_starts: list[tuple[list[str] | None, int, list[str] | None, int, str, int]] = []
+        self._sup_starts: list[
+            tuple[list[str] | None, int, list[str] | None, int, str, bool, int]
+        ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """true while an inner side buffer holds content; enclosing buffers must not capture it."""
@@ -601,7 +604,9 @@ class _MarkdownRenderer(HTMLParser):
         return self._out
 
     def _finish_sup(self) -> None:
-        target, start, heading_target, heading_start, prefix, _depth = self._sup_starts.pop()
+        target, start, heading_target, heading_start, prefix, math_context, _depth = (
+            self._sup_starts.pop()
+        )
         if target is None or target is not self._emit_target():
             return
         joined = "".join(target[start:])
@@ -616,11 +621,13 @@ class _MarkdownRenderer(HTMLParser):
             and ordinal_prefix[-1].isdigit()
             and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
         )
-        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?"))
+        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~"))
         word = word_match.group(1) if word_match else ""
         numeric_reference = bool(
             _NUMERIC_REFERENCE.fullmatch(label)
             and len(word) > 1
+            and not math_context
+            and not (word.islower() and len(word) <= 3)
             and word.lower() not in _EXPONENT_BASE_WORDS
         )
         if (
@@ -885,7 +892,7 @@ class _MarkdownRenderer(HTMLParser):
         del self._open_tags[index:]
 
     def _finish_supers_from_depth(self, depth: int) -> None:
-        while self._sup_starts and self._sup_starts[-1][5] >= depth:
+        while self._sup_starts and self._sup_starts[-1][6] >= depth:
             self._finish_sup()
 
     def _close_implicit(self, tag: str) -> None:
@@ -1080,6 +1087,8 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if tag != "sup":
+            self._last_var_base = False
 
         if self._skip_depth:
             if tag in _SKIP_TAGS:
@@ -1109,13 +1118,16 @@ class _MarkdownRenderer(HTMLParser):
                 or _FOOTNOTE_FRAGMENT.fullmatch(href) is not None
             )
             if self._sup_starts and self._link_is_noteref:
-                _, start, heading_target, heading_start, prefix, depth = self._sup_starts[-1]
+                _, start, heading_target, heading_start, prefix, math_context, depth = (
+                    self._sup_starts[-1]
+                )
                 self._sup_starts[-1] = (
                     None,
                     start,
                     heading_target,
                     heading_start,
                     prefix,
+                    math_context,
                     depth,
                 )
             self._link_href = href
@@ -1153,9 +1165,11 @@ class _MarkdownRenderer(HTMLParser):
                     heading_target,
                     len(heading_target) if heading_target is not None else 0,
                     self._visible_tail(target),
+                    self._last_var_base or "var" in self._open_tags[:-1],
                     len(self._open_tags) - 1,
                 )
             )
+            self._last_var_base = False
 
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
@@ -1242,7 +1256,10 @@ class _MarkdownRenderer(HTMLParser):
         if not self._exit_tag(tag):
             return
 
-        if tag == "li":
+        if tag == "var":
+            self._last_var_base = True
+
+        elif tag == "li":
             self._li_marker_pending = False
 
         elif tag in _HEADING_TAGS:
@@ -1306,6 +1323,8 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
+        if data:
+            self._last_var_base = False
         if self._in_pre:
             self._count_header_text(data)
             self._pre_parts.append(data)
@@ -1331,6 +1350,7 @@ class _MarkdownRenderer(HTMLParser):
     def handle_entityref(self, name: str) -> None:
         if self._text_suppressed():
             return
+        self._last_var_base = False
         text = html.unescape(f"&{name};")
         self._count_header_text(text)
         self._emit(text)
@@ -1338,6 +1358,7 @@ class _MarkdownRenderer(HTMLParser):
     def handle_charref(self, name: str) -> None:
         if self._text_suppressed():
             return
+        self._last_var_base = False
         text = html.unescape(f"&#{name};")
         self._count_header_text(text)
         self._emit(text)

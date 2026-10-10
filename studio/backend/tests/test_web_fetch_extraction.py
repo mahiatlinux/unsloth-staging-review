@@ -745,6 +745,11 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Conclusion<sup>1,2</sup>, Alice<sup>1-3</sup>", "Conclusion1,2, Alice1-3"),
         ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
         ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
+        ("<var>speed</var><sup>2</sup> and dm<sup>2</sup>", "speed^2 and dm^2"),
+        (
+            "<strong>Alice</strong><sup>2</sup> and <em>Conclusion</em><sup>1</sup>",
+            "**Alice**2 and *Conclusion*1",
+        ),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
