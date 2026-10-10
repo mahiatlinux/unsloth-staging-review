@@ -737,6 +737,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
         ("2<sup>n + 1</sup>", "2^(n + 1)"),
         ("2<sup>n×2</sup>, 3<sup>n·m</sup>, 4<sup>n*2</sup>", "2^(n×2), 3^(n·m), 4^(n*2)"),
+        ("2<sup>2n</sup>, 3<sup>n2</sup>", "2^(2n), 3^(n2)"),
         ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
         ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
         ("Widget<sup>TM</sup> and Service<sup>SM</sup>", "WidgetTM and ServiceSM"),
@@ -756,6 +757,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         (
             '<a href="/Alice_(scientist)">Alice</a><sup>1</sup>',
             "[Alice](/Alice_(scientist))1",
+        ),
+        (
+            "“Claim”<sup>1</sup>, Claim)<sup>1</sup>, (x)<sup>2</sup>",
+            "“Claim”1, Claim)1, (x)^2",
         ),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),

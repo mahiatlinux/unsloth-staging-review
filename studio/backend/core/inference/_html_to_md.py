@@ -218,7 +218,7 @@ _UNIT_BASE = re.compile(
     r"(?:m|g|s|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|S|Wb|T|H|lm|lx|Bq|Gy|Sv|kat|L|l|rad|sr)"
     r"|in|ft|yd|mi)$"
 )
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]")
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
 _NUMERIC_REFERENCE = re.compile(r"^\d+(?:\s*[,;]\s*\d+|\s*[-–—]\s*\d+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
@@ -625,7 +625,7 @@ class _MarkdownRenderer(HTMLParser):
         if prefix_link := _trailing_markdown_link(prefix):
             link_start, link_label = prefix_link
             prefix = prefix[:link_start] + link_label
-        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~"))
+        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~\"')]}»’”"))
         word = word_match.group(1) if word_match else ""
         numeric_reference = bool(
             _NUMERIC_REFERENCE.fullmatch(label)
