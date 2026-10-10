@@ -58,6 +58,25 @@ _DEEPSEEK_TEMPLATE = """
 {%- endfor %}
 """
 
+_MISTRAL_TOOL_ID_TEMPLATE = """
+{%- for message in messages %}
+{%- if message.role == 'assistant' and message.tool_calls %}
+{%- for tool_call in message.tool_calls %}
+{%- if tool_call.id is undefined or tool_call.id | length != 9 %}
+{{- raise_exception('tool call id must be nine characters') }}
+{%- endif %}
+{{- '<call id=' + tool_call.id + '>' + tool_call.function.name + '</call>' }}
+{%- endfor %}
+{%- elif message.role == 'tool' %}
+{%- if message.tool_call_id is undefined %}
+{{- raise_exception('tool result must have a tool call id') }}
+{%- endif %}
+{{- '<result id=' + message.tool_call_id + ' name=' + message.name + '>' + message.content + '</result>' }}
+{%- else %}{{- message.content or '' }}
+{%- endif %}
+{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -275,6 +294,26 @@ def test_sharegpt_function_call_list_trains_every_call():
     assert "<parameter=city>\nParis\n</parameter>" in text
     assert "<parameter=city>\nRome\n</parameter>" in text
     assert '<|im_start|>tool\n{"temp": 18}' in text
+
+
+def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert '<call>get_weather\n{"city": "Paris"}</call>' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _MISTRAL_TOOL_ID_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "<call id=call00000>get_weather</call>" in text
+    assert '<result id=call00000 name=get_weather>{"temp": 18}</result>' in text
 
 
 def test_sharegpt_function_call_that_is_not_json_is_kept_as_written():

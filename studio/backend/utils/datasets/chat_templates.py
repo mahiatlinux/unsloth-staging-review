@@ -176,10 +176,15 @@ def _drop_none_values(value):
 
 def _sharegpt_tool_turns(conversation):
     turns = []
+    pending_calls = []
+    call_number = 0
     for message in conversation:
         role = message.get("role") if isinstance(message, dict) else None
         if role == "observation":
             message = {**message, "role": "tool"}
+            if pending_calls:
+                call_id, name = pending_calls.pop(0)
+                message.update(name = name, tool_call_id = call_id)
         elif role == "function_call":
             try:
                 calls = json.loads(message.get("content"))
@@ -187,20 +192,30 @@ def _sharegpt_tool_turns(conversation):
                 calls = None
             calls = calls if isinstance(calls, list) else [calls]
             if calls and all(isinstance(call, dict) and call.get("name") for call in calls):
+                tool_calls = []
+                for call in calls:
+                    arguments = call.get("arguments", {})
+                    if isinstance(arguments, dict):
+                        arguments = json.dumps(arguments)
+                    call_id = f"call{call_number:05d}"
+                    call_number += 1
+                    tool_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": arguments},
+                        }
+                    )
+                    pending_calls.append((call_id, call["name"]))
                 message = {
                     "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": call["name"],
-                                "arguments": call.get("arguments", {}),
-                            },
-                        }
-                        for call in calls
-                    ],
+                    "content": None,
+                    "tool_calls": tool_calls,
                 }
+            else:
+                pending_calls.clear()
+        else:
+            pending_calls.clear()
         turns.append(message)
     return turns
 
