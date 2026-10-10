@@ -739,6 +739,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
         ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
         ("Widget<sup>TM</sup> and Service<sup>SM</sup>", "WidgetTM and ServiceSM"),
+        ("le 1<sup>er</sup> mai, dans le 2<sup>e</sup>", "le 1er mai, dans le 2e"),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
@@ -788,6 +789,8 @@ def test_footnote_superscripts_render_unchanged():
     [
         '<sup><a role="doc-noteref" href="#fn1">1</a></sup>',
         '<a role="doc-noteref" href="#fn1"><sup>1</sup></a>',
+        '<sup><a href="#fn1">1</a></sup>',
+        '<a href="#fn1"><sup>1</sup></a>',
     ],
 )
 def test_semantic_footnote_link_does_not_become_an_exponent(markup):

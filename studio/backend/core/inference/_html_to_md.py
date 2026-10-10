@@ -208,9 +208,15 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-_PLAIN_SUPERSCRIPT_WORDS = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
+_PLAIN_SUPERSCRIPT_WORDS = frozenset(
+    {"st", "nd", "rd", "th", "tm", "sm", "er", "re", "ere", "ère", "eme", "ème"}
+)
+_ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
+_FOOTNOTE_FRAGMENT = re.compile(
+    r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
+)
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
@@ -568,12 +574,19 @@ class _MarkdownRenderer(HTMLParser):
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
+        prefix = "".join(target[:start]).rstrip()
+        if self._site_links is not None:
+            prefix = self._site_links.clean(prefix)
+        ordinal = bool(
+            prefix and prefix[-1].isdigit() and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
+        )
         if (
             not label
             or "\n" in label
             or label[0] in "[."
             or not any(c.isalnum() for c in label)
             or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
+            or ordinal
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
@@ -1027,11 +1040,15 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            self._link_is_noteref = "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+            href = attr_dict.get("href") or ""
+            self._link_is_noteref = (
+                "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+                or _FOOTNOTE_FRAGMENT.fullmatch(href) is not None
+            )
             if self._sup_starts and self._link_is_noteref:
                 _, start, heading_target, heading_start, depth = self._sup_starts[-1]
                 self._sup_starts[-1] = (None, start, heading_target, heading_start, depth)
-            self._link_href = attr_dict.get("href")
+            self._link_href = href
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
