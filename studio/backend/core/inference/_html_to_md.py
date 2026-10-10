@@ -212,7 +212,41 @@ _PLAIN_SUPERSCRIPT_WORDS = frozenset(
     {"st", "nd", "rd", "th", "tm", "sm", "er", "re", "ere", "ère", "eme", "ème"}
 )
 _ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
+_EXPONENT_BASE_WORDS = frozenset(
+    {
+        "cm",
+        "cos",
+        "ft",
+        "ghz",
+        "hz",
+        "in",
+        "km",
+        "khz",
+        "ln",
+        "log",
+        "m",
+        "mc",
+        "mhz",
+        "mi",
+        "mm",
+        "mol",
+        "mpa",
+        "ms",
+        "nm",
+        "ns",
+        "pa",
+        "pm",
+        "s",
+        "sin",
+        "tan",
+        "um",
+        "us",
+        "yd",
+        "µm",
+        "μm",
+    }
+)
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
@@ -504,7 +538,7 @@ class _MarkdownRenderer(HTMLParser):
         # a buffer stack preserves the correct ">" depth for nested blockquotes
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str] | None, int, list[str] | None, int, int]] = []
+        self._sup_starts: list[tuple[list[str] | None, int, list[str] | None, int, str, int]] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """true while an inner side buffer holds content; enclosing buffers must not capture it."""
@@ -566,7 +600,7 @@ class _MarkdownRenderer(HTMLParser):
         return self._out
 
     def _finish_sup(self) -> None:
-        target, start, heading_target, heading_start, _depth = self._sup_starts.pop()
+        target, start, heading_target, heading_start, prefix, _depth = self._sup_starts.pop()
         if target is None or target is not self._emit_target():
             return
         joined = "".join(target[start:])
@@ -574,11 +608,14 @@ class _MarkdownRenderer(HTMLParser):
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
-        prefix = "".join(target[:start]).rstrip()
-        if self._site_links is not None:
-            prefix = self._site_links.clean(prefix)
+        prefix = prefix.rstrip()
         ordinal = bool(
             prefix and prefix[-1].isdigit() and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
+        )
+        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?"))
+        word = word_match.group(1) if word_match else ""
+        numeric_reference = bool(
+            label.isdigit() and len(word) > 1 and word.lower() not in _EXPONENT_BASE_WORDS
         )
         if (
             not label
@@ -587,6 +624,7 @@ class _MarkdownRenderer(HTMLParser):
             or not any(c.isalnum() for c in label)
             or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
             or ordinal
+            or numeric_reference
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
@@ -601,6 +639,25 @@ class _MarkdownRenderer(HTMLParser):
             self._sup_starts[-1][0] is None or self._sup_starts[-1][0] is target
         ):
             self._finish_sup()
+
+    def _visible_tail(
+        self,
+        target: list[str],
+        limit: int = 64,
+    ) -> str:
+        tail = ""
+        for part in reversed(target):
+            snippet = part[-(limit + 96) :]
+            if self._site_links is not None:
+                snippet = self._site_links.clean(snippet)
+            if not tail:
+                snippet = snippet.rstrip()
+            if not snippet:
+                continue
+            tail = snippet[-(limit - len(tail)) :] + tail
+            if len(tail) >= limit:
+                break
+        return tail
 
     def _seg_heading_prose(self) -> int:
         """heading characters the gate reads as prose; ATX headings include ``#`` so score zero."""
@@ -822,7 +879,7 @@ class _MarkdownRenderer(HTMLParser):
         del self._open_tags[index:]
 
     def _finish_supers_from_depth(self, depth: int) -> None:
-        while self._sup_starts and self._sup_starts[-1][4] >= depth:
+        while self._sup_starts and self._sup_starts[-1][5] >= depth:
             self._finish_sup()
 
     def _close_implicit(self, tag: str) -> None:
@@ -1046,8 +1103,15 @@ class _MarkdownRenderer(HTMLParser):
                 or _FOOTNOTE_FRAGMENT.fullmatch(href) is not None
             )
             if self._sup_starts and self._link_is_noteref:
-                _, start, heading_target, heading_start, depth = self._sup_starts[-1]
-                self._sup_starts[-1] = (None, start, heading_target, heading_start, depth)
+                _, start, heading_target, heading_start, prefix, depth = self._sup_starts[-1]
+                self._sup_starts[-1] = (
+                    None,
+                    start,
+                    heading_target,
+                    heading_start,
+                    prefix,
+                    depth,
+                )
             self._link_href = href
             self._link_text_parts = []
             self._link_heading_parts = []
@@ -1082,6 +1146,7 @@ class _MarkdownRenderer(HTMLParser):
                     len(target),
                     heading_target,
                     len(heading_target) if heading_target is not None else 0,
+                    self._visible_tail(target),
                     len(self._open_tags) - 1,
                 )
             )
