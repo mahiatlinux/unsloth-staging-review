@@ -1904,7 +1904,7 @@ function collectHtmlBlockText(
     for (let i = slots.length; i < covered.length; i++) {
       if (covered[i] > 0) covered[i]--;
     }
-    // preformatted code keeps its line breaks on the fallback path.
+    // preformatted code needs the normal path to preserve line breaks.
     if (slots.length > 1 && !cells.some(containsPre)) {
       const row = slots
         .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))

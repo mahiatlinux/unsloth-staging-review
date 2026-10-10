@@ -1814,7 +1814,6 @@ test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("page.html", null), "html");
   assert.equal(attachmentTextLanguage("notes.txt", null), null);
   assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
-  // parsed adapter labels keep sent extractions unhighlighted
   assert.equal(
     attachmentTextLanguage(
       "page.html",
