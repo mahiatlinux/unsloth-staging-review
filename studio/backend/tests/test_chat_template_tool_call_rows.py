@@ -72,7 +72,7 @@ _MISTRAL_TOOL_ID_TEMPLATE = """
 {%- if tool_call.id is undefined or tool_call.id | length != 9 %}
 {{- raise_exception('tool call id must be nine characters') }}
 {%- endif %}
-{{- '<call id=' + tool_call.id + '>' + tool_call.function.name + '</call>' }}
+{{- '<call id=' + tool_call.id + '>' + tool_call.function.name + ':' + (tool_call.function.arguments | tojson) + '</call>' }}
 {%- endfor %}
 {%- elif message.role == 'tool' %}
 {%- if message.tool_call_id is undefined %}
@@ -90,7 +90,7 @@ _TOOLS_TEMPLATE = """
 {%- endif %}
 {%- for message in messages %}
 {{- '<' + message.role + '>' + (message.content or '') }}
-{%- for call in message.tool_calls or [] %}{{- '<call>' + call.function.name + '</call>' }}{%- endfor %}
+{%- for call in message.tool_calls or [] %}{{- '<call>' + call.function.name + ':' + (call.function.arguments | tojson) + '</call>' }}{%- endfor %}
 {%- endfor %}
 """
 
@@ -265,8 +265,11 @@ def test_null_content_is_dropped_before_the_row_as_loaded_is_tried():
     )
     null_content = _tool_call_row('{"city": "Paris"}')
     null_content[1]["content"] = None
+    null_content[1]["tool_calls"][0]["function"]["arguments"] = {}
+    empty_content = _tool_call_row('{"city": "Paris"}')
+    empty_content[1]["tool_calls"][0]["function"]["arguments"] = {}
 
-    result = _format([null_content, _tool_call_row('{"city": "Paris"}')], template)
+    result = _format([null_content, empty_content], template)
 
     assert result["dataset"]["text"] == [
         "[Weather in Paris?]-<call>get_weather</call>[21C][It is 21C in Paris.]",
@@ -345,6 +348,20 @@ def test_template_that_ignores_tool_calls_drops_the_row():
         "{{- '<' + message.role + '>' + (message.content or '') }}"
         "{%- endfor %}"
     )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], template)
+
+    assert result["success"] is False
+    assert "did not serialize every tool call" in result["errors"][0]
+
+
+def test_template_that_drops_nonempty_arguments_drops_the_row():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    template = """
+{%- for message in messages %}
+{%- for call in message.tool_calls or [] %}{{- '<call>' + call.function.name + '</call>' }}{%- endfor %}
+{%- endfor %}
+"""
 
     result = _format_sharegpt([_sharegpt_tool_row(call)], template)
 
@@ -664,7 +681,7 @@ def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():
 
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
-    assert "<call id=call00000>get_weather</call>" in text
+    assert '<call id=call00000>get_weather:{"city": "Paris"}</call>' in text
     assert '<result id=call00000 name=get_weather>{"temp": 18}</result>' in text
 
 

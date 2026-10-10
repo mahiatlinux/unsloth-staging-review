@@ -378,7 +378,24 @@ def _reasoning_render_score(tokenizer, rendered, conversation, kwargs):
     )
 
 
-def _tool_call_name_probes(conversation):
+def _probe_marker(value, probe_number):
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii = False, sort_keys = True)
+    marker_character = next(
+        (character for character in "abcdefghijklmnopqrstuvwxyz0123456789_-" if character not in text),
+        "x",
+    )
+    return marker_character * (max(32, len(text) + 1) + probe_number)
+
+
+def _replace_argument_values(value, marker):
+    if isinstance(value, dict):
+        return {key: _replace_argument_values(item, marker) for key, item in value.items()} or marker
+    if isinstance(value, list):
+        return [_replace_argument_values(item, marker) for item in value] or marker
+    return marker
+
+
+def _tool_call_probes(conversation):
     probes = []
     probe_number = 0
     for message_number, message in enumerate(conversation):
@@ -390,11 +407,7 @@ def _tool_call_name_probes(conversation):
             name = function.get("name") if isinstance(function, dict) else None
             if not isinstance(name, str) or not name:
                 continue
-            marker_character = next(
-                (character for character in "abcdefghijklmnopqrstuvwxyz0123456789_-" if character not in name),
-                "x",
-            )
-            marker = marker_character * (max(32, len(name) + 1) + probe_number)
+            marker = _probe_marker(name, probe_number)
             probe_calls = list(calls)
             probe_calls[call_number] = {
                 **tool_call,
@@ -405,18 +418,37 @@ def _tool_call_name_probes(conversation):
             }
             probe = list(conversation)
             probe[message_number] = {**message, "tool_calls": probe_calls}
-            probes.append((probe, name))
+            probes.append((probe, name, False))
+            probe_number += 1
+            arguments = function.get("arguments")
+            if arguments in (None, "", [], {}):
+                continue
+            marker = _probe_marker(arguments, probe_number)
+            probe_calls = list(calls)
+            probe_calls[call_number] = {
+                **tool_call,
+                "function": {
+                    **function,
+                    "arguments": _replace_argument_values(arguments, marker),
+                },
+            }
+            probe = list(conversation)
+            probe[message_number] = {**message, "tool_calls": probe_calls}
+            probes.append((probe, marker, True))
             probe_number += 1
     return probes
 
 
 def _renders_all_tool_calls(tokenizer, rendered, conversation, kwargs):
-    for probe, name in _tool_call_name_probes(conversation):
+    for probe, target, expect_probe in _tool_call_probes(conversation):
         try:
             probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
         except Exception:
             return False
-        if rendered.count(name) <= probe_rendered.count(name):
+        if expect_probe:
+            if probe_rendered.count(target) <= rendered.count(target):
+                return False
+        elif rendered.count(target) <= probe_rendered.count(target):
             return False
     return True
 
