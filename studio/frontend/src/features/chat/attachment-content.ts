@@ -1054,11 +1054,11 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
-function wordListNumber(n: number, format: string | undefined): string {
-  if (n < 1) return String(n);
-  const lower = format?.startsWith("lower");
-  if (lower || format?.startsWith("upper")) {
-    const roman = format!.endsWith("Roman");
+function wordListNumber(n: number, format: string | undefined): string | undefined {
+  const lower = format === "lowerLetter" || format === "lowerRoman";
+  const roman = format === "lowerRoman" || format === "upperRoman";
+  if (roman || format === "lowerLetter" || format === "upperLetter") {
+    if (n < 1) return String(n);
     const length = roman ? Math.floor(n / 1000) + 12 : Math.ceil(n / 26);
     const text = length <= 1_000
       ? roman
@@ -1067,7 +1067,9 @@ function wordListNumber(n: number, format: string | undefined): string {
       : String(n);
     return lower ? text : text.toUpperCase();
   }
-  return format === "decimalZero" && n < 10 ? `0${n}` : String(n);
+  if (format === undefined || format === "decimal") return String(n);
+  if (format === "decimalZero") return n >= 1 && n < 10 ? `0${n}` : String(n);
+  return undefined;
 }
 
 function htmlListNumber(n: number, format: string | undefined): string {
@@ -1186,12 +1188,18 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       const legal = childElements(lvl, n, "isLgl").some(
         (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
       );
+      let complete = true;
       const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
         const index = Number(digit) - 1;
         const target = level(index);
-        return wordListNumber(counts[index] ?? target.start, legal && target.format !== "none" ? "decimal" : target.format);
+        const value = wordListNumber(
+          counts[index] ?? target.start,
+          legal && target.format !== "none" ? "decimal" : target.format,
+        );
+        if (value === undefined) complete = false;
+        return value ?? "";
       });
-      if (!label.trim()) continue;
+      if (!complete || !label.trim()) continue;
       const run = doc.createElementNS(w, tag("r"));
       const text = doc.createElementNS(w, tag("t"));
       text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");

@@ -1728,6 +1728,7 @@ test("a Word numbered list keeps its numbers", async () => {
         p("Roman four thousand", numPr(9)) +
         p("Bounded roman", numPr(10)) +
         p("Bounded letter", numPr(11)) +
+        p("Unsupported ordinal", numPr(12)) +
         "</w:body></w:document>",
     ),
     "word/numbering.xml": strToU8(
@@ -1746,6 +1747,7 @@ test("a Word numbered list keeps its numbers", async () => {
         "</w:abstractNum>" +
         `<w:abstractNum w:abstractNumId="5">${lvl(0, "lowerRoman", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="6">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="7">${lvl(0, "ordinal", "%1.")}</w:abstractNum>` +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
@@ -1757,6 +1759,7 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:num w:numId="9"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="4000"/></w:lvlOverride></w:num>' +
         '<w:num w:numId="10"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1000001"/></w:lvlOverride></w:num>' +
         '<w:num w:numId="11"><w:abstractNumId w:val="6"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="26001"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="12"><w:abstractNumId w:val="7"/></w:num>' +
         "</w:numbering>",
     ),
     "word/styles.xml": strToU8(
@@ -1784,7 +1787,7 @@ test("a Word numbered list keeps its numbers", async () => {
         "2.1.3. Continuing level three\n\n1. Selective level one\n\n1.A. Selective level two\n\n" +
         "1.A.i. Selective level three\n\n1.B. Second selective level two\n\n1.B.ii. Continuing selective level three\n\n" +
         "2. Second selective level one\n\n2.A.i. Restarted selective level three\n\n1.a. Inherited style numbering\n\n" +
-        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\n",
+        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n",
     );
   } finally {
     Object.assign(globals, original);
