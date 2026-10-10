@@ -727,6 +727,170 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[[1]](#cite_note-1)" in out
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("2<sup>n×2</sup>, 3<sup>n·m</sup>, 4<sup>n*2</sup>", "2^(n×2), 3^(n·m), 4^(n*2)"),
+        ("2<sup>2n</sup>, 3<sup>n2</sup>", "2^(2n), 3^(n2)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("Widget<sup>TM</sup> and Service<sup>SM</sup>", "WidgetTM and ServiceSM"),
+        ("le 1<sup>er</sup> mai, dans le 2<sup>e</sup>", "le 1er mai, dans le 2e"),
+        ("Conclusion<sup>1</sup>, Alice<sup>2</sup>", "Conclusion1, Alice2"),
+        ("Conclusion<sup>1,2</sup>, Alice<sup>1-3</sup>", "Conclusion1,2, Alice1-3"),
+        ("Alice<sup>a</sup>, Bob<sup>b,c</sup>, x<sup>n</sup>", "Alicea, Bobb,c, x^n"),
+        ("Alice<sup>ii</sup>, Claim<sup>1a</sup>, x<sup>ii</sup>", "Aliceii, Claim1a, x^ii"),
+        ("Claim<sup>(1)</sup>, Alice<sup>(a)</sup>, x<sup>(n)</sup>", "Claim(1), Alice(a), x^(n)"),
+        ("Published in 2020<sup>1</sup>; 10<sup>2</sup>", "Published in 20201; 10^2"),
+        ("Published: 2020<sup>1</sup>; x = 10<sup>2</sup>", "Published: 20201; x = 10^2"),
+        (
+            "There are 10<sup>6</sup> possibilities; the distance is 10<sup>2</sup> metres",
+            "There are 10^6 possibilities; the distance is 10^2 metres",
+        ),
+        ("5x10<sup>3</sup> and x10<sup>3</sup>", "5x10^3 and x10^3"),
+        ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
+        ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
+        ("kg<sup>2</sup> and rad<sup>2</sup>", "kg^2 and rad^2"),
+        ("sec<sup>2</sup> x, csc<sup>2</sup> x, sinh<sup>2</sup> x", "sec^2 x, csc^2 x, sinh^2 x"),
+        ("<var>speed</var><sup>2</sup> and dm<sup>2</sup>", "speed^2 and dm^2"),
+        (
+            "<strong>Alice</strong><sup>2</sup> and <em>Conclusion</em><sup>1</sup>",
+            "**Alice**2 and *Conclusion*1",
+        ),
+        ("see<sup>1</sup> and the<sup>1</sup>", "see1 and the1"),
+        ('<a href="/alice">Alice</a><sup>1</sup>', "[Alice](/alice)1"),
+        (
+            '<a href="/Alice_(scientist)">Alice</a><sup>1</sup>',
+            "[Alice](/Alice_(scientist))1",
+        ),
+        (
+            "“Claim”<sup>1</sup>, Claim)<sup>1</sup>, (x)<sup>2</sup>",
+            "“Claim”1, Claim)1, (x)^2",
+        ),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        (
+            "now $19<sup>99</sup> only; 19<sup>99</sup> combinations",
+            "now $1999 only; 19^99 combinations",
+        ),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
+
+
+def test_unlinked_header_title_keeps_exponent_when_navigation_is_stripped():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "# E=mc^2" in out
+
+
+def test_linked_numeric_superscript_keeps_link_and_exponent():
+    assert html_to_markdown('<p>x<sup><a href="/power">2</a></sup></p>') == "x^[2](/power)"
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ('x<sup><a href="/p">2</sup></a>', "x^[2](/p)"),
+        ('x<sup><a href="/p">2</a>+1</sup>', "x^([2](/p)+1)"),
+    ],
+)
+def test_linked_superscript_recovery_preserves_the_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+def test_nested_superscript_keeps_mathematical_context():
+    assert html_to_markdown("<p>x<sup>y<sup>2</sup></sup></p>") == "x^(y^2)"
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("<p><sup>1</sup> Department of Physics</p>", "1 Department of Physics"),
+        ("<ul><li><sup>a</sup> University</li></ul>", "* a University"),
+        (
+            "<table><tr><td><sup>1</sup> Department</td></tr></table>",
+            "| 1 Department |\n| --- |",
+        ),
+    ],
+)
+def test_baseless_superscript_stays_a_plain_marker(markup, expected):
+    assert html_to_markdown(markup) == expected
+
+
+def test_long_site_link_before_citation_keeps_visible_context():
+    href = "/" + "long-path/" * 30 + "123"
+    site_links = SiteLinks("https://example.com/article")
+    html = f'<p><a href="{href}">Alice</a><sup>1</sup></p>'
+
+    assert html_to_markdown(html, site_links = site_links) == f"[Alice]({href})1"
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<sup><a role="doc-noteref" href="#fn1">1</a></sup>',
+        '<a role="doc-noteref" href="#fn1"><sup>1</sup></a>',
+        '<sup><a href="#fn1">1</a></sup>',
+        '<a href="#fn1"><sup>1</sup></a>',
+    ],
+)
+def test_semantic_footnote_link_does_not_become_an_exponent(markup):
+    assert html_to_markdown(f"<p>Claim{markup}</p>") == "Claim[1](#fn1)"
+
+
+def test_misnested_superscript_does_not_capture_following_text():
+    html = "<p><span>10<sup>2</span> times</sup></p>"
+    assert html_to_markdown(html) == "10^2 times"
+
+
+def test_truncated_superscript_keeps_exponent():
+    assert html_to_markdown("<article><p>10<sup>2") == "10^2"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
+
+
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
     from core.inference import tools
 

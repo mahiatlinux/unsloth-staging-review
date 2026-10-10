@@ -204,26 +204,96 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _MAX_SPAN_CHARS = 8_000
 # a long rowspan cell is usually page layout, so only its first row keeps the text
 _MAX_REPEATED_CELL_CHARS = 200
-# floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
+# per-scope floor after the page budget is spent, so an early decoy cannot starve a later article
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
+
+_PLAIN_SUPERSCRIPT_WORDS = frozenset(
+    {"st", "nd", "rd", "th", "tm", "sm", "er", "re", "ere", "ère", "eme", "ème"}
+)
+_ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
+_MATH_BASE_WORDS = frozenset(
+    {
+        "arccos",
+        "arccot",
+        "arccsc",
+        "arcsec",
+        "arcsin",
+        "arctan",
+        "cos",
+        "cosh",
+        "cot",
+        "coth",
+        "csc",
+        "csch",
+        "erf",
+        "exp",
+        "ln",
+        "log",
+        "mc",
+        "sec",
+        "sech",
+        "sgn",
+        "sin",
+        "sinh",
+        "tan",
+        "tanh",
+    }
+)
+_UNIT_BASE = re.compile(
+    r"^(?:(?:da|[YZEPTGMkhdcmunpfazyµμ])?"
+    r"(?:m|g|s|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|S|Wb|T|H|lm|lx|Bq|Gy|Sv|kat|L|l|rad|sr)"
+    r"|in|ft|yd|mi)$"
+)
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/^=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
+_SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
+_REFERENCE_MARKER = re.compile(r"^[^\W_]+(?:\s*[,;]\s*[^\W_]+|\s*[-–—]\s*[^\W_]+)*$")
+_FOOTNOTE_FRAGMENT = re.compile(
+    r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
+)
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
 # below this the ratio is noise: link lists start at 182 chars, link-dense headers stop at 93
 _HEADER_MIN_CHARS = 150
-# Short labels hide huge hrefs, so size the render too: content peaks at 363, link lists at 1609+.
+# short labels hide huge hrefs, so cap rendered size: content peaks at 363 chars, link lists at 1609+
 _HEADER_MAX_RENDERED_CHARS = 800
 
 # pages nest headers one or two deep; past this, closing a frame cannot copy an unbounded chain
 _MAX_HEADER_NESTING = 8
 
 
-class _HeaderFrame:
-    """Buffered ``<header>`` output plus the link tally used to judge it.
+def _trailing_markdown_link(markdown: str) -> tuple[int, str] | None:
+    if not markdown.endswith(")"):
+        return None
+    depth = 0
+    for index in range(len(markdown) - 1, -1, -1):
+        if markdown[index] not in "()":
+            continue
+        escapes = 0
+        back = index - 1
+        while back >= 0 and markdown[back] == "\\":
+            escapes += 1
+            back -= 1
+        if escapes % 2:
+            continue
+        if markdown[index] == ")":
+            depth += 1
+            continue
+        depth -= 1
+        if depth:
+            continue
+        if index < 2 or markdown[index - 1] != "]":
+            return None
+        label_start = markdown.rfind("[", 0, index - 1)
+        if label_start < 0:
+            return None
+        return label_start, markdown[label_start + 1 : index - 1]
+    return None
 
-    Buffering (like ``_bq_stack``) defers the decision to ``</header>``, once the
-    whole subtree is known. A header no end tag closes is emitted unchanged."""
+
+class _HeaderFrame:
+    """buffer headers for link-density checks while preserving unclosed headers unchanged."""
 
     __slots__ = (
         "depth",
@@ -454,6 +524,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_is_noteref: bool = False
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
@@ -490,18 +561,20 @@ class _MarkdownRenderer(HTMLParser):
 
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
-        # Depth, not a flag: nested <code> opens two spans and each </code> owes a backtick.
+        # depth tracks nested <code> spans so each </code> emits its own backtick
         self._inline_code_depth: int = 0
 
-        # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
+        # a buffer stack preserves the correct ">" depth for nested blockquotes
         self._bq_stack: list[list[str]] = []
+        self._last_var_base: bool = False
+
+        self._sup_starts: list[
+            tuple[list[str] | None, int, list[str] | None, int, str, bool, int]
+        ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
-        """True when a side buffer opened *inside* *frame* still holds content.
-
-        Such a buffer emits into the frame when it closes; an enclosing one
-        (already open at ``<header>``) must not capture it."""
-        # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing one nested.
+        """true while an inner side buffer holds content; enclosing buffers must not capture it."""
+        # only _emit's target buffer matters; combining states misclassifies an enclosing buffer
         if self._in_link:
             return self._link_seq != frame.outer_link_seq
         if self._in_cell:
@@ -529,43 +602,152 @@ class _MarkdownRenderer(HTMLParser):
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
-        # for the eligibility gate, frame or not; link text waits for _finish_link to count once
+        # apply the eligibility gate with or without a frame; link text counts once in _finish_link
         if not self._replaying and (
             (self._heading_marks and not self._in_link) or self._emit_as_heading
         ):
             self._seg_heading_texts.append(text)
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
-        # Tally once, on the emit reaching the frame; counting again on flush doubled it.
+        # count once when emission reaches the frame; recounting on flush would double it
         if frame is not None and not nested_open:
             frame.rendered_chars += len(measured.strip())
-            frame.parts.append(text)
-            return
+        elif self._in_link and self._heading_marks:
+            self._link_heading_parts.append(text)
+        self._emit_target().append(text)
+
+    def _emit_target(self) -> list[str]:
+        frame = self._header_stack[-1] if self._header_stack else None
+        if frame is not None and not self._nested_buffer_open(frame):
+            return frame.parts
         if self._in_link:
-            self._link_text_parts.append(text)
-            if self._heading_marks:
-                self._link_heading_parts.append(text)
-        elif self._in_cell:
-            self._cell_parts.append(text)
-        elif self._in_pre:
-            self._pre_parts.append(text)
-        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
-            self._table_stack[-1].parts.append(text)
-        elif self._bq_stack:
-            self._bq_stack[-1].append(text)
-        else:
-            self._out.append(text)
+            return self._link_text_parts
+        if self._in_cell:
+            return self._cell_parts
+        if self._in_pre:
+            return self._pre_parts
+        if self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            return self._table_stack[-1].parts
+        if self._bq_stack:
+            return self._bq_stack[-1]
+        return self._out
+
+    def _finish_sup(self) -> bool:
+        target, start, heading_target, heading_start, prefix, math_context, _depth = (
+            self._sup_starts[-1]
+        )
+        if target is not None and target is not self._emit_target():
+            return False
+        self._sup_starts.pop()
+        if target is None:
+            return True
+        joined = "".join(target[start:])
+        raw = joined.strip()
+        shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
+        label = link.group("label") if link else shown
+        bracketed_reference = re.fullmatch(r"\[[^\]\n]+\]", shown) is not None
+        reference_label = label[1:-1] if label.startswith("(") and label.endswith(")") else label
+        adjacent_base = bool(prefix and not prefix[-1].isspace())
+        prefix = prefix.rstrip()
+        ordinal_prefix = prefix[:-1] if prefix.endswith(".") else prefix
+        ordinal = bool(
+            ordinal_prefix
+            and ordinal_prefix[-1].isdigit()
+            and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
+        )
+        if prefix_link := _trailing_markdown_link(prefix):
+            link_start, link_label = prefix_link
+            prefix = prefix[:link_start] + link_label
+        word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~\"')]}»’”"))
+        word = word_match.group(1) if word_match else ""
+        marker = _REFERENCE_MARKER.fullmatch(reference_label) is not None
+        prose_reference = bool(
+            marker
+            and len(word) > 1
+            and not math_context
+            and _UNIT_BASE.fullmatch(word) is None
+            and word.lower() not in _MATH_BASE_WORDS
+        )
+        number_base = re.search(r"\d+(?:[.,]\d+)?$", prefix)
+        before_number = prefix[: number_base.start()].rstrip() if number_base else ""
+        numeric_word = re.search(r"([^\W\d_]+)$", before_number.rstrip(".,;:!?*_`~\"')]}»’”"))
+        numeric_prose_reference = bool(
+            marker
+            and number_base
+            and re.fullmatch(r"\d{4}", number_base.group())
+            and number_base.start() > 0
+            and prefix[number_base.start() - 1].isspace()
+            and numeric_word
+            and len(numeric_word.group(1)) > 1
+        )
+        price = bool(
+            label.isdigit()
+            and len(label) == 2
+            and re.search(r"[$£€¥₹₩₽₺₴₪₫₦₱฿]\d+(?:[.,]\d+)?$", prefix)
+        )
+        if (
+            not label
+            or "\n" in label
+            or label.startswith(".")
+            or bracketed_reference
+            or not any(c.isalnum() for c in label)
+            or not adjacent_base
+            or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
+            or ordinal
+            or prose_reference
+            or numeric_prose_reference
+            or price
+        ):
+            return True
+        exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
+        exponent += joined[len(joined.rstrip()) :]
+        target[start:] = [exponent]
+        if heading_target is not None and len(heading_target) > heading_start:
+            heading_target[heading_start:] = [exponent]
+        return True
+
+    def _finish_current_supers(self) -> None:
+        target = self._emit_target()
+        while self._sup_starts and (
+            self._sup_starts[-1][0] is None or self._sup_starts[-1][0] is target
+        ):
+            if not self._finish_sup():
+                break
+
+    def _visible_tail(
+        self,
+        target: list[str],
+        limit: int = 64,
+    ) -> str:
+        tail = ""
+        for part in reversed(target):
+            snippet = part
+            marked = self._site_links is not None and "\x00" in snippet
+            if marked:
+                snippet = self._site_links.clean(snippet)
+            if marked or snippet.startswith("["):
+                if link := _trailing_markdown_link(snippet):
+                    link_start, link_label = link
+                    snippet = snippet[:link_start] + link_label
+            snippet = snippet[-(limit + 96) :]
+            if self._site_links is not None and not marked:
+                snippet = self._site_links.clean(snippet)
+            if not snippet:
+                continue
+            tail = snippet[-(limit - len(tail)) :] + tail
+            if len(tail) >= limit:
+                break
+        return tail
 
     def _seg_heading_prose(self) -> int:
-        """Heading characters in this segment that the gate would otherwise read as
-        body prose. ATX headings carry their own ``#`` here and so score zero."""
+        """heading characters the gate reads as prose; ATX headings include ``#`` so score zero."""
         text = "".join(self._seg_heading_texts)
         if self._site_links is not None:
             text = self._site_links.clean(text)
         return _visible_chars(text)
 
     def _drain_pre(self) -> None:
-        """Emit the open ``<pre>`` and empty it, so a late ``</pre>`` cannot replay
-        it outside a stripped header and push the article past the fetch cap."""
+        """drain ``<pre>`` before a stripped header closes to prevent replay past the fetch cap."""
         raw = "".join(self._pre_parts)
         self._in_pre = False
         self._pre_parts = []
@@ -749,6 +931,7 @@ class _MarkdownRenderer(HTMLParser):
         self._in_link = False
         self._link_text_parts = []
         self._link_heading_parts = []
+        self._link_is_noteref = False
         # an anchor wrapping a heading AND other content tees the title alone, else the nav rides
         partial = bool(heading_text) and heading_text != text
         self._emit_as_heading = self._link_had_heading and not partial
@@ -766,25 +949,22 @@ class _MarkdownRenderer(HTMLParser):
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
-            # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
+            # register preserved headings so the gate does not read title-only cards as prose
             self._seg_heading_texts.append(heading_text)
 
-    # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
-        """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
 
-    def _close_implicit(self, tag: str) -> None:
-        """HTML5 optional-end-tag recovery for a start tag about to open.
+    def _finish_supers_from_depth(self, depth: int) -> None:
+        while self._sup_starts and self._sup_starts[-1][6] >= depth:
+            if not self._finish_sup():
+                break
 
-        Pops each implicitly-closed ancestor (and its hidden marks), scanning the
-        whole stack so an open ``<p>``/``<li>`` still closes under an unclosed inline
-        ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
-        a nested list/table/dl and leaks the outer item's hidden content. Runs even
-        for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
+    def _close_implicit(self, tag: str) -> None:
+        """recover HTML5 end tags through inline tags to barriers, including skipped nav/footer."""
         if not self._closable_open:
             return
         barriers = _CLOSE_BARRIERS.get(tag, ())
@@ -795,7 +975,7 @@ class _MarkdownRenderer(HTMLParser):
                 if tag in _IMPLICIT_CLOSERS.get(name, ()):
                     close_at = i
                     break
-                # A barrier container re-scopes the item; stop before it.
+                # a barrier starts a new item scope, so implicit closure stops before it
                 if name in barriers:
                     break
             if close_at is None:
@@ -806,20 +986,21 @@ class _MarkdownRenderer(HTMLParser):
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_marks.pop()
             self._close_header_frames(close_at)
+            self._finish_supers_from_depth(close_at)
 
     def _close_header_frames(
         self,
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """emit buffered headers at or below depth; own_tag applies only to the innermost."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
+            self._finish_current_supers()
             frame = self._header_stack.pop()
             if self._header_stack:
-                # Roll the tally outward so an enclosing header is judged whole.
+                # nested text must count toward the enclosing header decision
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
@@ -866,6 +1047,7 @@ class _MarkdownRenderer(HTMLParser):
         """Emit every open header unchanged, abandoning the strip."""
         while self._header_stack:
             self._finalize_nested_buffers(self._header_stack[-1])
+            self._finish_current_supers()
             self._emit("".join(self._header_stack.pop().parts))
 
     def _count_header_text(self, text: str) -> None:
@@ -960,6 +1142,7 @@ class _MarkdownRenderer(HTMLParser):
                     while self._heading_marks and self._heading_marks[-1] >= i:
                         self._heading_marks.pop()
                     self._close_header_frames(i, own_tag = tag == "header")
+                    self._finish_supers_from_depth(i)
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
@@ -972,6 +1155,8 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if tag != "sup":
+            self._last_var_base = False
 
         if self._skip_depth:
             if tag in _SKIP_TAGS:
@@ -995,7 +1180,25 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            self._link_href = attr_dict.get("href")
+            href = attr_dict.get("href") or ""
+            self._link_is_noteref = (
+                "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+                or _FOOTNOTE_FRAGMENT.fullmatch(href) is not None
+            )
+            if self._sup_starts and self._link_is_noteref:
+                _, start, heading_target, heading_start, prefix, math_context, depth = (
+                    self._sup_starts[-1]
+                )
+                self._sup_starts[-1] = (
+                    None,
+                    start,
+                    heading_target,
+                    heading_start,
+                    prefix,
+                    math_context,
+                    depth,
+                )
+            self._link_href = href
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
@@ -1007,6 +1210,36 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "br":
             self._emit("\n")
+
+        elif tag == "sup":
+            target = self._emit_target()
+            reference = (
+                self._link_is_noteref or "reference" in (attr_dict.get("class") or "").split()
+            )
+            heading_target = None
+            if self._heading_marks:
+                frame = self._header_stack[-1] if self._header_stack else None
+                if frame is not None:
+                    nested_link = self._in_link and self._link_seq != frame.outer_link_seq
+                    heading_target = (
+                        self._link_heading_parts if nested_link else frame.heading_parts
+                    )
+                elif self._in_link:
+                    heading_target = self._link_heading_parts
+            self._sup_starts.append(
+                (
+                    None if reference else target,
+                    len(target),
+                    heading_target,
+                    len(heading_target) if heading_target is not None else 0,
+                    self._visible_tail(target),
+                    self._last_var_base
+                    or "var" in self._open_tags[:-1]
+                    or any(record[0] is not None for record in self._sup_starts),
+                    len(self._open_tags) - 1,
+                )
+            )
+            self._last_var_base = False
 
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
@@ -1093,7 +1326,10 @@ class _MarkdownRenderer(HTMLParser):
         if not self._exit_tag(tag):
             return
 
-        if tag == "li":
+        if tag == "var":
+            self._last_var_base = True
+
+        elif tag == "li":
             self._li_marker_pending = False
 
         elif tag in _HEADING_TAGS:
@@ -1103,6 +1339,7 @@ class _MarkdownRenderer(HTMLParser):
             if self._header_stack:
                 self._header_stack[-1].link_chars += self._link_header_chars
             self._finish_link()
+            self._finish_supers_from_depth(len(self._open_tags))
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
@@ -1157,6 +1394,8 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
+        if data:
+            self._last_var_base = False
         if self._in_pre:
             self._count_header_text(data)
             self._pre_parts.append(data)
@@ -1182,6 +1421,7 @@ class _MarkdownRenderer(HTMLParser):
     def handle_entityref(self, name: str) -> None:
         if self._text_suppressed():
             return
+        self._last_var_base = False
         text = html.unescape(f"&{name};")
         self._count_header_text(text)
         self._emit(text)
@@ -1189,18 +1429,22 @@ class _MarkdownRenderer(HTMLParser):
     def handle_charref(self, name: str) -> None:
         if self._text_suppressed():
             return
+        self._last_var_base = False
         text = html.unescape(f"&#{name};")
         self._count_header_text(text)
         self._emit(text)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        self._finish_current_supers()
         # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
         # still be open here; it is finalized below.
         self._flush_header_frames()
+        self._finish_current_supers()
 
         if self._in_link:
             self._finish_link()
+            self._finish_current_supers()
 
         while self._inline_code_depth:
             self._inline_code_depth -= 1
@@ -1208,11 +1452,14 @@ class _MarkdownRenderer(HTMLParser):
 
         while self._table_stack:
             self._finish_table()
+            self._finish_current_supers()
         self._finish_cell()
         self._finish_row()
+        self._finish_current_supers()
 
         if self._in_pre:
             self._drain_pre()
+            self._finish_current_supers()
 
         while self._bq_stack:
             content = "".join(self._bq_stack.pop())
@@ -1223,6 +1470,9 @@ class _MarkdownRenderer(HTMLParser):
                 self._bq_stack[-1].append("\n\n" + prefixed + "\n\n")
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
+            self._finish_current_supers()
+
+        self._finish_current_supers()
 
         # A scope left open by truncated HTML never reached _exit_tag, so its output never joined scope_segments and
         # would score 0. Flush the still-open segment here (after the side-buffers) so a truncated main-content page is
