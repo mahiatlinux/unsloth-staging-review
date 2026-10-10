@@ -1025,6 +1025,9 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
+            if self._sup_starts and "doc-noteref" in (attr_dict.get("role") or "").lower().split():
+                _, start, heading_target, heading_start, depth = self._sup_starts[-1]
+                self._sup_starts[-1] = (None, start, heading_target, heading_start, depth)
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._link_heading_parts = []

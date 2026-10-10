@@ -783,6 +783,11 @@ def test_footnote_superscripts_render_unchanged():
     assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
 
 
+def test_semantic_footnote_link_does_not_become_an_exponent():
+    html = '<p>Claim<sup><a role="doc-noteref" href="#fn1">1</a></sup></p>'
+    assert html_to_markdown(html) == "Claim[1](#fn1)"
+
+
 def test_misnested_superscript_does_not_capture_following_text():
     html = "<p><span>10<sup>2</span> times</sup></p>"
     assert html_to_markdown(html) == "10^2 times"
