@@ -1114,8 +1114,19 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   };
   const related = (name: string) => parse(resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`));
   const numbering = related("numbering");
-  const body = numbering && parse(main);
-  if (!numbering || !body) return archive;
+  if (!numbering) return archive;
+  const bodyPaths = new Set([
+    main,
+    ...["footnotes", "endnotes"].map((name) =>
+      resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`),
+    ),
+  ]);
+  const bodies: Array<ReturnType<typeof parse> & { path: string }> = [];
+  for (const path of bodyPaths) {
+    const body = parse(path);
+    if (body) bodies.push({ ...body, path });
+  }
+  if (!bodies.length) return archive;
 
   const byId = (parent: Element, ns: string, name: string, id: string) =>
     new Map(childElements(parent, ns, name).map((node) => [node.getAttributeNS(ns, id) ?? "", node]));
@@ -1132,63 +1143,66 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     return wordValue(numPr, name) ?? styleNumberValue(wordValue(style, "basedOn"), name, depth + 1);
   };
 
-  const counters = new Map<string, Array<number | undefined>>();
-  const { doc, w } = body;
-  const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
-  let found = false;
-  for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
-    const pPr = childElements(p, w, "pPr")[0];
-    const direct = pPr && childElements(pPr, w, "numPr")[0];
-    const styleId = wordValue(pPr, "pStyle");
-    const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
-    const num = numId === undefined ? undefined : nums.get(numId);
-    const abstractId = wordValue(num, "abstractNumId") ?? "";
-    const abstract = abstracts.get(abstractId);
-    if (!num || !abstract) continue;
-    const ilvl = Number(wordValue(direct, "ilvl") ?? styleNumberValue(styleId, "ilvl") ?? 0);
-    if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
-    const overrides = childElements(num, n, "lvlOverride");
-    const level = (index: number) => {
-      const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
-      const override = overrides.find(matches);
-      const abstractLevel = childElements(abstract, n, "lvl").find(matches);
-      const lvl = (override && childElements(override, n, "lvl")[0]) ?? abstractLevel;
-      const parsedStart = Number(wordValue(override, "startOverride") ?? wordValue(abstractLevel, "start") ?? 0);
-      const start = Number.isSafeInteger(parsedStart) && parsedStart >= 0 ? parsedStart : 0;
-      const parsedRestart = Number(wordValue(abstractLevel, "lvlRestart") ?? index);
-      const restart = Number.isInteger(parsedRestart) && parsedRestart >= 0 ? parsedRestart : index;
-      return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
-    };
-    const { lvl, format } = level(ilvl);
-    if (!lvl || format === "bullet") continue;
-    const key = `num:${numId}`;
-    const counts = counters.get(key) ?? [];
-    for (let i = ilvl + 1; i < counts.length; i++) {
-      const restart = level(i).restart;
-      if (restart > 0 && ilvl < restart) counts[i] = undefined;
+  const rewritten: Record<string, Uint8Array> = {};
+  for (const body of bodies) {
+    const counters = new Map<string, Array<number | undefined>>();
+    const { doc, w } = body;
+    const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
+    let found = false;
+    for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+      const pPr = childElements(p, w, "pPr")[0];
+      const direct = pPr && childElements(pPr, w, "numPr")[0];
+      const styleId = wordValue(pPr, "pStyle");
+      const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
+      const num = numId === undefined ? undefined : nums.get(numId);
+      const abstractId = wordValue(num, "abstractNumId") ?? "";
+      const abstract = abstracts.get(abstractId);
+      if (!num || !abstract) continue;
+      const ilvl = Number(wordValue(direct, "ilvl") ?? styleNumberValue(styleId, "ilvl") ?? 0);
+      if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
+      const overrides = childElements(num, n, "lvlOverride");
+      const level = (index: number) => {
+        const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
+        const override = overrides.find(matches);
+        const abstractLevel = childElements(abstract, n, "lvl").find(matches);
+        const lvl = (override && childElements(override, n, "lvl")[0]) ?? abstractLevel;
+        const parsedStart = Number(wordValue(override, "startOverride") ?? wordValue(abstractLevel, "start") ?? 0);
+        const start = Number.isSafeInteger(parsedStart) && parsedStart >= 0 ? parsedStart : 0;
+        const parsedRestart = Number(wordValue(abstractLevel, "lvlRestart") ?? index);
+        const restart = Number.isInteger(parsedRestart) && parsedRestart >= 0 ? parsedRestart : index;
+        return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
+      };
+      const { lvl, format } = level(ilvl);
+      if (!lvl || format === "bullet") continue;
+      const key = `num:${numId}`;
+      const counts = counters.get(key) ?? [];
+      for (let i = ilvl + 1; i < counts.length; i++) {
+        const restart = level(i).restart;
+        if (restart > 0 && ilvl < restart) counts[i] = undefined;
+      }
+      for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
+      counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
+      counters.set(key, counts);
+      const legal = childElements(lvl, n, "isLgl").some(
+        (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
+      );
+      const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
+        const index = Number(digit) - 1;
+        const target = level(index);
+        return wordListNumber(counts[index] ?? target.start, legal && target.format !== "none" ? "decimal" : target.format);
+      });
+      if (!label.trim()) continue;
+      const run = doc.createElementNS(w, tag("r"));
+      const text = doc.createElementNS(w, tag("t"));
+      text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      text.appendChild(doc.createTextNode(`${label} `));
+      run.appendChild(text);
+      p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
+      found = true;
     }
-    for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
-    counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
-    counters.set(key, counts);
-    const legal = childElements(lvl, n, "isLgl").some(
-      (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
-    );
-    const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
-      const index = Number(digit) - 1;
-      const target = level(index);
-      return wordListNumber(counts[index] ?? target.start, legal && target.format !== "none" ? "decimal" : target.format);
-    });
-    if (!label.trim()) continue;
-    const run = doc.createElementNS(w, tag("r"));
-    const text = doc.createElementNS(w, tag("t"));
-    text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
-    text.appendChild(doc.createTextNode(`${label} `));
-    run.appendChild(text);
-    p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
-    found = true;
+    if (found) rewritten[body.path] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!found) return archive;
-  return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
+  return Object.keys(rewritten).length ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
 }
 
 const DOCX_NOTE_REFERENCE_RE =
@@ -1716,9 +1730,9 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
-  const marked = markDocxNotes(linearizeDocxMath(repacked));
+  const marked = markDocxNotes(writeDocxListNumbers(linearizeDocxMath(repacked)));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
+    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(marked.archive))),
   });
   return marked.label(value);
 }

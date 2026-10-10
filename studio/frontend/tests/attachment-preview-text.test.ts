@@ -1175,8 +1175,9 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
 
 test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
-  const note = (kind: string, id: number, text: string) =>
-    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const note = (kind: string, id: number, text: string, numbered = false) =>
+    `<w:${kind} w:id="${id}"><w:p>${numbered ? '<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>' : ""}` +
+    `<w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
   const notes = (kind: string, body: string) =>
     strToU8(
       `<w:${kind}s ${w}>` +
@@ -1205,10 +1206,16 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
       "word/_rels/document.xml.rels": relationships([
         ["footnotes", "notes/foot.xml"],
         ["endnotes", "endnotes.xml"],
+        ["numbering", "numbering.xml"],
       ]),
+      "word/numbering.xml": strToU8(
+        `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+          '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+          '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+      ),
       "word/notes/foot.xml": notes(
         "footnote",
-        note("footnote", 1, "Source: LATER") +
+        note("footnote", 1, "Source: LATER", true) +
           note("footnote", 2, "Source: EARLIER") +
           note("footnote", 3, "Source: LOCALLY DECLARED") +
           note("footnote", 4, "Source: DELETED"),
@@ -1216,10 +1223,12 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
       "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
     }),
   );
-  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
-  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
   try {
-    const marked = markDocxNotes(archive);
+    const marked = markDocxNotes(writeDocxListNumbers(archive));
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({
       buffer: Buffer.from(marked.archive),
@@ -1227,11 +1236,11 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
     assert.equal(
       marked.label(value),
       "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
-        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] 1. Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
         "Endnotes\n[i] Source: ENDNOTEBODY",
     );
   } finally {
-    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+    Object.assign(globals, original);
   }
 });
 
