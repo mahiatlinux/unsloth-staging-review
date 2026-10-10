@@ -204,7 +204,7 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _MAX_SPAN_CHARS = 8_000
 # a long rowspan cell is usually page layout, so only its first row keeps the text
 _MAX_REPEATED_CELL_CHARS = 200
-# floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
+# per-scope floor after the page budget is spent, so an early decoy cannot starve a later article
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
@@ -215,7 +215,7 @@ _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
 _HEADER_LINK_DENSITY = 0.93
 # below this the ratio is noise: link lists start at 182 chars, link-dense headers stop at 93
 _HEADER_MIN_CHARS = 150
-# Short labels hide huge hrefs, so size the render too: content peaks at 363, link lists at 1609+.
+# short labels hide huge hrefs, so cap rendered size: content peaks at 363 chars, link lists at 1609+
 _HEADER_MAX_RENDERED_CHARS = 800
 
 # pages nest headers one or two deep; past this, closing a frame cannot copy an unbounded chain
@@ -223,10 +223,7 @@ _MAX_HEADER_NESTING = 8
 
 
 class _HeaderFrame:
-    """Buffered ``<header>`` output plus the link tally used to judge it.
-
-    Buffering (like ``_bq_stack``) defers the decision to ``</header>``, once the
-    whole subtree is known. A header no end tag closes is emitted unchanged."""
+    """buffer headers for link-density checks while preserving unclosed headers unchanged."""
 
     __slots__ = (
         "depth",
@@ -493,20 +490,17 @@ class _MarkdownRenderer(HTMLParser):
 
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
-        # Depth, not a flag: nested <code> opens two spans and each </code> owes a backtick.
+        # depth tracks nested <code> spans so each </code> emits its own backtick
         self._inline_code_depth: int = 0
 
-        # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
+        # a buffer stack preserves the correct ">" depth for nested blockquotes
         self._bq_stack: list[list[str]] = []
 
         self._sup_starts: list[tuple[list[str] | None, int, int, int]] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
-        """True when a side buffer opened *inside* *frame* still holds content.
-
-        Such a buffer emits into the frame when it closes; an enclosing one
-        (already open at ``<header>``) must not capture it."""
-        # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing one nested.
+        """true while an inner side buffer holds content; enclosing buffers must not capture it."""
+        # only _emit's target buffer matters; combining states misclassifies an enclosing buffer
         if self._in_link:
             return self._link_seq != frame.outer_link_seq
         if self._in_cell:
@@ -534,13 +528,13 @@ class _MarkdownRenderer(HTMLParser):
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
-        # for the eligibility gate, frame or not; link text waits for _finish_link to count once
+        # apply the eligibility gate with or without a frame; link text counts once in _finish_link
         if not self._replaying and (
             (self._heading_marks and not self._in_link) or self._emit_as_heading
         ):
             self._seg_heading_texts.append(text)
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
-        # Tally once, on the emit reaching the frame; counting again on flush doubled it.
+        # count once when emission reaches the frame; recounting on flush would double it
         if frame is not None and not nested_open:
             frame.rendered_chars += len(measured.strip())
         elif self._in_link and self._heading_marks:
@@ -585,16 +579,14 @@ class _MarkdownRenderer(HTMLParser):
             self._link_heading_parts[heading_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
-        """Heading characters in this segment that the gate would otherwise read as
-        body prose. ATX headings carry their own ``#`` here and so score zero."""
+        """heading characters the gate reads as prose; ATX headings include ``#`` so score zero."""
         text = "".join(self._seg_heading_texts)
         if self._site_links is not None:
             text = self._site_links.clean(text)
         return _visible_chars(text)
 
     def _drain_pre(self) -> None:
-        """Emit the open ``<pre>`` and empty it, so a late ``</pre>`` cannot replay
-        it outside a stripped header and push the article past the fetch cap."""
+        """drain ``<pre>`` before a stripped header closes to prevent replay past the fetch cap."""
         raw = "".join(self._pre_parts)
         self._in_pre = False
         self._pre_parts = []
@@ -795,12 +787,10 @@ class _MarkdownRenderer(HTMLParser):
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
-            # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
+            # register preserved headings so the gate does not read title-only cards as prose
             self._seg_heading_texts.append(heading_text)
 
-    # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
-        """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
@@ -811,13 +801,7 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_sup()
 
     def _close_implicit(self, tag: str) -> None:
-        """HTML5 optional-end-tag recovery for a start tag about to open.
-
-        Pops each implicitly-closed ancestor (and its hidden marks), scanning the
-        whole stack so an open ``<p>``/``<li>`` still closes under an unclosed inline
-        ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
-        a nested list/table/dl and leaks the outer item's hidden content. Runs even
-        for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
+        """recover HTML5 end tags through inline tags to barriers, including skipped nav/footer."""
         if not self._closable_open:
             return
         barriers = _CLOSE_BARRIERS.get(tag, ())
@@ -828,7 +812,7 @@ class _MarkdownRenderer(HTMLParser):
                 if tag in _IMPLICIT_CLOSERS.get(name, ()):
                     close_at = i
                     break
-                # A barrier container re-scopes the item; stop before it.
+                # a barrier starts a new item scope, so implicit closure stops before it
                 if name in barriers:
                     break
             if close_at is None:
@@ -846,14 +830,13 @@ class _MarkdownRenderer(HTMLParser):
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """emit buffered headers at or below depth; own_tag applies only to the innermost."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
             frame = self._header_stack.pop()
             if self._header_stack:
-                # Roll the tally outward so an enclosing header is judged whole.
+                # nested text must count toward the enclosing header decision
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
