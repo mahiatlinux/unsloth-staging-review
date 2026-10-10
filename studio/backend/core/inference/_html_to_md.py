@@ -212,13 +212,40 @@ _PLAIN_SUPERSCRIPT_WORDS = frozenset(
     {"st", "nd", "rd", "th", "tm", "sm", "er", "re", "ere", "ère", "eme", "ème"}
 )
 _ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
-_MATH_BASE_WORDS = frozenset({"cos", "ln", "log", "mc", "sin", "tan"})
+_MATH_BASE_WORDS = frozenset(
+    {
+        "arccos",
+        "arccot",
+        "arccsc",
+        "arcsec",
+        "arcsin",
+        "arctan",
+        "cos",
+        "cosh",
+        "cot",
+        "coth",
+        "csc",
+        "csch",
+        "erf",
+        "exp",
+        "ln",
+        "log",
+        "mc",
+        "sec",
+        "sech",
+        "sgn",
+        "sin",
+        "sinh",
+        "tan",
+        "tanh",
+    }
+)
 _UNIT_BASE = re.compile(
     r"^(?:(?:da|[YZEPTGMkhdcmunpfazyµμ])?"
     r"(?:m|g|s|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|S|Wb|T|H|lm|lx|Bq|Gy|Sv|kat|L|l|rad|sr)"
     r"|in|ft|yd|mi)$"
 )
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/^=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
 _REFERENCE_MARKER = re.compile(r"^[^\W_]+(?:\s*[,;]\s*[^\W_]+|\s*[-–—]\s*[^\W_]+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
@@ -1189,7 +1216,9 @@ class _MarkdownRenderer(HTMLParser):
                     heading_target,
                     len(heading_target) if heading_target is not None else 0,
                     self._visible_tail(target),
-                    self._last_var_base or "var" in self._open_tags[:-1],
+                    self._last_var_base
+                    or "var" in self._open_tags[:-1]
+                    or any(record[0] is not None for record in self._sup_starts),
                     len(self._open_tags) - 1,
                 )
             )

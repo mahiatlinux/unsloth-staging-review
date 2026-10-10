@@ -751,6 +751,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
         ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
         ("kg<sup>2</sup> and rad<sup>2</sup>", "kg^2 and rad^2"),
+        ("sec<sup>2</sup> x, csc<sup>2</sup> x, sinh<sup>2</sup> x", "sec^2 x, csc^2 x, sinh^2 x"),
         ("<var>speed</var><sup>2</sup> and dm<sup>2</sup>", "speed^2 and dm^2"),
         (
             "<strong>Alice</strong><sup>2</sup> and <em>Conclusion</em><sup>1</sup>",
@@ -800,6 +801,10 @@ def test_unlinked_header_title_keeps_exponent_when_navigation_is_stripped():
 
 def test_linked_numeric_superscript_keeps_link_and_exponent():
     assert html_to_markdown('<p>x<sup><a href="/power">2</a></sup></p>') == "x^[2](/power)"
+
+
+def test_nested_superscript_keeps_mathematical_context():
+    assert html_to_markdown("<p>x<sup>y<sup>2</sup></sup></p>") == "x^(y^2)"
 
 
 def test_long_site_link_before_citation_keeps_visible_context():
