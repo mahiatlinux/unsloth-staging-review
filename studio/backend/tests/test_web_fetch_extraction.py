@@ -483,6 +483,14 @@ def test_discarded_sibling_button_formatting_does_not_wrap_the_selected_title():
     assert html_to_markdown(html) == "### **Create Artifacts**"
 
 
+def test_shared_and_nested_candidate_formatting_stays_balanced():
+    html = (
+        "<h3><em><button>Old</button><strong><button>Title</button>"
+        "</strong></em></h3>"
+    )
+    assert html_to_markdown(html) == "### ***Title***"
+
+
 def test_discarded_sibling_button_code_does_not_wrap_the_selected_title():
     html = "<h3><code><button>Old</button></code><button>Title</button></h3>"
     assert html_to_markdown(html) == "### Title"

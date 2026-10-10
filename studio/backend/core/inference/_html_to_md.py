@@ -630,7 +630,9 @@ class _MarkdownRenderer(HTMLParser):
             self._heading_button_parts.extend(
                 reversed(self._heading_candidate_inline.values())
             )
-            self._heading_pending_inline = list(self._heading_candidate_inline.items())
+            self._heading_pending_inline = (
+                list(self._heading_candidate_inline.items()) + self._heading_pending_inline
+            )
             self._heading_candidate_inline = {}
         self._heading_button_candidates.append(
             (
