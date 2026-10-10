@@ -480,6 +480,8 @@ class _MarkdownRenderer(HTMLParser):
         self._link_had_heading: bool = False
         self._link_heading_parts: list[str] = []
         self._link_outer_prefix: str = ""
+        self._link_outer_candidate_inline: list[tuple[int, str]] = []
+        self._link_outer_pending_inline: list[tuple[int, str]] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
         # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
@@ -687,7 +689,7 @@ class _MarkdownRenderer(HTMLParser):
         for i, (candidate_parts, accessible_parts, has_visible_text) in enumerate(candidates):
             if i == selected:
                 if has_visible_text:
-                    output.extend(candidate_parts)
+                    output.append(re.sub(r"\s*\n+\s*", " ", "".join(candidate_parts)))
                 else:
                     output.append(" ".join(part.strip() for part in accessible_parts if part.strip()))
             if i < len(between_parts) and (selected is None or i >= selected):
@@ -890,10 +892,16 @@ class _MarkdownRenderer(HTMLParser):
         heading_text = re.sub(r"\s+", " ", "".join(self._link_heading_parts)).strip()
         href = self._link_href or ""
         outer_prefix = self._link_outer_prefix
+        if not text:
+            self._heading_candidate_inline.update(self._link_outer_candidate_inline)
+            self._heading_pending_inline.extend(self._link_outer_pending_inline)
+            outer_prefix = ""
         self._in_link = False
         self._link_text_parts = []
         self._link_heading_parts = []
         self._link_outer_prefix = ""
+        self._link_outer_candidate_inline = []
+        self._link_outer_pending_inline = []
         # an anchor wrapping a heading AND other content tees the title alone, else the nav rides
         partial = bool(heading_text) and heading_text != text
         self._emit_as_heading = self._link_had_heading and not partial
@@ -1231,12 +1239,13 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "a":
             outer_parts: list[str] = []
             if self._heading_candidate_inline and self._heading_button_parts is not None:
-                outer_parts.extend(self._heading_candidate_inline.values())
-                self._heading_button_parts.extend(
-                    reversed(self._heading_candidate_inline.values())
+                self._link_outer_candidate_inline = list(
+                    self._heading_candidate_inline.items()
                 )
+                outer_parts.extend(part for _, part in self._link_outer_candidate_inline)
                 self._heading_candidate_inline = {}
-            outer_parts.extend(part for _, part in self._heading_pending_inline)
+            self._link_outer_pending_inline = self._heading_pending_inline
+            outer_parts.extend(part for _, part in self._link_outer_pending_inline)
             self._link_outer_prefix = "".join(outer_parts)
             self._heading_pending_inline = []
             self._link_href = attr_dict.get("href")

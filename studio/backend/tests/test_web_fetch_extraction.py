@@ -511,9 +511,19 @@ def test_shared_button_and_link_wrapper_stays_outside_the_link():
     assert html_to_markdown(html) == "### *[Title](x)*"
 
 
+def test_empty_link_keeps_a_shared_wrapper_attached_to_the_button_title():
+    html = '<h3><em><button>Title</button><a id="x"></a></em></h3>'
+    assert html_to_markdown(html) == "### *Title*"
+
+
 def test_break_between_sibling_buttons_does_not_break_the_selected_title():
     html = "<h3><button>Old</button><br><button>Title</button></h3>"
     assert html_to_markdown(html) == "### Title"
+
+
+def test_line_break_inside_a_button_title_stays_on_the_heading_line():
+    html = "<h3><button>Line one<br>line two</button></h3>"
+    assert html_to_markdown(html) == "### Line one line two"
 
 
 def test_nested_heading_prefix_survives_candidate_replacement():
