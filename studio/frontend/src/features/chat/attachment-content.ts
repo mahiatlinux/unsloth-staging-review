@@ -1094,8 +1094,16 @@ function htmlListNumber(n: number, format: string | undefined): string {
   if (n < 1 || !format) return String(n);
   const lower = format.startsWith("lower");
   if (format.endsWith("Roman")) {
-    if (n > 3999) return String(n);
-    const text = romanNumeral(n);
+    const groups: number[] = [];
+    for (let value = n; value; value = Math.floor(value / 1000)) groups.unshift(value % 1000);
+    const text = n < 4000
+      ? romanNumeral(n)
+      : groups
+          .map((group, index) => {
+            const overline = "\u0305".repeat(groups.length - index - 1);
+            return Array.from(romanNumeral(group), (digit) => digit + overline).join("");
+          })
+          .join("");
     return lower ? text : text.toUpperCase();
   }
   let value = n;

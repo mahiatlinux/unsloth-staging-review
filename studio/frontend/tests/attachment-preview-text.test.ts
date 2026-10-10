@@ -1950,7 +1950,13 @@ test("an html ordered list keeps its numbers", async () => {
         withAttributes(element("ol", item("five"), item("nine", { value: "9" }), item("ten")), { start: "5" }),
         withAttributes(element("ol", item("third"), item("second"), item("first")), { reversed: "", type: "I" }),
         withAttributes(element("ol", item("z"), item("aa"), item("ab")), { start: "26", type: "a" }),
-        withAttributes(element("ol", item("last roman"), item("decimal fallback")), { start: "3999", type: "i" }),
+        withAttributes(element("ol", item("last roman"), item("extended roman"), item("next roman")), {
+          start: "3999",
+          type: "i",
+        }),
+        withAttributes(element("ol", item("parsed start"), item("parsed value", { value: "9x" }), item("next")), {
+          start: "5x",
+        }),
         element("ul", element("li", textNode("bullet"))),
       ),
     () => extractHtmlAttachmentText("<html/>"),
@@ -1958,7 +1964,7 @@ test("an html ordered list keeps its numbers", async () => {
 
   assert.equal(
     extracted,
-    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nz. z\n\naa. aa\n\nab. ab\n\nmmmcmxcix. last roman\n\n4000. decimal fallback\n\nbullet",
+    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nz. z\n\naa. aa\n\nab. ab\n\nmmmcmxcix. last roman\n\ni̅v̅. extended roman\n\ni̅v̅i. next roman\n\n5. parsed start\n\n9. parsed value\n\n10. next\n\nbullet",
   );
 });
 
