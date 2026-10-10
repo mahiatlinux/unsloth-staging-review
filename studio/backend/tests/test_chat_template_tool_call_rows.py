@@ -88,7 +88,10 @@ _TOOLS_TEMPLATE = """
 {%- if tools %}
 {%- for tool in tools %}{{- '<tool>' + tool.function.name + ':' + (tool.function.parameters | tojson) + '</tool>' }}{%- endfor %}
 {%- endif %}
-{%- for message in messages %}{{- '<' + message.role + '>' + (message.content or '') }}{%- endfor %}
+{%- for message in messages %}
+{{- '<' + message.role + '>' + (message.content or '') }}
+{%- for call in message.tool_calls or [] %}{{- '<call>' + call.function.name + '</call>' }}{%- endfor %}
+{%- endfor %}
 """
 
 _FIRST_TOOL_ONLY_TEMPLATE = """
@@ -257,6 +260,7 @@ def test_null_content_is_dropped_before_the_row_as_loaded_is_tried():
     template = (
         "{%- for message in messages %}"
         "{%- if message.content is defined %}[{{ message.content }}]{%- else %}-{%- endif %}"
+        "{%- for call in message.tool_calls or [] %}<call>{{ call.function.name }}</call>{%- endfor %}"
         "{%- endfor %}"
     )
     null_content = _tool_call_row('{"city": "Paris"}')
@@ -265,8 +269,8 @@ def test_null_content_is_dropped_before_the_row_as_loaded_is_tried():
     result = _format([null_content, _tool_call_row('{"city": "Paris"}')], template)
 
     assert result["dataset"]["text"] == [
-        "[Weather in Paris?]-[21C][It is 21C in Paris.]",
-        "[Weather in Paris?][][21C][It is 21C in Paris.]",
+        "[Weather in Paris?]-<call>get_weather</call>[21C][It is 21C in Paris.]",
+        "[Weather in Paris?][]<call>get_weather</call>[21C][It is 21C in Paris.]",
     ]
 
 
@@ -332,6 +336,20 @@ def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     assert '<|start_header_id|>ipython<|end_header_id|>\n\n{"temp": 18}' in text
     assert "function_call" not in text
     assert "observation" not in text
+
+
+def test_template_that_ignores_tool_calls_drops_the_row():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    template = (
+        "{%- for message in messages %}"
+        "{{- '<' + message.role + '>' + (message.content or '') }}"
+        "{%- endfor %}"
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], template)
+
+    assert result["success"] is False
+    assert "did not serialize every tool call" in result["errors"][0]
 
 
 def test_sharegpt_function_call_list_trains_every_call():

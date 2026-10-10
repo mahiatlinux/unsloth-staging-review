@@ -459,12 +459,12 @@ def _render_conversation(
             if first_error is None:
                 first_error = error
             continue
-        if reasoning_variant is None:
-            return rendered
         if not _renders_all_tool_calls(tokenizer, rendered, attempt, kwargs):
             if first_error is None:
                 first_error = ValueError("Chat template did not serialize every tool call")
             continue
+        if reasoning_variant is None:
+            return rendered
         score = _reasoning_render_score(tokenizer, rendered, attempt, kwargs)
         if score > best_score:
             best_rendered = rendered
