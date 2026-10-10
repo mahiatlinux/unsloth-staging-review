@@ -1683,8 +1683,8 @@ test("an html rowspan keeps its full standards-defined range", async () => {
 
 test("a Word numbered list keeps its numbers", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
-  const lvl = (ilvl: number, format: string, text: string) =>
-    `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/><w:lvlText w:val="${text}"/></w:lvl>`;
+  const lvl = (ilvl: number, format: string, text: string, options = "") =>
+    `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>${options}<w:lvlText w:val="${text}"/></w:lvl>`;
   const p = (text: string, pPr = "") => `<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>${text}</w:t></w:r></w:p>`;
   const numPr = (numId: number, ilvl = 0) => `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
   const bytes = zipSync({
@@ -1700,20 +1700,62 @@ test("a Word numbered list keeps its numbers", async () => {
         p("Termination", '<w:pStyle w:val="ListNumber"/>') +
         p("Restarted", numPr(3)) +
         p("Bullet", numPr(4)) +
+        p("Independent list", numPr(5)) +
+        p("Level one", numPr(6)) +
+        p("Level two", numPr(6, 1)) +
+        p("Level three", numPr(6, 2)) +
+        p("Level three again", numPr(6, 2)) +
+        p("Next level one", numPr(6)) +
+        p("Next level two", numPr(6, 1)) +
+        p("Continuing level three", numPr(6, 2)) +
+        p("Selective level one", numPr(7)) +
+        p("Selective level two", numPr(7, 1)) +
+        p("Selective level three", numPr(7, 2)) +
+        p("Second selective level two", numPr(7, 1)) +
+        p("Continuing selective level three", numPr(7, 2)) +
+        p("Second selective level one", numPr(7)) +
+        p("Restarted selective level three", numPr(7, 2)) +
+        p("Inherited style numbering", '<w:pStyle w:val="DerivedList"/>') +
+        p("Roman four thousand", numPr(9)) +
+        p("Bounded roman", numPr(10)) +
+        p("Bounded letter", numPr(11)) +
         "</w:body></w:document>",
     ),
     "word/numbering.xml": strToU8(
       `<w:numbering ${w}>` +
         `<w:abstractNum w:abstractNumId="1">${lvl(0, "decimal", "%1.")}${lvl(1, "lowerLetter", "(%2)")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="2">${lvl(0, "bullet", "\u2022")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="3">` +
+        lvl(0, "decimal", "%1.") +
+        lvl(1, "lowerLetter", "%1.%2.") +
+        lvl(2, "lowerRoman", "%1.%2.%3.", '<w:lvlRestart w:val="0"/><w:isLgl/>') +
+        "</w:abstractNum>" +
+        `<w:abstractNum w:abstractNumId="4">` +
+        lvl(0, "decimal", "%1.") +
+        lvl(1, "upperLetter", "%1.%2.") +
+        lvl(2, "lowerRoman", "%1.%2.%3.", '<w:lvlRestart w:val="1"/>') +
+        "</w:abstractNum>" +
+        `<w:abstractNum w:abstractNumId="5">${lvl(0, "lowerRoman", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="6">${lvl(0, "lowerLetter", "%1.")}</w:abstractNum>` +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
         '<w:num w:numId="4"><w:abstractNumId w:val="2"/></w:num>' +
+        '<w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>' +
+        '<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>' +
+        '<w:num w:numId="8"><w:abstractNumId w:val="3"/></w:num>' +
+        '<w:num w:numId="9"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="4000"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="10"><w:abstractNumId w:val="5"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1000001"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="11"><w:abstractNumId w:val="6"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="26001"/></w:lvlOverride></w:num>' +
         "</w:numbering>",
     ),
     "word/styles.xml": strToU8(
-      `<w:styles ${w}><w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style></w:styles>`,
+      `<w:styles ${w}>` +
+        '<w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="8"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="DerivedList"><w:basedOn w:val="BaseList"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style>' +
+        "</w:styles>",
     ),
   });
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
@@ -1728,7 +1770,12 @@ test("a Word numbered list keeps its numbers", async () => {
     assert.equal(
       value,
       "Terms\n\n1. Payment is due within 30 days.\n\n(a) By bank transfer\n\n2. Late payments incur a 2% fee.\n\n" +
-        "3. Termination\n\n1. Restarted\n\nBullet\n\n",
+        "1. Termination\n\n1. Restarted\n\nBullet\n\n1. Independent list\n\n1. Level one\n\n1.a. Level two\n\n" +
+        "1.1.1. Level three\n\n1.1.2. Level three again\n\n2. Next level one\n\n2.a. Next level two\n\n" +
+        "2.1.3. Continuing level three\n\n1. Selective level one\n\n1.A. Selective level two\n\n" +
+        "1.A.i. Selective level three\n\n1.B. Second selective level two\n\n1.B.ii. Continuing selective level three\n\n" +
+        "2. Second selective level one\n\n2.A.i. Restarted selective level three\n\n1.a. Inherited style numbering\n\n" +
+        "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\n",
     );
   } finally {
     Object.assign(globals, original);
@@ -1748,6 +1795,8 @@ test("an html ordered list keeps its numbers", async () => {
         withAttributes(element("ol", textNode("\n  "), item("Build the image"), textNode("\n  "), item("Push the image"))),
         withAttributes(element("ol", item("five"), item("nine", { value: "9" }), item("ten")), { start: "5" }),
         withAttributes(element("ol", item("third"), item("second"), item("first")), { reversed: "", type: "I" }),
+        withAttributes(element("ol", item("z"), item("aa"), item("ab")), { start: "26", type: "a" }),
+        withAttributes(element("ol", item("last roman"), item("decimal fallback")), { start: "3999", type: "i" }),
         element("ul", element("li", textNode("bullet"))),
       ),
     () => extractHtmlAttachmentText("<html/>"),
@@ -1755,7 +1804,7 @@ test("an html ordered list keeps its numbers", async () => {
 
   assert.equal(
     extracted,
-    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nbullet",
+    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nz. z\n\naa. aa\n\nab. ab\n\nmmmcmxcix. last roman\n\n4000. decimal fallback\n\nbullet",
   );
 });
 

@@ -1054,16 +1054,43 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
-function listNumber(n: number, format: string | undefined): string {
+function wordListNumber(n: number, format: string | undefined): string {
   if (n < 1) return String(n);
   const lower = format?.startsWith("lower");
   if (lower || format?.startsWith("upper")) {
-    const text = format!.endsWith("Roman")
-      ? romanNumeral(n)
-      : String.fromCharCode(97 + ((n - 1) % 26)).repeat(Math.ceil(n / 26));
+    const roman = format!.endsWith("Roman");
+    const length = roman ? Math.floor(n / 1000) + 12 : Math.ceil(n / 26);
+    const text = length <= 1_000
+      ? roman
+        ? romanNumeral(n)
+        : String.fromCharCode(97 + ((n - 1) % 26)).repeat(length)
+      : String(n);
     return lower ? text : text.toUpperCase();
   }
   return format === "decimalZero" && n < 10 ? `0${n}` : String(n);
+}
+
+function htmlListNumber(n: number, format: string | undefined): string {
+  if (n < 1 || !format) return String(n);
+  const lower = format.startsWith("lower");
+  if (format.endsWith("Roman")) {
+    if (n > 3999) return String(n);
+    const text = romanNumeral(n);
+    return lower ? text : text.toUpperCase();
+  }
+  let value = n;
+  let text = "";
+  while (value > 0) {
+    value--;
+    text = String.fromCharCode(97 + (value % 26)) + text;
+    value = Math.floor(value / 26);
+  }
+  return lower ? text : text.toUpperCase();
+}
+
+function htmlListInteger(value: string | null): number | undefined {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function wordValue(node: Element | undefined, name: string): string | undefined {
@@ -1097,47 +1124,59 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   const nums = byId(numbering.root, n, "num", "numId");
   const styles = related("styles");
   const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
-  const styleNumPr = (id: string | undefined, depth = 0): Element | undefined => {
+  const styleNumberValue = (id: string | undefined, name: string, depth = 0): string | undefined => {
     const style = id === undefined ? undefined : styleById.get(id);
     if (!style || depth > 20) return undefined;
     const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
-    return (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
+    const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
+    return wordValue(numPr, name) ?? styleNumberValue(wordValue(style, "basedOn"), name, depth + 1);
   };
 
-  const counters = new Map<string, number[]>();
+  const counters = new Map<string, Array<number | undefined>>();
   const { doc, w } = body;
   const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
   let found = false;
   for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
     const pPr = childElements(p, w, "pPr")[0];
     const direct = pPr && childElements(pPr, w, "numPr")[0];
-    const styled = styleNumPr(wordValue(pPr, "pStyle"));
-    const numId = wordValue(direct, "numId") ?? wordValue(styled, "numId");
+    const styleId = wordValue(pPr, "pStyle");
+    const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
     const num = numId === undefined ? undefined : nums.get(numId);
     const abstractId = wordValue(num, "abstractNumId") ?? "";
     const abstract = abstracts.get(abstractId);
     if (!num || !abstract) continue;
-    const ilvl = Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? 0) || 0;
+    const ilvl = Number(wordValue(direct, "ilvl") ?? styleNumberValue(styleId, "ilvl") ?? 0);
+    if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
     const overrides = childElements(num, n, "lvlOverride");
     const level = (index: number) => {
       const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
       const override = overrides.find(matches);
-      const lvl = (override && childElements(override, n, "lvl")[0]) ?? childElements(abstract, n, "lvl").find(matches);
-      const start = Number(wordValue(override, "startOverride") ?? wordValue(lvl, "start") ?? 0) || 0;
-      return { lvl, start, format: wordValue(lvl, "numFmt") };
+      const abstractLevel = childElements(abstract, n, "lvl").find(matches);
+      const lvl = (override && childElements(override, n, "lvl")[0]) ?? abstractLevel;
+      const parsedStart = Number(wordValue(override, "startOverride") ?? wordValue(abstractLevel, "start") ?? 0);
+      const start = Number.isSafeInteger(parsedStart) && parsedStart >= 0 ? parsedStart : 0;
+      const parsedRestart = Number(wordValue(abstractLevel, "lvlRestart") ?? index);
+      const restart = Number.isInteger(parsedRestart) && parsedRestart >= 0 ? parsedRestart : index;
+      return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
     };
     const { lvl, format } = level(ilvl);
     if (!lvl || format === "bullet") continue;
-    // Lists sharing an abstract definition continue one count unless a start override restarts it.
-    const key = overrides.some((node) => childElements(node, n, "startOverride").length) ? `num:${numId}` : `abstract:${abstractId}`;
+    const key = `num:${numId}`;
     const counts = counters.get(key) ?? [];
+    for (let i = ilvl + 1; i < counts.length; i++) {
+      const restart = level(i).restart;
+      if (restart > 0 && ilvl < restart) counts[i] = undefined;
+    }
     for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
     counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
-    counts.length = ilvl + 1;
     counters.set(key, counts);
+    const legal = childElements(lvl, n, "isLgl").some(
+      (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
+    );
     const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
       const index = Number(digit) - 1;
-      return listNumber(counts[index] ?? level(index).start, level(index).format);
+      const target = level(index);
+      return wordListNumber(counts[index] ?? target.start, legal && target.format !== "none" ? "decimal" : target.format);
     });
     if (!label.trim()) continue;
     const run = doc.createElementNS(w, tag("r"));
@@ -1882,16 +1921,16 @@ function collectHtmlBlockText(
   const isItem = (child: Node) =>
     tag === "ol" && child.nodeType === ELEMENT_NODE && (child as Element).tagName.toLowerCase() === "li";
   const reversed = tag === "ol" && element.getAttribute("reversed") !== null;
-  const start = tag === "ol" ? Number.parseInt(element.getAttribute("start") ?? "", 10) : Number.NaN;
-  let number = Number.isNaN(start) ? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1) : start;
+  const start = tag === "ol" ? htmlListInteger(element.getAttribute("start")) : undefined;
+  let number = start ?? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1);
   const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
   const text = Array.from(element.childNodes)
     .map((child) => {
       const inner = collectHtmlBlockText(child, preformatted, groupSpans);
       if (!isItem(child)) return inner;
-      const value = Number.parseInt((child as Element).getAttribute("value") ?? "", 10);
-      if (!Number.isNaN(value)) number = value;
-      const label = listNumber(number, format);
+      const value = htmlListInteger((child as Element).getAttribute("value"));
+      if (value !== undefined) number = value;
+      const label = htmlListNumber(number, format);
       number += reversed ? -1 : 1;
       return `\n${label}. ${inner.trimStart()}`;
     })
