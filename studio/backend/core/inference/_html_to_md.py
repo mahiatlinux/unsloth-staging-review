@@ -453,6 +453,10 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_has_text: bool = False
         self._heading_button_parts: list[str] | None = None
         self._heading_button_trailing_parts: list[str] = []
+        self._heading_button_candidates: list[tuple[list[str], list[str], bool]] = []
+        self._heading_button_between_parts: list[list[str]] = []
+        self._heading_button_accessible_parts: list[str] = []
+        self._heading_button_has_visible_text: bool = False
         self._heading_button_mark: int | None = None
         self._heading_button_owner_mark: int | None = None
 
@@ -581,27 +585,80 @@ class _MarkdownRenderer(HTMLParser):
             self._heading_has_text = True
 
     def _discard_heading_button(self) -> None:
-        trailing = self._heading_button_trailing_parts
-        had_button = self._heading_button_parts is not None
+        literal_parts = [
+            part for between in self._heading_button_between_parts for part in between
+        ] + self._heading_button_trailing_parts
+        had_button = bool(self._heading_button_candidates) or self._heading_button_parts is not None
         self._heading_button_parts = None
         self._heading_button_trailing_parts = []
+        self._heading_button_candidates = []
+        self._heading_button_between_parts = []
+        self._heading_button_accessible_parts = []
+        self._heading_button_has_visible_text = False
         self._heading_button_mark = None
         self._heading_button_owner_mark = None
-        if had_button and trailing:
-            self._emit("".join(trailing))
+        if had_button and literal_parts:
+            self._emit("".join(literal_parts))
+
+    def _stash_heading_button(self) -> None:
+        if self._heading_button_parts is None:
+            return
+        self._heading_button_candidates.append(
+            (
+                self._heading_button_parts,
+                self._heading_button_accessible_parts,
+                self._heading_button_has_visible_text,
+            )
+        )
+        self._heading_button_between_parts.append(self._heading_button_trailing_parts)
+        self._heading_button_parts = None
+        self._heading_button_trailing_parts = []
+        self._heading_button_accessible_parts = []
+        self._heading_button_has_visible_text = False
+        self._heading_button_mark = None
 
     def _flush_heading_button(self) -> None:
         parts = self._heading_button_parts
         trailing = self._heading_button_trailing_parts
+        candidates = self._heading_button_candidates
+        between_parts = self._heading_button_between_parts
+        if parts is not None:
+            candidates = candidates + [
+                (parts, self._heading_button_accessible_parts, self._heading_button_has_visible_text)
+            ]
         self._heading_button_parts = None
         self._heading_button_trailing_parts = []
+        self._heading_button_candidates = []
+        self._heading_button_between_parts = []
+        self._heading_button_accessible_parts = []
+        self._heading_button_has_visible_text = False
         self._heading_button_mark = None
         self._heading_button_owner_mark = None
-        if parts is not None and not self._heading_has_text:
+
+        selected = next((i for i in range(len(candidates) - 1, -1, -1) if candidates[i][2]), None)
+        if selected is None:
+            selected = next(
+                (
+                    i
+                    for i in range(len(candidates) - 1, -1, -1)
+                    if any(part.strip() for part in candidates[i][1])
+                ),
+                None,
+            )
+        output: list[str] = []
+        for i, (candidate_parts, accessible_parts, has_visible_text) in enumerate(candidates):
+            if i == selected:
+                if has_visible_text:
+                    output.extend(candidate_parts)
+                else:
+                    output.append(" ".join(part.strip() for part in accessible_parts if part.strip()))
+            if i < len(between_parts):
+                output.extend(between_parts[i])
+        output.extend(trailing)
+        if selected is not None and not self._heading_has_text:
             self._heading_has_text = True
-            self._emit("".join(parts + trailing))
-        elif parts is not None and trailing:
-            self._emit("".join(trailing))
+        if output:
+            self._emit("".join(output))
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -953,6 +1010,10 @@ class _MarkdownRenderer(HTMLParser):
                     self._heading_has_text = False
                     self._heading_button_parts = None
                     self._heading_button_trailing_parts = []
+                    self._heading_button_candidates = []
+                    self._heading_button_between_parts = []
+                    self._heading_button_accessible_parts = []
+                    self._heading_button_has_visible_text = False
                     self._heading_button_mark = None
                     self._heading_button_owner_mark = None
                 self._heading_marks.append(len(self._open_tags) - 1)
@@ -1041,14 +1102,16 @@ class _MarkdownRenderer(HTMLParser):
         # <p>, releasing its hidden mark so following siblings render.
         self._close_implicit(tag)
 
+        attr_dict = dict(attrs)
         if (
             tag == "button"
             and self._heading_marks
             and not self._heading_has_text
             and self._heading_button_parts is not None
             and self._heading_button_mark is None
+            and not _is_hidden_element(attr_dict)
         ):
-            self._discard_heading_button()
+            self._stash_heading_button()
 
         # Keep a possible accordion title until the rest of the heading proves whether it is a utility button.
         heading_button = (
@@ -1061,20 +1124,25 @@ class _MarkdownRenderer(HTMLParser):
             self._skip_depth += 1
             return
 
-        attr_dict = dict(attrs)
         if not self._enter_tag(tag, attr_dict):
             return
         if heading_button:
             self._heading_button_parts = []
             self._heading_button_trailing_parts = []
+            self._heading_button_accessible_parts = []
+            self._heading_button_has_visible_text = False
             self._heading_button_mark = len(self._open_tags) - 1
             self._heading_button_owner_mark = self._heading_marks[-1]
         accessible_text = attr_dict.get("aria-label") or ""
-        if tag == "img" or (
-            tag == "input" and attr_dict.get("type", "").lower() == "image"
+        if not accessible_text and (
+            tag == "img"
+            or (tag == "input" and attr_dict.get("type", "").lower() == "image")
         ):
-            accessible_text += attr_dict.get("alt") or ""
-        self._mark_heading_text(accessible_text)
+            accessible_text = attr_dict.get("alt") or ""
+        if self._heading_button_mark is not None and accessible_text.strip():
+            self._heading_button_accessible_parts.append(accessible_text.strip())
+        else:
+            self._mark_heading_text(accessible_text)
 
         if tag in _HEADING_TAGS:
             level = int(tag[1])
@@ -1256,6 +1324,8 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
+        if self._heading_button_mark is not None and data.strip():
+            self._heading_button_has_visible_text = True
         self._mark_heading_text(data)
         if self._in_pre:
             self._count_header_text(data)
@@ -1286,6 +1356,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&{name};")
+        if self._heading_button_mark is not None and text.strip():
+            self._heading_button_has_visible_text = True
         self._mark_heading_text(text)
         self._count_header_text(text)
         self._emit(text)
@@ -1294,6 +1366,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&#{name};")
+        if self._heading_button_mark is not None and text.strip():
+            self._heading_button_has_visible_text = True
         self._mark_heading_text(text)
         self._count_header_text(text)
         self._emit(text)

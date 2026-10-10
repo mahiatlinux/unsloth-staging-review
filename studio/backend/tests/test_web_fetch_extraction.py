@@ -433,6 +433,25 @@ def test_a_later_sibling_heading_button_replaces_the_provisional_title(first_but
     assert "Body text." in out
 
 
+def test_an_accessible_only_sibling_does_not_replace_a_visible_button_title():
+    html = (
+        '<h3><button>Question?</button><button aria-label="Copy link"><svg/></button></h3>'
+    )
+    out = html_to_markdown(html)
+    assert out == "### Question?"
+
+
+@pytest.mark.parametrize(
+    "button",
+    [
+        '<button aria-label="Question?"><svg/></button>',
+        '<button><img alt="Question?"></button>',
+    ],
+)
+def test_an_accessible_only_heading_button_supplies_the_title(button):
+    assert html_to_markdown(f"<h3>{button}</h3>") == "### Question?"
+
+
 def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():
     html = (
         "<table><tr><td><h3><button>Title</button>"
