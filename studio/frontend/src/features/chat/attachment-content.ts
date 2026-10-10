@@ -66,7 +66,12 @@ const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
-const DOCX_MAIN_DOCUMENT_TYPE = `${DOCX_RELATIONSHIP_NAMESPACE}officeDocument`;
+const DOCX_STRICT_RELATIONSHIP_NAMESPACE =
+  "http://purl.oclc.org/ooxml/officeDocument/relationships/";
+const DOCX_RELATIONSHIP_NAMESPACES = [
+  DOCX_RELATIONSHIP_NAMESPACE,
+  DOCX_STRICT_RELATIONSHIP_NAMESPACE,
+];
 const DOCX_RELATED_PART_NAMES = [
   "comments",
   "endnotes",
@@ -599,6 +604,15 @@ function readDocxXmlTargets(
   return targets;
 }
 
+function docxRelationshipTargets(
+  targets: Map<string, string[]>,
+  name: string,
+): string[] {
+  return DOCX_RELATIONSHIP_NAMESPACES.flatMap(
+    (namespace) => targets.get(`${namespace}${name}`) ?? [],
+  );
+}
+
 // The .rels part that names the XML parts of the part at `path`.
 function docxRelationshipsPath(path: string): string {
   const cut = path.lastIndexOf("/");
@@ -654,11 +668,14 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
     readDocxXmlTargets(read(docxRelationshipsPath(path)), path.slice(0, Math.max(0, path.lastIndexOf("/"))));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
-  const main = resolve(targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const main = resolve(
+    docxRelationshipTargets(targetsOf(""), "officeDocument"),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
   const mainTargets = targetsOf(main);
   const used = new Set([...mainTargets.values()].flat());
   for (const name of DOCX_BODY_PART_NAMES) {
-    const path = resolve(mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`);
+    const path = resolve(docxRelationshipTargets(mainTargets, name), `word/${name}.xml`);
     for (const target of [...targetsOf(path).values()].flat()) used.add(target);
   }
   return { isImage, used };
@@ -719,8 +736,9 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   bound(DOCX_CONTENT_TYPES_PART);
   bound(DOCX_PACKAGE_RELATIONSHIPS);
   const mainDocument = resolve(
-    readDocxXmlTargets(entries[DOCX_PACKAGE_RELATIONSHIPS], "").get(
-      DOCX_MAIN_DOCUMENT_TYPE,
+    docxRelationshipTargets(
+      readDocxXmlTargets(entries[DOCX_PACKAGE_RELATIONSHIPS], ""),
+      "officeDocument",
     ),
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
@@ -735,7 +753,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): string {
   );
   for (const name of DOCX_RELATED_PART_NAMES) {
     const path = resolve(
-      documentTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
+      docxRelationshipTargets(documentTargets, name),
       `word/${name}.xml`,
     );
     bound(path);
@@ -1104,7 +1122,11 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
-  const main = resolve(readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const packageTargets = readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "");
+  const main = resolve(
+    docxRelationshipTargets(packageTargets, "officeDocument"),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
   const targets = readDocxXmlTargets(parts[docxRelationshipsPath(main)], main.slice(0, Math.max(0, main.lastIndexOf("/"))));
   const parse = (path: string) => {
     const bytes = Object.hasOwn(parts, path) ? parts[path] : undefined;
@@ -1114,13 +1136,14 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     if (!WORDPROCESSINGML_NAMESPACES.has(root?.namespaceURI ?? "") || doc.getElementsByTagName("parsererror").length) return null;
     return { doc, root, w: root.namespaceURI ?? "" };
   };
-  const related = (name: string) => parse(resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`));
+  const related = (name: string) =>
+    parse(resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`));
   const numbering = related("numbering");
   if (!numbering) return archive;
   const bodyPaths = new Set([
     main,
     ...["footnotes", "endnotes"].map((name) =>
-      resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`),
+      resolve(docxRelationshipTargets(targets, name), `word/${name}.xml`),
     ),
   ]);
   const bodies: Array<ReturnType<typeof parse> & { path: string }> = [];
@@ -1225,7 +1248,7 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
         return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
       };
       const { lvl, format } = level(ilvl);
-      if (!lvl || format === "bullet") continue;
+      if (!lvl) continue;
       const key = `num:${numId}`;
       const counts = counters.get(key) ?? [];
       for (let i = ilvl + 1; i < counts.length; i++) {
@@ -1235,6 +1258,7 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
       counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
       counters.set(key, counts);
+      if (format === "bullet") continue;
       const legal = childElements(lvl, n, "isLgl").some(
         (flag) => !["0", "false", "off"].includes(flag.getAttributeNS(n, "val") ?? ""),
       );
@@ -1311,7 +1335,7 @@ export function markDocxNotes(archive: Uint8Array): {
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
   const main = resolve(
-    targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE),
+    docxRelationshipTargets(targetsOf(""), "officeDocument"),
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
   const mainTargets = targetsOf(main);
@@ -1329,7 +1353,7 @@ export function markDocxNotes(archive: Uint8Array): {
   for (const [kind, notes] of Object.entries(kinds)) {
     const xml = read(
       resolve(
-        mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${kind}s`),
+        docxRelationshipTargets(mainTargets, `${kind}s`),
         `word/${kind}s.xml`,
       ),
     );

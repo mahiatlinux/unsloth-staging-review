@@ -801,12 +801,15 @@ test("readAttachmentText refuses an oversized docx part outside word/*.xml", asy
   }
 });
 
-function relationships(entries: Array<[string, string]>): Uint8Array {
+function relationships(
+  entries: Array<[string, string]>,
+  typeNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
+): Uint8Array {
   return strToU8(
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries
       .map(
         ([type, target], index) =>
-          `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}"/>`,
+          `<Relationship Id="rId${index + 1}" Type="${typeNamespace}${type}" Target="${target}"/>`,
       )
       .join("")}</Relationships>`,
   );
@@ -1738,6 +1741,10 @@ test("a Word numbered list keeps its numbers", async () => {
         `<w:p><w:pPr>${numPr(17)}<w:rPr><w:del w:id="1" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"/></w:rPr></w:pPr>` +
         '<w:del w:id="2" w:author="Reviewer" w:date="2026-10-10T00:00:00Z"><w:r><w:delText>Deleted list item</w:delText></w:r></w:del></w:p>' +
         p("Visible after deletion", numPr(17)) +
+        p("First bullet parent", numPr(18)) +
+        p("First numbered child", numPr(18, 1)) +
+        p("Second bullet parent", numPr(18)) +
+        p("Second numbered child", numPr(18, 1)) +
         "</w:body></w:document>",
     ),
     "word/numbering.xml": strToU8(
@@ -1762,6 +1769,7 @@ test("a Word numbered list keeps its numbers", async () => {
         `<w:abstractNum w:abstractNumId="10" w15:restartNumberingAfterBreak="1">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="11">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="12">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="13">${lvl(0, "bullet", "•")}${lvl(1, "decimal", "%2.")}</w:abstractNum>` +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
@@ -1779,6 +1787,7 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:num w:numId="15"><w:abstractNumId w:val="10"/></w:num>' +
         '<w:num w:numId="16"><w:abstractNumId w:val="11"/></w:num>' +
         '<w:num w:numId="17"><w:abstractNumId w:val="12"/></w:num>' +
+        '<w:num w:numId="18"><w:abstractNumId w:val="13"/></w:num>' +
         "</w:numbering>",
     ),
     "word/styles.xml": strToU8(
@@ -1809,8 +1818,36 @@ test("a Word numbered list keeps its numbers", async () => {
         "2. Second selective level one\n\n2.A.i. Restarted selective level three\n\n1.a. Inherited style numbering\n\n" +
         "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n" +
         "a. Linked numbering style\n\n1. Restart before break\n\n1. Continue before break\n\n" +
-        "1. Restart after break\n\n2. Continue after break\n\n1. Visible after deletion\n\n",
+        "1. Restart after break\n\n2. Continue after break\n\n1. Visible after deletion\n\n" +
+        "First bullet parent\n\n1. First numbered child\n\nSecond bullet parent\n\n1. Second numbered child\n\n",
     );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a Strict Word numbered list resolves custom part targets", () => {
+  const strict = "http://purl.oclc.org/ooxml/officeDocument/relationships/";
+  const w = "http://purl.oclc.org/ooxml/wordprocessingml/main";
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "custom/main.xml"]], strict),
+    "custom/_rels/main.xml.rels": relationships([["numbering", "defs/nums.xml"]], strict),
+    "custom/main.xml": strToU8(
+      `<w:document xmlns:w="${w}"><w:body><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Strict item</w:t></w:r></w:p></w:body></w:document>`,
+    ),
+    "custom/defs/nums.xml": strToU8(
+      `<w:numbering xmlns:w="${w}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["custom/main.xml"]);
+    assert.match(main, /<w:t xml:space="preserve">1\. <\/w:t>/);
   } finally {
     Object.assign(globals, original);
   }
