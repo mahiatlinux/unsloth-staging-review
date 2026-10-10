@@ -248,6 +248,7 @@ _EXPONENT_BASE_WORDS = frozenset(
 )
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
+_NUMERIC_REFERENCE = re.compile(r"^\d+(?:\s*[,;]\s*\d+|\s*[-–—]\s*\d+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
 )
@@ -609,13 +610,18 @@ class _MarkdownRenderer(HTMLParser):
         link = _SIMPLE_MARKDOWN_LINK.fullmatch(shown)
         label = link.group("label") if link else shown
         prefix = prefix.rstrip()
+        ordinal_prefix = prefix[:-1] if prefix.endswith(".") else prefix
         ordinal = bool(
-            prefix and prefix[-1].isdigit() and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
+            ordinal_prefix
+            and ordinal_prefix[-1].isdigit()
+            and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
         )
         word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?"))
         word = word_match.group(1) if word_match else ""
         numeric_reference = bool(
-            label.isdigit() and len(word) > 1 and word.lower() not in _EXPONENT_BASE_WORDS
+            _NUMERIC_REFERENCE.fullmatch(label)
+            and len(word) > 1
+            and word.lower() not in _EXPONENT_BASE_WORDS
         )
         if (
             not label

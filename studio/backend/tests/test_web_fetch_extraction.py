@@ -742,6 +742,8 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Widget<sup>TM</sup> and Service<sup>SM</sup>", "WidgetTM and ServiceSM"),
         ("le 1<sup>er</sup> mai, dans le 2<sup>e</sup>", "le 1er mai, dans le 2e"),
         ("Conclusion<sup>1</sup>, Alice<sup>2</sup>", "Conclusion1, Alice2"),
+        ("Conclusion<sup>1,2</sup>, Alice<sup>1-3</sup>", "Conclusion1,2, Alice1-3"),
+        ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
         ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
