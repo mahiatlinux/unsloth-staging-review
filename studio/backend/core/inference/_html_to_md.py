@@ -479,6 +479,7 @@ class _MarkdownRenderer(HTMLParser):
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
         self._link_heading_parts: list[str] = []
+        self._link_outer_prefix: str = ""
         self._emit_as_heading: bool = False
         self._replaying: bool = False
         # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
@@ -888,9 +889,11 @@ class _MarkdownRenderer(HTMLParser):
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
         heading_text = re.sub(r"\s+", " ", "".join(self._link_heading_parts)).strip()
         href = self._link_href or ""
+        outer_prefix = self._link_outer_prefix
         self._in_link = False
         self._link_text_parts = []
         self._link_heading_parts = []
+        self._link_outer_prefix = ""
         # an anchor wrapping a heading AND other content tees the title alone, else the nav rides
         partial = bool(heading_text) and heading_text != text
         self._emit_as_heading = self._link_had_heading and not partial
@@ -900,9 +903,11 @@ class _MarkdownRenderer(HTMLParser):
             link = f"[{text}]({href})"
             if self._site_links is not None and not self._inline_code_depth:
                 link = self._site_links.note(link, text, href)
-            self._emit(link)
+            self._emit(outer_prefix + link)
         elif text:
-            self._emit(text)
+            self._emit(outer_prefix + text)
+        elif outer_prefix:
+            self._emit(outer_prefix)
         self._emit_as_heading = False
         if partial and self._header_stack and self._heading_button_parts is None:
             frame = self._header_stack[-1]
@@ -1216,7 +1221,10 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            self._flush_pending_heading_inline()
+            self._link_outer_prefix = "".join(
+                part for _, part in self._heading_pending_inline
+            )
+            self._heading_pending_inline = []
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._link_heading_parts = []

@@ -501,6 +501,11 @@ def test_emphasis_around_a_heading_link_stays_outside_the_link():
     assert html_to_markdown(html) == "### *[Title](x)*"
 
 
+def test_heading_link_wrapper_stays_outside_after_a_button_is_discarded():
+    html = '<h3><button>Info</button><em><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
 def test_break_between_sibling_buttons_does_not_break_the_selected_title():
     html = "<h3><button>Old</button><br><button>Title</button></h3>"
     assert html_to_markdown(html) == "### Title"
