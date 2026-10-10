@@ -214,11 +214,12 @@ _PLAIN_SUPERSCRIPT_WORDS = frozenset(
 _ORDINAL_SUPERSCRIPT_WORDS = frozenset({"e", "º", "ª", ":a", ":e"})
 _MATH_BASE_WORDS = frozenset({"cos", "ln", "log", "mc", "sin", "tan"})
 _UNIT_BASE = re.compile(
-    r"^(?:[YZEPTGMkhdcmunpfazyµμ]?m|[munpfazyµμ]?s|[kMGT]?Hz|[kMGT]?Pa|mol|in|ft|yd|mi)$"
+    r"^(?:(?:da|[YZEPTGMkhdcmunpfazyµμ])?"
+    r"(?:m|g|s|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|S|Wb|T|H|lm|lx|Bq|Gy|Sv|kat|L|l|rad|sr)"
+    r"|in|ft|yd|mi)$"
 )
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
-_TRAILING_MARKDOWN_LINK = re.compile(r"\[(?P<label>[^\[\]\n]+)\]\([^()\n]*\)$")
 _NUMERIC_REFERENCE = re.compile(r"^\d+(?:\s*[,;]\s*\d+|\s*[-–—]\s*\d+)*$")
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
@@ -233,6 +234,35 @@ _HEADER_MAX_RENDERED_CHARS = 800
 
 # pages nest headers one or two deep; past this, closing a frame cannot copy an unbounded chain
 _MAX_HEADER_NESTING = 8
+
+
+def _trailing_markdown_link(markdown: str) -> tuple[int, str] | None:
+    if not markdown.endswith(")"):
+        return None
+    depth = 0
+    for index in range(len(markdown) - 1, -1, -1):
+        if markdown[index] not in "()":
+            continue
+        escapes = 0
+        back = index - 1
+        while back >= 0 and markdown[back] == "\\":
+            escapes += 1
+            back -= 1
+        if escapes % 2:
+            continue
+        if markdown[index] == ")":
+            depth += 1
+            continue
+        depth -= 1
+        if depth:
+            continue
+        if index < 2 or markdown[index - 1] != "]":
+            return None
+        label_start = markdown.rfind("[", 0, index - 1)
+        if label_start < 0:
+            return None
+        return label_start, markdown[label_start + 1 : index - 1]
+    return None
 
 
 class _HeaderFrame:
@@ -592,8 +622,9 @@ class _MarkdownRenderer(HTMLParser):
             and ordinal_prefix[-1].isdigit()
             and label.lower() in _ORDINAL_SUPERSCRIPT_WORDS
         )
-        if prefix_link := _TRAILING_MARKDOWN_LINK.search(prefix):
-            prefix = prefix[: prefix_link.start()] + prefix_link.group("label")
+        if prefix_link := _trailing_markdown_link(prefix):
+            link_start, link_label = prefix_link
+            prefix = prefix[:link_start] + link_label
         word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~"))
         word = word_match.group(1) if word_match else ""
         numeric_reference = bool(
