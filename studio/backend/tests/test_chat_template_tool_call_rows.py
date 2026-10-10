@@ -79,7 +79,7 @@ _MISTRAL_TOOL_ID_TEMPLATE = """
 
 _TOOLS_TEMPLATE = """
 {%- if tools %}
-{%- for tool in tools %}{{- '<tool>' + tool.name + ':' + (tool.parameters | tojson) + '</tool>' }}{%- endfor %}
+{%- for tool in tools %}{{- '<tool>' + tool.function.name + ':' + (tool.function.parameters | tojson) + '</tool>' }}{%- endfor %}
 {%- endif %}
 {%- for message in messages %}{{- '<' + message.role + '>' + (message.content or '') }}{%- endfor %}
 """
@@ -228,14 +228,16 @@ def test_null_content_is_dropped_before_the_row_as_loaded_is_tried():
     ]
 
 
-def test_dropped_row_reports_the_template_error_of_the_cleaned_row():
+def test_parallel_tool_calls_fall_back_to_single_call_turns():
     parallel = _tool_call_row('{"city": "Paris"}')
     parallel[1]["tool_calls"].append({**parallel[1]["tool_calls"][0], "id": "call_1"})
 
     result = _format([_plain_row(), parallel], _LLAMA3_TEMPLATE)
 
     assert result["success"] is True
-    assert "one tool call per message" in result["dropped_rows_warning"]
+    assert result["dropped_rows_warning"] is None
+    assert len(result["dataset"]) == 2
+    assert result["dataset"][1]["text"].count('"name": "get_weather"') == 2
 
 
 def test_template_probe_counts_rows_after_cleaning():
@@ -304,6 +306,26 @@ def test_sharegpt_function_call_list_trains_every_call():
     assert '<|im_start|>tool\n{"temp": 18}' in text
 
 
+def test_sharegpt_function_call_list_falls_back_for_single_call_templates():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"temp": 24}'})
+
+    result = _format_sharegpt([row], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert text.count("<|start_header_id|>assistant<|end_header_id|>") == 3
+    assert text.count("<|start_header_id|>ipython<|end_header_id|>") == 2
+    assert '"parameters": {"city": "Paris"}' in text
+    assert '"parameters": {"city": "Rome"}' in text
+
+
 def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
@@ -350,6 +372,10 @@ def test_sharegpt_row_tool_catalog_is_decoded_and_rendered():
     text = result["dataset"][0]["text"]
     assert '<tool>get_weather:{"type": "object"' in text
     assert "<assistant>" in text
+
+    gemma_result = _format_sharegpt([row], _GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
+    assert gemma_result["success"] is True, gemma_result["errors"]
+    assert "declaration:get_weather" in gemma_result["dataset"][0]["text"]
 
 
 def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():

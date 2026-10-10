@@ -229,19 +229,30 @@ def _decode_tools(tools):
             raise ValueError("Tools must be valid JSON") from error
     if tools is not None and not isinstance(tools, list):
         raise ValueError("Tools must be a JSON list")
-    return tools
+    if tools is None:
+        return None
+    return [
+        tool
+        if not isinstance(tool, dict) or "function" in tool
+        else {"type": "function", "function": tool}
+        for tool in tools
+    ]
 
 
 def _render_conversation(tokenizer, conversation, tools = None):
-    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+    from core.inference.chat_template_helpers import (
+        _normalize_tool_call_arguments,
+        _split_parallel_tool_calls,
+    )
 
     conversation = _sharegpt_tool_turns(conversation)
     tools = _decode_tools(tools)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
-            if not any(attempt is seen for seen in attempts):
-                attempts.append(attempt)
+            for candidate in (attempt, _split_parallel_tool_calls(attempt)):
+                if not any(candidate is seen for seen in attempts):
+                    attempts.append(candidate)
     first_error = None
     for attempt in attempts:
         try:
