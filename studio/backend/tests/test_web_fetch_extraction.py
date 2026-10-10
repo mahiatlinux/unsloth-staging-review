@@ -327,9 +327,7 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # skipped blocks close <p>, so optional-close bookkeeping must run before skipping them
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
@@ -338,8 +336,257 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            '<h3 data-state="closed"><button type="button" aria-controls="r1" aria-expanded="false">'
+            'What is the right plan for me?<span aria-hidden="true">v</span></button></h3>'
+            '<div id="r1" role="region"><p>Answer text.</p></div>',
+            "### What is the right plan for me?",
+        ),
+        (
+            '<h2 class="accordion-header">\n  <button class="accordion-button" type="button" '
+            'aria-expanded="true" aria-controls="c1">\n    What is the right plan for me?\n  </button>\n</h2>'
+            '<div id="c1"><div class="accordion-body">Answer text.</div></div>',
+            "What is the right plan for me?",
+        ),
+        (
+            "<h3><button>What is the right plan for me?</button></h3><p>Answer text.</p>",
+            "### What is the right plan for me?",
+        ),
+        (
+            '<div role="heading" aria-level="3"><button aria-expanded="false">'
+            "What is the right plan for me?</button></div><p>Answer text.</p>",
+            "What is the right plan for me?",
+        ),
+    ],
+)
+def test_accordion_question_in_a_heading_button_is_kept(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+
+
+def test_buttons_that_are_not_a_heading_title_are_still_dropped():
+    html = (
+        "<h4><span>Create Artifacts</span><button aria-expanded='false'>"
+        "<span class='sr-only'>More information</span></button></h4>"
+        "<p>Body text.</p><button>Subscribe</button>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "Body text." in out
+    assert "More information" not in out
+    assert "Subscribe" not in out
+
+
+@pytest.mark.parametrize(
+    "open_wrapper, close_wrapper",
+    [
+        ("", ""),
+        ("<blockquote>", "</blockquote>"),
+        ("<table><tr><td>", "</td></tr></table>"),
+        ("<pre>", "</pre>"),
+        ("<table><tr><td><table><tr><td>", "</td></tr></table></td></tr></table>"),
+    ],
+)
+def test_a_leading_utility_button_is_dropped_when_heading_text_follows(
+    open_wrapper, close_wrapper
+):
+    heading = (
+        "<h4><button><span class='sr-only'>More information</span></button>"
+        "<span>Create Artifacts</span></h4>"
+    )
+    html = f"{open_wrapper}{heading}{close_wrapper}<p>Body text.</p>"
+    out = html_to_markdown(html)
+    assert "Create Artifacts" in out
+    assert "More information" not in out
+    assert "Body text." in out
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        ("<h3><strong><button>Question?</button></strong></h3>", "### **Question?**"),
+        ("<h3><button>Question?</button><br></h3>", "### Question?"),
+        (
+            "<hgroup><h1><button>Title</button></h1><p>Subtitle</p></hgroup>",
+            "# Title",
+        ),
+    ],
+)
+def test_a_heading_button_keeps_its_position_and_own_heading_boundary(html, expected):
+    out = html_to_markdown(html)
+    assert expected in out
+
+
+def test_nested_headings_track_button_title_state_independently():
+    html = "<hgroup><h1>Title</h1><h2><button>Subtitle</button></h2></hgroup>"
+    out = html_to_markdown(html)
+    assert "# Title" in out
+    assert "## Subtitle" in out
+
+
+@pytest.mark.parametrize("first_button", ["More information", ""])
+def test_a_later_sibling_heading_button_replaces_the_provisional_title(first_button):
+    html = (
+        f"<h4><button>{first_button}</button><button>Create Artifacts</button></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "More information" not in out
+    assert "Body text." in out
+
+
+def test_an_accessible_only_sibling_does_not_replace_a_visible_button_title():
+    html = (
+        '<h3><button>Question?</button><button aria-label="Copy link"><svg/></button></h3>'
+    )
+    out = html_to_markdown(html)
+    assert out == "### Question?"
+
+
+def test_screen_reader_only_utility_does_not_replace_a_visible_button_title():
+    html = (
+        '<h3><button>Question?</button><button><span class="sr-only">'
+        "Copy link</span></button></h3>"
+    )
+    assert html_to_markdown(html) == "### Question?"
+
+
+@pytest.mark.parametrize(
+    "button",
+    [
+        '<button aria-label="Question?"><svg/></button>',
+        '<button><img alt="Question?"></button>',
+    ],
+)
+def test_an_accessible_only_heading_button_supplies_the_title(button):
+    assert html_to_markdown(f"<h3>{button}</h3>") == "### Question?"
+
+
+def test_a_button_aria_label_overrides_descendant_accessible_labels():
+    html = (
+        '<h3><button aria-label="Question?"><span role="img" '
+        'aria-label="Expand"></span></button></h3>'
+    )
+    assert html_to_markdown(html) == "### Question?"
+
+
+def test_discarded_sibling_button_formatting_does_not_wrap_the_selected_title():
+    html = (
+        "<h3><em><button>More information</button></em>"
+        "<strong><button>Create Artifacts</button></strong></h3>"
+    )
+    assert html_to_markdown(html) == "### **Create Artifacts**"
+
+
+def test_shared_and_nested_candidate_formatting_stays_balanced():
+    html = (
+        "<h3><em><button>Old</button><strong><button>Title</button>"
+        "</strong></em></h3>"
+    )
+    assert html_to_markdown(html) == "### ***Title***"
+
+
+def test_discarded_sibling_button_code_does_not_wrap_the_selected_title():
+    html = "<h3><code><button>Old</button></code><button>Title</button></h3>"
+    assert html_to_markdown(html) == "### Title"
+
+
+def test_emphasis_around_a_heading_link_stays_outside_the_link():
+    html = '<h3><em><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
+def test_heading_link_wrapper_stays_outside_after_a_button_is_discarded():
+    html = '<h3><button>Info</button><em><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
+def test_shared_button_and_link_wrapper_stays_outside_the_link():
+    html = '<h3><em><button>Info</button><a href="x">Title</a></em></h3>'
+    assert html_to_markdown(html) == "### *[Title](x)*"
+
+
+def test_empty_link_keeps_a_shared_wrapper_attached_to_the_button_title():
+    html = '<h3><em><button>Title</button><a id="x"></a></em></h3>'
+    assert html_to_markdown(html) == "### *Title*"
+
+
+def test_break_between_sibling_buttons_does_not_break_the_selected_title():
+    html = "<h3><button>Old</button><br><button>Title</button></h3>"
+    assert html_to_markdown(html) == "### Title"
+
+
+def test_line_break_inside_a_button_title_stays_on_the_heading_line():
+    html = "<h3><button>Line one<br>line two</button></h3>"
+    assert html_to_markdown(html) == "### Line one line two"
+
+
+def test_nested_heading_prefix_survives_candidate_replacement():
+    html = (
+        "<hgroup><p><button>Category</button></p>"
+        "<h1><button>Title</button></h1></hgroup>"
+    )
+    assert html_to_markdown(html) == "# Title"
+
+
+def test_an_implicitly_closed_heading_flushes_its_button_into_the_original_cell():
+    html = (
+        "<table><tr><td><h3><button>Title</button>"
+        "<td>Body</td></tr></table>"
+    )
+    out = html_to_markdown(html)
+    assert "TitleBody" not in out
+    assert out.index("Title") < out.index("Body")
+
+
+@pytest.mark.parametrize(
+    "heading_content",
+    [
+        '<img src="feature.png" alt="Create Artifacts">',
+        '<input type="image" src="feature.png" alt="Create Artifacts">',
+        '<span role="img" aria-label="Create Artifacts"></span>',
+    ],
+)
+def test_a_button_after_accessible_heading_content_is_dropped(heading_content):
+    html = (
+        f"<h4>{heading_content}<button aria-expanded='false'>More information</button></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+def test_a_button_inside_an_accessibly_named_heading_is_dropped():
+    html = (
+        '<h4 aria-label="Create Artifacts"><button>More information</button></h4>'
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<h4>&#67;&#114;&#101;&#97;&#116;&#101;<button>More information</button></h4><p>Body text.</p>",
+        "<h4>&eacute;<button>More information</button></h4><p>Body text.</p>",
+        "<hgroup><h1>Create</h1><h2></h2><button>More information</button></hgroup><p>Body text.</p>",
+    ],
+)
+def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
 def test_visible_void_hr_still_renders():
-    # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
     out = html_to_markdown(html)
     assert "---" in out
