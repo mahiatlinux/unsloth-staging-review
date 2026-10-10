@@ -231,12 +231,22 @@ def _decode_tools(tools):
         raise ValueError("Tools must be a JSON list")
     if tools is None:
         return None
-    return [
-        tool
-        if not isinstance(tool, dict) or "function" in tool
-        else {"type": "function", "function": tool}
-        for tool in tools
-    ]
+    decoded = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            decoded.append(tool)
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict):
+            decoded.append({key: value for key, value in tool.items() if value is not None})
+            continue
+        flat = {
+            key: value
+            for key, value in tool.items()
+            if key != "function" and value is not None
+        }
+        decoded.append({"type": "function", "function": flat})
+    return decoded
 
 
 def _render_conversation(tokenizer, conversation, tools = None):

@@ -378,6 +378,29 @@ def test_sharegpt_row_tool_catalog_is_decoded_and_rendered():
     assert "declaration:get_weather" in gemma_result["dataset"][0]["text"]
 
 
+def test_mixed_flat_and_wrapped_tool_catalogs_ignore_arrow_null_fields():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    schema = {
+        "name": "get_weather",
+        "description": "Get the weather for a city",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    }
+    flat = _sharegpt_tool_row(call)
+    flat["tools"] = [schema]
+    wrapped = _sharegpt_tool_row(call)
+    wrapped["tools"] = [{"type": "function", "function": schema}]
+
+    result = _format_sharegpt([flat, wrapped], _TOOLS_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert len(result["dataset"]) == 2
+    assert all("<tool>get_weather:" in text for text in result["dataset"]["text"])
+
+
 def test_sharegpt_tool_result_gets_the_call_id_and_name_required_by_mistral():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
