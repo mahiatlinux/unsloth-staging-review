@@ -665,13 +665,14 @@ class _MarkdownRenderer(HTMLParser):
         )
         number_base = re.search(r"\d+(?:[.,]\d+)?$", prefix)
         before_number = prefix[: number_base.start()].rstrip() if number_base else ""
+        numeric_word = re.search(r"([^\W\d_]+)$", before_number.rstrip(".,;:!?*_`~\"')]}»’”"))
         numeric_prose_reference = bool(
             marker
             and number_base
             and number_base.start() > 0
             and prefix[number_base.start() - 1].isspace()
-            and before_number
-            and before_number[-1].isalpha()
+            and numeric_word
+            and len(numeric_word.group(1)) > 1
         )
         if (
             not label

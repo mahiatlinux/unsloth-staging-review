@@ -747,6 +747,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Alice<sup>a</sup>, Bob<sup>b,c</sup>, x<sup>n</sup>", "Alicea, Bobb,c, x^n"),
         ("Alice<sup>ii</sup>, Claim<sup>1a</sup>, x<sup>ii</sup>", "Aliceii, Claim1a, x^ii"),
         ("Published in 2020<sup>1</sup>; 10<sup>2</sup>", "Published in 20201; 10^2"),
+        ("Published: 2020<sup>1</sup>; x = 10<sup>2</sup>", "Published: 20201; x = 10^2"),
         ("5x10<sup>3</sup> and x10<sup>3</sup>", "5x10^3 and x10^3"),
         ("el 1.<sup>º</sup> puesto, la 1.<sup>ª</sup>", "el 1.º puesto, la 1.ª"),
         ("km<sup>2</sup> and E=mc<sup>2</sup>", "km^2 and E=mc^2"),
