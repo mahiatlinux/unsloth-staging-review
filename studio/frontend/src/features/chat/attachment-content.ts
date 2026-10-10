@@ -1183,6 +1183,15 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   const nums = byId(numbering.root, n, "num", "numId");
   const styles = related("styles");
   const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
+  const defaultParagraphStyleId = styles
+    ? childElements(styles.root, styles.w, "style")
+        .find(
+          (style) =>
+            style.getAttributeNS(styles.w, "type") === "paragraph" &&
+            !["", "0", "false", "off"].includes(style.getAttributeNS(styles.w, "default") ?? ""),
+        )
+        ?.getAttributeNS(styles.w, "styleId") ?? undefined
+    : undefined;
   const styleNumberValue = (id: string | undefined, name: string, depth = 0): string | undefined => {
     const style = id === undefined ? undefined : styleById.get(id);
     if (!style || depth > 20) return undefined;
@@ -1264,7 +1273,7 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       };
       if (removed && !hasAcceptedContent(p)) continue;
       const direct = pPr && childElements(pPr, w, "numPr")[0];
-      const styleId = wordValue(pPr, "pStyle");
+      const styleId = wordValue(pPr, "pStyle") ?? defaultParagraphStyleId;
       const numId = wordValue(direct, "numId") ?? styleNumberValue(styleId, "numId");
       const num = numId === undefined ? undefined : nums.get(numId);
       const abstract = abstractFor(num);

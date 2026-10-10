@@ -1897,6 +1897,45 @@ test("a numbered paragraph keeps a surviving Word note reference", () => {
   }
 });
 
+test("the default Word paragraph style supplies numbering", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([
+      ["numbering", "numbering.xml"],
+      ["styles", "styles.xml"],
+    ]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body><w:p><w:r><w:t>Default one</w:t></w:r></w:p>` +
+        "<w:p><w:r><w:t>Default two</w:t></w:r></w:p></w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/>` +
+        '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}><w:style w:type="paragraph" w:default="1" w:styleId="Normal">` +
+        '<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style></w:styles>',
+    ),
+  });
+
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const main = strFromU8(unzipSync(writeDocxListNumbers(bytes))["word/document.xml"]);
+    assert.deepEqual(
+      Array.from(main.matchAll(/<w:t xml:space="preserve">([12]\. )<\/w:t>/g), (match) => match[1]),
+      ["1. ", "2. "],
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
 test("an html ordered list keeps its numbers", async () => {
   const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
     Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
