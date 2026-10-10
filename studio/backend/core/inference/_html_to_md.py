@@ -552,7 +552,9 @@ class _MarkdownRenderer(HTMLParser):
             frame.rendered_chars += len(measured.strip())
             frame.parts.append(text)
             return
-        if self._in_link:
+        if buffering_heading_button:
+            self._heading_button_parts.append(text)
+        elif self._in_link:
             self._link_text_parts.append(text)
             if self._heading_marks:
                 self._link_heading_parts.append(text)
@@ -564,8 +566,6 @@ class _MarkdownRenderer(HTMLParser):
             self._table_stack[-1].parts.append(text)
         elif self._bq_stack:
             self._bq_stack[-1].append(text)
-        elif buffering_heading_button:
-            self._heading_button_parts.append(text)
         else:
             self._out.append(text)
 
@@ -1220,7 +1220,10 @@ class _MarkdownRenderer(HTMLParser):
         self._mark_heading_text(data)
         if self._in_pre:
             self._count_header_text(data)
-            self._pre_parts.append(data)
+            if self._heading_button_mark is not None:
+                self._emit(data)
+            else:
+                self._pre_parts.append(data)
             return
         # Preserve literal whitespace inside inline <code> spans.
         if self._inline_code_depth:

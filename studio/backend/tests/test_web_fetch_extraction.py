@@ -381,13 +381,26 @@ def test_buttons_that_are_not_a_heading_title_are_still_dropped():
     assert "Subscribe" not in out
 
 
-def test_a_leading_utility_button_is_dropped_when_heading_text_follows():
-    html = (
+@pytest.mark.parametrize(
+    "open_wrapper, close_wrapper",
+    [
+        ("", ""),
+        ("<blockquote>", "</blockquote>"),
+        ("<table><tr><td>", "</td></tr></table>"),
+        ("<pre>", "</pre>"),
+        ("<table><tr><td><table><tr><td>", "</td></tr></table></td></tr></table>"),
+    ],
+)
+def test_a_leading_utility_button_is_dropped_when_heading_text_follows(
+    open_wrapper, close_wrapper
+):
+    heading = (
         "<h4><button><span class='sr-only'>More information</span></button>"
-        "<span>Create Artifacts</span></h4><p>Body text.</p>"
+        "<span>Create Artifacts</span></h4>"
     )
+    html = f"{open_wrapper}{heading}{close_wrapper}<p>Body text.</p>"
     out = html_to_markdown(html)
-    assert "#### Create Artifacts" in out
+    assert "Create Artifacts" in out
     assert "More information" not in out
     assert "Body text." in out
 
