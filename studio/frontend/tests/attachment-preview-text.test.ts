@@ -1745,6 +1745,8 @@ test("a Word numbered list keeps its numbers", async () => {
         p("First numbered child", numPr(18, 1)) +
         p("Second bullet parent", numPr(18)) +
         p("Second numbered child", numPr(18, 1)) +
+        p("Style-associated level", '<w:pStyle w:val="AssociatedList"/>') +
+        p("Invalid deeper placeholder", numPr(21)) +
         "</w:body></w:document>",
     ),
     "word/numbering.xml": strToU8(
@@ -1770,6 +1772,8 @@ test("a Word numbered list keeps its numbers", async () => {
         `<w:abstractNum w:abstractNumId="11">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="12">${lvl(0, "decimal", "%1.")}</w:abstractNum>` +
         `<w:abstractNum w:abstractNumId="13">${lvl(0, "bullet", "•")}${lvl(1, "decimal", "%2.")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="14">${lvl(0, "decimal", "%1.")}${lvl(1, "upperLetter", "%1.%2.", '<w:pStyle w:val="AssociatedList"/>')}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="15">${lvl(0, "decimal", "%2.")}${lvl(1, "decimal", "%2.")}</w:abstractNum>` +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
         '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
@@ -1788,6 +1792,8 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:num w:numId="16"><w:abstractNumId w:val="11"/></w:num>' +
         '<w:num w:numId="17"><w:abstractNumId w:val="12"/></w:num>' +
         '<w:num w:numId="18"><w:abstractNumId w:val="13"/></w:num>' +
+        '<w:num w:numId="20"><w:abstractNumId w:val="14"/></w:num>' +
+        '<w:num w:numId="21"><w:abstractNumId w:val="15"/></w:num>' +
         "</w:numbering>",
     ),
     "word/styles.xml": strToU8(
@@ -1796,6 +1802,7 @@ test("a Word numbered list keeps its numbers", async () => {
         '<w:style w:type="paragraph" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="8"/></w:numPr></w:pPr></w:style>' +
         '<w:style w:type="paragraph" w:styleId="DerivedList"><w:basedOn w:val="BaseList"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style>' +
         '<w:style w:type="numbering" w:styleId="LinkedNumbering"><w:pPr><w:numPr><w:numId w:val="14"/></w:numPr></w:pPr></w:style>' +
+        '<w:style w:type="paragraph" w:styleId="AssociatedList"><w:pPr><w:numPr><w:numId w:val="20"/></w:numPr></w:pPr></w:style>' +
         "</w:styles>",
     ),
   });
@@ -1819,7 +1826,8 @@ test("a Word numbered list keeps its numbers", async () => {
         "mmmm. Roman four thousand\n\n1000001. Bounded roman\n\n26001. Bounded letter\n\nUnsupported ordinal\n\n" +
         "a. Linked numbering style\n\n1. Restart before break\n\n1. Continue before break\n\n" +
         "1. Restart after break\n\n2. Continue after break\n\n1. Visible after deletion\n\n" +
-        "First bullet parent\n\n1. First numbered child\n\nSecond bullet parent\n\n1. Second numbered child\n\n",
+        "First bullet parent\n\n1. First numbered child\n\nSecond bullet parent\n\n1. Second numbered child\n\n" +
+        "1.A. Style-associated level\n\nInvalid deeper placeholder\n\n",
     );
   } finally {
     Object.assign(globals, original);

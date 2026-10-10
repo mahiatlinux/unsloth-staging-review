@@ -1269,8 +1269,6 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       const num = numId === undefined ? undefined : nums.get(numId);
       const abstract = abstractFor(num);
       if (!num || !abstract) continue;
-      const ilvl = Number(wordValue(direct, "ilvl") ?? styleNumberValue(styleId, "ilvl") ?? 0);
-      if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
       const overrides = childElements(num, n, "lvlOverride");
       const level = (index: number) => {
         const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
@@ -1283,6 +1281,17 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
         const restart = Number.isInteger(parsedRestart) && parsedRestart >= 0 ? parsedRestart : index;
         return { lvl, start, restart, format: wordValue(lvl, "numFmt") };
       };
+      let styleLevel: number | undefined;
+      for (let index = 0; styleId !== undefined && index <= 8; index++) {
+        if (wordValue(level(index).lvl, "pStyle") === styleId) {
+          styleLevel = index;
+          break;
+        }
+      }
+      const ilvl = Number(
+        wordValue(direct, "ilvl") ?? styleLevel ?? styleNumberValue(styleId, "ilvl") ?? 0,
+      );
+      if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) continue;
       const { lvl, format } = level(ilvl);
       if (!lvl) continue;
       const key = `num:${numId}`;
@@ -1301,6 +1310,10 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       let complete = true;
       const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
         const index = Number(digit) - 1;
+        if (index > ilvl) {
+          complete = false;
+          return "";
+        }
         const target = level(index);
         const value = wordListNumber(
           counts[index] ?? target.start,
