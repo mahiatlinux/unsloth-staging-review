@@ -84,6 +84,16 @@ _TOOLS_TEMPLATE = """
 {%- for message in messages %}{{- '<' + message.role + '>' + (message.content or '') }}{%- endfor %}
 """
 
+_FIRST_TOOL_ONLY_TEMPLATE = """
+{%- for message in messages %}
+{%- if message.role == 'assistant' and message.tool_calls %}
+{%- set call = message.tool_calls[0].function %}{{- '<call>' + call.name + ':' + (call.arguments | tojson) + '</call>' }}
+{%- elif message.role == 'tool' %}{{- '<result>' + message.content + '</result>' }}
+{%- else %}{{- '<' + message.role + '>' + (message.content or '') }}
+{%- endif %}
+{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -263,10 +273,14 @@ def _sharegpt_tool_row(call):
     }
 
 
-def _format_sharegpt(rows, template):
+def _format_sharegpt(
+    rows,
+    template,
+    model_name = "stub-model",
+):
     return format_and_template_dataset(
         Dataset.from_list(rows),
-        model_name = "stub-model",
+        model_name = model_name,
         tokenizer = _JinjaTokenizer(template),
         num_proc = 1,
     )
@@ -324,6 +338,26 @@ def test_sharegpt_function_call_list_falls_back_for_single_call_templates():
     assert text.count("<|start_header_id|>ipython<|end_header_id|>") == 2
     assert '"parameters": {"city": "Paris"}' in text
     assert '"parameters": {"city": "Rome"}' in text
+
+
+def test_gpt_oss_splits_parallel_calls_before_a_silent_first_call_render():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"temp": 24}'})
+
+    result = _format_sharegpt([row], _FIRST_TOOL_ONLY_TEMPLATE, model_name = "openai/gpt-oss-20b")
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert text.count("<call>get_weather:") == 2
+    assert '"city": "Paris"' in text
+    assert '"city": "Rome"' in text
+    assert text.count("<result>") == 2
 
 
 def test_sharegpt_function_call_keeps_null_content_for_deepseek_templates():

@@ -9,7 +9,7 @@ import warnings as python_warnings
 from .cells import cell_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
-from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
+from .model_mappings import MODEL_TO_TEMPLATE_MAPPER, is_gpt_oss_model_name
 from loggers import get_logger
 logger = get_logger(__name__)
 
@@ -249,7 +249,7 @@ def _decode_tools(tools):
     return decoded
 
 
-def _render_conversation(tokenizer, conversation, tools = None):
+def _render_conversation(tokenizer, conversation, tools = None, split_parallel_first = False):
     from core.inference.chat_template_helpers import (
         _normalize_tool_call_arguments,
         _split_parallel_tool_calls,
@@ -260,7 +260,9 @@ def _render_conversation(tokenizer, conversation, tools = None):
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
-            for candidate in (attempt, _split_parallel_tool_calls(attempt)):
+            split = _split_parallel_tool_calls(attempt)
+            candidates = (split, attempt) if split_parallel_first else (attempt, split)
+            for candidate in candidates:
                 if not any(candidate is seen for seen in attempts):
                     attempts.append(candidate)
     first_error = None
@@ -278,11 +280,13 @@ def _render_conversation(tokenizer, conversation, tools = None):
     raise first_error
 
 
-def _count_renderable(tokenizer, conversations):
+def _count_renderable(tokenizer, conversations, split_parallel_first = False):
     rendered = 0
     for conversation, tools in conversations:
         try:
-            _render_conversation(tokenizer, conversation, tools)
+            _render_conversation(
+                tokenizer, conversation, tools, split_parallel_first = split_parallel_first
+            )
             rendered += 1
         except Exception:
             pass
@@ -310,7 +314,9 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
     return conversations
 
 
-def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
+def keep_renderable_chat_template(
+    tokenizer, dataset, chat_column, own_template, split_parallel_first = False
+):
     """Restore the checkpoint template if it renders more sampled rows; return a log note."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
@@ -320,12 +326,19 @@ def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
     if not conversations:
         return None
 
-    rendered_by_override = _count_renderable(tokenizer, conversations)
+    rendered_by_override = _count_renderable(
+        tokenizer, conversations, split_parallel_first = split_parallel_first
+    )
     if rendered_by_override == len(conversations):
         return None
 
     _set_chat_template(tokenizer, own_template)
-    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+    if (
+        _count_renderable(
+            tokenizer, conversations, split_parallel_first = split_parallel_first
+        )
+        <= rendered_by_override
+    ):
         _set_chat_template(tokenizer, override)
         return None
 
@@ -345,7 +358,13 @@ def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
 
     own_template = getattr(tokenizer, "chat_template", None)
     tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
-    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    note = keep_renderable_chat_template(
+        tokenizer,
+        dataset,
+        chat_column,
+        own_template,
+        split_parallel_first = is_gpt_oss_model_name(model_name),
+    )
     try:
         chosen = (model_name, getattr(tokenizer, "chat_template", None))
         setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
@@ -589,6 +608,8 @@ def apply_chat_template_to_dataset(
         if not is_standardized:
             warnings.append("Dataset may not be fully standardized")
 
+        split_parallel_first = is_gpt_oss_model_name(model_name)
+
         if model_name:
             tokenizer, kept_own_template = resolve_dataset_chat_template(
                 tokenizer, model_name, dataset, chat_column
@@ -620,12 +641,22 @@ def apply_chat_template_to_dataset(
                 try:
                     with_system = _with_system_turn(convo, system)
                     try:
-                        text = _render_conversation(tokenizer, with_system, tools)
+                        text = _render_conversation(
+                            tokenizer,
+                            with_system,
+                            tools,
+                            split_parallel_first = split_parallel_first,
+                        )
                     except Exception:
                         # A template without a system role still trains the conversation.
                         if with_system is convo:
                             raise
-                        text = _render_conversation(tokenizer, convo, tools)
+                        text = _render_conversation(
+                            tokenizer,
+                            convo,
+                            tools,
+                            split_parallel_first = split_parallel_first,
+                        )
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
