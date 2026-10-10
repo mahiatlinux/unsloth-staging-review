@@ -208,7 +208,7 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-_ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
+_PLAIN_SUPERSCRIPT_WORDS = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -499,7 +499,7 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str], int, int] | None] = []
+        self._sup_starts: list[tuple[list[str] | None, int, int, int]] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -564,10 +564,9 @@ class _MarkdownRenderer(HTMLParser):
         return self._out
 
     def _finish_sup(self) -> None:
-        opened = self._sup_starts.pop()
-        if opened is None or opened[0] is not self._emit_target():
+        target, start, heading_start, _depth = self._sup_starts.pop()
+        if target is None or target is not self._emit_target():
             return
-        target, start, heading_start = opened
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
@@ -576,7 +575,7 @@ class _MarkdownRenderer(HTMLParser):
             or "\n" in shown
             or shown[0] in "[."
             or not any(c.isalnum() for c in shown)
-            or shown.lower() in _ORDINAL_SUFFIXES
+            or shown.lower() in _PLAIN_SUPERSCRIPT_WORDS
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
@@ -807,6 +806,10 @@ class _MarkdownRenderer(HTMLParser):
                 self._closable_open -= 1
         del self._open_tags[index:]
 
+    def _finish_supers_from_depth(self, depth: int) -> None:
+        while self._sup_starts and self._sup_starts[-1][3] >= depth:
+            self._finish_sup()
+
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
 
@@ -836,6 +839,7 @@ class _MarkdownRenderer(HTMLParser):
             while self._heading_marks and self._heading_marks[-1] >= close_at:
                 self._heading_marks.pop()
             self._close_header_frames(close_at)
+            self._finish_supers_from_depth(close_at)
 
     def _close_header_frames(
         self,
@@ -990,6 +994,7 @@ class _MarkdownRenderer(HTMLParser):
                     while self._heading_marks and self._heading_marks[-1] >= i:
                         self._heading_marks.pop()
                     self._close_header_frames(i, own_tag = tag == "header")
+                    self._finish_supers_from_depth(i)
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
@@ -1042,7 +1047,12 @@ class _MarkdownRenderer(HTMLParser):
             target = self._emit_target()
             reference = "reference" in (attr_dict.get("class") or "").split()
             self._sup_starts.append(
-                None if reference else (target, len(target), len(self._link_heading_parts))
+                (
+                    None if reference else target,
+                    len(target),
+                    len(self._link_heading_parts),
+                    len(self._open_tags) - 1,
+                )
             )
 
         elif tag in _BLOCK_TAGS:
@@ -1143,9 +1153,6 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
-
-        elif tag == "sup" and self._sup_starts:
-            self._finish_sup()
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")

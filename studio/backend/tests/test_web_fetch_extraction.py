@@ -738,6 +738,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("2<sup>n + 1</sup>", "2^(n + 1)"),
         ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
         ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("Widget<sup>TM</sup> and Service<sup>SM</sup>", "WidgetTM and ServiceSM"),
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
@@ -768,6 +769,11 @@ def test_footnote_superscripts_render_unchanged():
         "volume<sup>[13]</sup></p>"
     )
     assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_misnested_superscript_does_not_capture_following_text():
+    html = "<p><span>10<sup>2</span> times</sup></p>"
+    assert html_to_markdown(html) == "10^2 times"
 
 
 def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
