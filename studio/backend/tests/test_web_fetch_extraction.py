@@ -421,6 +421,13 @@ def test_a_heading_button_keeps_its_position_and_own_heading_boundary(html, expe
     assert expected in out
 
 
+def test_nested_headings_track_button_title_state_independently():
+    html = "<hgroup><h1>Title</h1><h2><button>Subtitle</button></h2></hgroup>"
+    out = html_to_markdown(html)
+    assert "# Title" in out
+    assert "## Subtitle" in out
+
+
 @pytest.mark.parametrize("first_button", ["More information", ""])
 def test_a_later_sibling_heading_button_replaces_the_provisional_title(first_button):
     html = (

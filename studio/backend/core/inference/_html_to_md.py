@@ -450,7 +450,7 @@ class _MarkdownRenderer(HTMLParser):
         self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
         self._heading_marks: list[int] = []
-        self._heading_has_text: bool = False
+        self._heading_text_marks: set[int] = set()
         self._heading_button_parts: list[str] | None = None
         self._heading_button_trailing_parts: list[str] = []
         self._heading_button_candidates: list[tuple[list[str], list[str], bool]] = []
@@ -582,7 +582,7 @@ class _MarkdownRenderer(HTMLParser):
     def _mark_heading_text(self, text: str) -> None:
         if self._heading_marks and self._heading_button_mark is None and text.strip():
             self._discard_heading_button()
-            self._heading_has_text = True
+            self._heading_text_marks.update(self._heading_marks)
 
     def _discard_heading_button(self) -> None:
         literal_parts = [
@@ -655,8 +655,8 @@ class _MarkdownRenderer(HTMLParser):
             if i < len(between_parts):
                 output.extend(between_parts[i])
         output.extend(trailing)
-        if selected is not None and not self._heading_has_text:
-            self._heading_has_text = True
+        if selected is not None:
+            self._heading_text_marks.update(self._heading_marks)
         if output:
             self._emit("".join(output))
 
@@ -914,7 +914,7 @@ class _MarkdownRenderer(HTMLParser):
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
-                self._heading_marks.pop()
+                self._heading_text_marks.discard(self._heading_marks.pop())
             self._close_header_frames(close_at)
 
     def _close_header_frames(
@@ -1007,7 +1007,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._hidden_marks.append(len(self._open_tags) - 1)
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 if not self._heading_marks:
-                    self._heading_has_text = False
+                    self._heading_text_marks.clear()
                     self._heading_button_parts = None
                     self._heading_button_trailing_parts = []
                     self._heading_button_candidates = []
@@ -1078,7 +1078,7 @@ class _MarkdownRenderer(HTMLParser):
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
                     while self._heading_marks and self._heading_marks[-1] >= i:
-                        self._heading_marks.pop()
+                        self._heading_text_marks.discard(self._heading_marks.pop())
                     self._close_header_frames(i, own_tag = tag == "header")
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
@@ -1106,7 +1106,7 @@ class _MarkdownRenderer(HTMLParser):
         if (
             tag == "button"
             and self._heading_marks
-            and not self._heading_has_text
+            and self._heading_marks[-1] not in self._heading_text_marks
             and self._heading_button_parts is not None
             and self._heading_button_mark is None
             and not _is_hidden_element(attr_dict)
@@ -1117,7 +1117,7 @@ class _MarkdownRenderer(HTMLParser):
         heading_button = (
             tag == "button"
             and bool(self._heading_marks)
-            and not self._heading_has_text
+            and self._heading_marks[-1] not in self._heading_text_marks
             and self._heading_button_parts is None
         )
         if tag in _SKIP_TAGS and not heading_button:
