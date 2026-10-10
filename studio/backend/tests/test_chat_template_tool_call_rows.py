@@ -453,7 +453,7 @@ def test_reasoning_wrapped_sharegpt_function_calls_are_decoded(wrapped_call, rea
 
 def test_content_only_template_preserves_wrapped_tool_reasoning():
     call = (
-        '<think>Check the requested city.</think>'
+        '<think>Paris</think>'
         '{"name":"get_weather","arguments":{"city":"Paris"}}'
     )
 
@@ -461,7 +461,7 @@ def test_content_only_template_preserves_wrapped_tool_reasoning():
 
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
-    assert "Check the requested city." in text
+    assert "<|im_start|>assistant\nParis<tool_call>" in text
     assert "<function=get_weather>" in text
 
 

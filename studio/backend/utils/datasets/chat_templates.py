@@ -346,15 +346,36 @@ def _reasoning_content_variant(conversation):
     return variant if changed else None
 
 
-def _reasoning_targets(conversation):
-    reasoning_targets = []
+def _reasoning_probe(conversation):
+    variant = []
+    targets = {}
+    probe_number = 0
     for message in conversation:
         if not isinstance(message, dict):
+            variant.append(message)
             continue
         reasoning = message.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning:
-            reasoning_targets.append(reasoning)
-    return reasoning_targets
+            targets[reasoning] = targets.get(reasoning, 0) + 1
+            probe = f"__unsloth_reasoning_probe_{probe_number}__"
+            message = {**message, "reasoning_content": probe}
+            if message.get("content") == reasoning:
+                message["content"] = probe
+            probe_number += 1
+        variant.append(message)
+    return variant, targets
+
+
+def _reasoning_render_score(tokenizer, rendered, conversation, kwargs):
+    probe, targets = _reasoning_probe(conversation)
+    try:
+        probe_rendered = tokenizer.apply_chat_template(probe, **kwargs)
+    except Exception:
+        return -1
+    return sum(
+        min(count, max(0, rendered.count(reasoning) - probe_rendered.count(reasoning)))
+        for reasoning, count in targets.items()
+    )
 
 
 def _tool_call_name_probe(conversation):
@@ -425,8 +446,8 @@ def _render_conversation(
     first_error = None
     best_rendered = None
     best_score = -1
-    reasoning_targets = _reasoning_targets(conversation)
-    maximum_score = len(reasoning_targets)
+    _, reasoning_targets = _reasoning_probe(conversation)
+    maximum_score = sum(reasoning_targets.values())
     for attempt in attempts:
         try:
             kwargs = {"tokenize": False, "add_generation_prompt": False}
@@ -444,7 +465,7 @@ def _render_conversation(
             if first_error is None:
                 first_error = ValueError("Chat template did not serialize every tool call")
             continue
-        score = sum(target in rendered for target in reasoning_targets)
+        score = _reasoning_render_score(tokenizer, rendered, attempt, kwargs)
         if score > best_score:
             best_rendered = rendered
             best_score = score
