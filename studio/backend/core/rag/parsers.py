@@ -59,18 +59,100 @@ _HTML_BLOCK_TAGS = frozenset(
 _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+_HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_TABLE_DEPTH = 32
+
+
+class _HtmlTable:
+    def __init__(self, sink: list) -> None:
+        self.sink = sink
+        self.row: list[list | None] | None = None
+        self.spans: list[int] = []
+
+
+def _html_span(attrs, name: str, limit: int) -> int:
+    try:
+        value = int(dict(attrs).get(name) or 1)
+    except ValueError:
+        return 1
+    # rowspan="0" runs to the end of its row group
+    return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
 class _Stripper(HTMLParser):
     """Collect visible text, one line per block element."""
 
-    def __init__(self) -> None:
+    def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
         self._pre = 0
         self._templates: list[bool] = []
         self._line: list[str] = []
         self.out: list[str] = []
+        self._tables: list[_HtmlTable] = []
+        self._span_budget = span_budget
+        self._deep = 0
+
+    def _in_table(self) -> bool:
+        return bool(self._tables) and not self._skip and not self._deep
+
+    def _end_cell(self) -> None:
+        self._flush()
+        self.out = self._tables[-1].sink
+
+    def _end_row(self) -> None:
+        self._end_cell()
+        table = self._tables[-1]
+        row, table.row = table.row, None
+        if row is None:
+            return
+        for col in range(len(row), len(table.spans)):
+            table.spans[col] = max(table.spans[col] - 1, 0)
+        self._span_budget -= max(len(table.spans) - len(row), 0)
+        if self._span_budget < 0:
+            table.spans.clear()
+        while table.spans and not table.spans[-1]:
+            table.spans.pop()
+        if len(row) == 1:
+            table.sink.extend(line for line in row[0] or () if line is not None)
+            return
+        cells: list[str] = []
+        below: list[str] = []
+        for cell in row:
+            lines = cell or []
+            split = lines.index(None) if None in lines else len(lines)
+            cells.append(" ".join(" ".join(line.split()) for line in lines[:split]))
+            below.extend(lines[split + 1 :])
+        if any(cells):
+            table.sink.append(" | ".join(cells))
+        table.sink.extend(below)
+
+    def _start_cell(self, attrs) -> None:
+        self._end_cell()
+        table = self._tables[-1]
+        if table.row is None:
+            table.row = []
+        row, spans = table.row, table.spans
+        start = len(row)
+        while len(row) < len(spans) and spans[len(row)]:
+            spans[len(row)] -= 1
+            row.append(None)
+        self._flush()
+        cell: list[str] = []
+        rowspan = _html_span(attrs, "rowspan", 65534)
+        colspan = _html_span(attrs, "colspan", 1000)
+        # Each spanned slot is an empty field, so stop spanning once they outnumber the input's characters.
+        self._span_budget -= len(row) - start + colspan - 1
+        if self._span_budget < 0:
+            rowspan = colspan = 1
+            spans[:] = [0] * len(spans)
+        for i in range(colspan):
+            if len(row) < len(spans):
+                spans[len(row)] = rowspan - 1
+            else:
+                spans.append(rowspan - 1)
+            row.append(None if i else cell)
+        self.out = cell
 
     def _flush(self) -> None:
         text = "".join(self._line)
@@ -88,8 +170,24 @@ class _Stripper(HTMLParser):
             self._skip += inert
         elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in ("td", "th") and self._in_table():
+            self._start_cell(attrs)
+        elif tag == "tr" and self._in_table():
+            self._end_row()
+            self._flush()
+            self._tables[-1].row = []
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
+            self._end_row()
+            self._tables[-1].spans = []
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
+            # Each nesting level copies its lines into the parent, so very deep tables read as plain blocks.
+            if tag == "table" and (self._deep or len(self._tables) >= _HTML_TABLE_DEPTH):
+                self._deep += 1
+            elif tag == "table":
+                if self._tables and self.out is not self._tables[-1].sink and None not in self.out:
+                    self.out.append(None)
+                self._tables.append(_HtmlTable(self.out))
             if tag in _HTML_PRE_TAGS:
                 self._pre += 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
@@ -105,8 +203,20 @@ class _Stripper(HTMLParser):
         elif tag in _HTML_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
+        elif tag in ("td", "th") and self._in_table():
+            self._end_cell()
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
+            self._end_row()
+            self._tables[-1].spans = []
+        elif tag in ("tr", "table") and self._in_table():
+            self._end_row()
+            if tag == "table":
+                self._tables.pop()
+            self._flush()
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
+            if tag == "table" and self._deep:
+                self._deep -= 1
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
@@ -118,11 +228,14 @@ class _Stripper(HTMLParser):
 
     def close(self):
         super().close()
+        while self._tables:
+            self._end_row()
+            self._tables.pop()
         self._flush()
 
 
 def _html(raw: str) -> list[Page]:
-    parser = _Stripper()
+    parser = _Stripper(len(raw))
     parser.feed(raw)
     parser.close()
     return [_page("\n".join(parser.out), 1)]
