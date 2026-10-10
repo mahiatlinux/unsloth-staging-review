@@ -220,7 +220,9 @@ _UNIT_BASE = re.compile(
 )
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=*×·÷⋅∗]|\d[^\W\d_]|[^\W\d_]\d")
 _SIMPLE_MARKDOWN_LINK = re.compile(r"^\[(?P<label>[^\[\]\n]+)\]\([^\n]+\)$")
-_NUMERIC_REFERENCE = re.compile(r"^\d+(?:\s*[,;]\s*\d+|\s*[-–—]\s*\d+)*$")
+_REFERENCE_MARKER = re.compile(
+    r"^(?:\d+|[A-Za-z])(?:\s*[,;]\s*(?:\d+|[A-Za-z])|\s*[-–—]\s*(?:\d+|[A-Za-z]))*$"
+)
 _FOOTNOTE_FRAGMENT = re.compile(
     r"^#(?:fn|footnote|cite[_-]?note)[_:-]?\d+(?:[_.:-].*)?$", re.IGNORECASE
 )
@@ -627,13 +629,17 @@ class _MarkdownRenderer(HTMLParser):
             prefix = prefix[:link_start] + link_label
         word_match = re.search(r"([^\W\d_]+)$", prefix.rstrip(".,;:!?*_`~\"')]}»’”"))
         word = word_match.group(1) if word_match else ""
-        numeric_reference = bool(
-            _NUMERIC_REFERENCE.fullmatch(label)
+        marker = _REFERENCE_MARKER.fullmatch(label) is not None
+        prose_reference = bool(
+            marker
             and len(word) > 1
             and not math_context
             and _UNIT_BASE.fullmatch(word) is None
             and word.lower() not in _MATH_BASE_WORDS
         )
+        number_base = re.search(r"\d+(?:[.,]\d+)?$", prefix)
+        before_number = prefix[: number_base.start()].rstrip() if number_base else ""
+        numeric_prose_reference = bool(marker and before_number and before_number[-1].isalpha())
         if (
             not label
             or "\n" in label
@@ -641,7 +647,8 @@ class _MarkdownRenderer(HTMLParser):
             or not any(c.isalnum() for c in label)
             or label.lower() in _PLAIN_SUPERSCRIPT_WORDS
             or ordinal
-            or numeric_reference
+            or prose_reference
+            or numeric_prose_reference
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(label) else f"^{raw}"
