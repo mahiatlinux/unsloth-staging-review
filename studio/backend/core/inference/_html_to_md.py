@@ -452,7 +452,9 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_marks: list[int] = []
         self._heading_has_text: bool = False
         self._heading_button_parts: list[str] | None = None
+        self._heading_button_trailing_parts: list[str] = []
         self._heading_button_mark: int | None = None
+        self._heading_button_owner_mark: int | None = None
 
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
@@ -506,8 +508,9 @@ class _MarkdownRenderer(HTMLParser):
         (already open at ``<header>``) must not capture it."""
         # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing one nested.
         if (
-            self._heading_button_mark is not None
-            and self._heading_button_mark >= frame.depth
+            self._heading_button_parts is not None
+            and self._heading_button_owner_mark is not None
+            and self._heading_button_owner_mark >= frame.depth
         ):
             return True
         if self._in_link:
@@ -529,7 +532,8 @@ class _MarkdownRenderer(HTMLParser):
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
-        buffering_heading_button = self._heading_button_mark is not None
+        buffering_heading_button = self._heading_button_parts is not None
+        inside_heading_button = self._heading_button_mark is not None
         # replays never tee: the text was teed on the way in, and _finish_link re-arms the tee itself
         as_heading = not buffering_heading_button and (
             (self._heading_marks and not in_nested_link and not self._replaying)
@@ -552,8 +556,10 @@ class _MarkdownRenderer(HTMLParser):
             frame.rendered_chars += len(measured.strip())
             frame.parts.append(text)
             return
-        if buffering_heading_button:
+        if inside_heading_button:
             self._heading_button_parts.append(text)
+        elif buffering_heading_button:
+            self._heading_button_trailing_parts.append(text)
         elif self._in_link:
             self._link_text_parts.append(text)
             if self._heading_marks:
@@ -571,16 +577,27 @@ class _MarkdownRenderer(HTMLParser):
 
     def _mark_heading_text(self, text: str) -> None:
         if self._heading_marks and self._heading_button_mark is None and text.strip():
-            self._heading_has_text = True
+            trailing = self._heading_button_trailing_parts
+            self._heading_button_trailing_parts = []
+            self._heading_button_owner_mark = None
+            had_button = self._heading_button_parts is not None
             self._heading_button_parts = None
+            self._heading_has_text = True
+            if had_button and trailing:
+                self._emit("".join(trailing))
 
     def _flush_heading_button(self) -> None:
         parts = self._heading_button_parts
+        trailing = self._heading_button_trailing_parts
         self._heading_button_parts = None
+        self._heading_button_trailing_parts = []
         self._heading_button_mark = None
+        self._heading_button_owner_mark = None
         if parts is not None and not self._heading_has_text:
             self._heading_has_text = True
-            self._emit("".join(parts))
+            self._emit("".join(parts + trailing))
+        elif parts is not None and trailing:
+            self._emit("".join(trailing))
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -789,7 +806,7 @@ class _MarkdownRenderer(HTMLParser):
         elif text:
             self._emit(text)
         self._emit_as_heading = False
-        if partial and self._header_stack and self._heading_button_mark is None:
+        if partial and self._header_stack and self._heading_button_parts is None:
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
@@ -926,7 +943,9 @@ class _MarkdownRenderer(HTMLParser):
                 if not self._heading_marks:
                     self._heading_has_text = False
                     self._heading_button_parts = None
+                    self._heading_button_trailing_parts = []
                     self._heading_button_mark = None
+                    self._heading_button_owner_mark = None
                 self._heading_marks.append(len(self._open_tags) - 1)
                 if self._in_link:
                     self._link_had_heading = True
@@ -1029,7 +1048,9 @@ class _MarkdownRenderer(HTMLParser):
             return
         if heading_button:
             self._heading_button_parts = []
+            self._heading_button_trailing_parts = []
             self._heading_button_mark = len(self._open_tags) - 1
+            self._heading_button_owner_mark = self._heading_marks[-1]
         accessible_text = attr_dict.get("aria-label") or ""
         if tag == "img" or (
             tag == "input" and attr_dict.get("type", "").lower() == "image"
@@ -1143,8 +1164,8 @@ class _MarkdownRenderer(HTMLParser):
         )
         if (
             close_at is not None
-            and self._heading_marks
-            and close_at <= self._heading_marks[0]
+            and self._heading_button_owner_mark is not None
+            and close_at <= self._heading_button_owner_mark
         ):
             self._flush_heading_button()
 

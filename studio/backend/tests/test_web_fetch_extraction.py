@@ -406,6 +406,22 @@ def test_a_leading_utility_button_is_dropped_when_heading_text_follows(
 
 
 @pytest.mark.parametrize(
+    "html, expected",
+    [
+        ("<h3><strong><button>Question?</button></strong></h3>", "### **Question?**"),
+        ("<h3><button>Question?</button><br></h3>", "### Question?"),
+        (
+            "<hgroup><h1><button>Title</button></h1><p>Subtitle</p></hgroup>",
+            "# Title",
+        ),
+    ],
+)
+def test_a_heading_button_keeps_its_position_and_own_heading_boundary(html, expected):
+    out = html_to_markdown(html)
+    assert expected in out
+
+
+@pytest.mark.parametrize(
     "heading_content",
     [
         '<img src="feature.png" alt="Create Artifacts">',
