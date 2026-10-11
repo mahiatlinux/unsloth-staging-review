@@ -107,6 +107,12 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
+  BookmarkTurnButton,
+  BookmarkTurnMenuItem,
+  TurnNavigator,
+  UserTurnLabel,
+} from "@/components/assistant-ui/turn-navigation";
+import {
   IntentAwareScrollProvider,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
@@ -293,6 +299,7 @@ import {
   showForkCreatedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
+  useBookmarkedTurnsStore,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -2203,6 +2210,8 @@ export const Thread: FC<{
                 <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
               </AuiIf>
             )}
+
+            <TurnNavigator viewportRef={viewportElRef} />
 
             {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
             the tail and mounts the rest over the following frames. Nothing unmounts and the
@@ -8403,6 +8412,10 @@ function useDeleteMessage() {
         messageId,
         remoteId,
       });
+      // a deleted prompt can no longer open a turn, so drop its bookmark too
+      if (remoteId) {
+        useBookmarkedTurnsStore.getState().forgetTurns(remoteId, [messageId]);
+      }
     } catch (error) {
       console.error("Failed to delete message", error);
       toast.error("Failed to delete message");
@@ -8772,6 +8785,7 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
+              <BookmarkTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
               <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
@@ -8816,6 +8830,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <UserTurnLabel />
       <UserMessageAttachments />
       <UserMessageAudio />
 
@@ -8865,6 +8880,7 @@ const UserActionBar: FC = () => {
         </ActionBarPrimitive.Edit>
       )}
       <ForkCountBadge />
+      <BookmarkTurnButton />
       <UserMoreMenu />
     </UserMessageActionBar>
   );
