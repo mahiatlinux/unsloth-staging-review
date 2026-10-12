@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 root=Path('studio/src-tauri')
 p=root/'src/main.rs'
-s=p.read_text()
+s=p.read_text(encoding="utf-8")
 handler=s[s.index('        .on_webview_event('):s.index('        .on_window_event(')]
 s=s.replace('fn main() {','fn studio_main() {',1)
 s+='''
@@ -19,9 +19,9 @@ fn main() {
         .run(tauri::generate_context!()).expect("drop probe launch");
 }
 '''
-p.write_text(s)
+p.write_text(s,encoding="utf-8")
 c=root/'tauri.conf.json'
-config=json.loads(c.read_text())
+config=json.loads(c.read_text(encoding="utf-8"))
 w=config['app']['windows'][0]
 w.update(visible=True,center=False,x=300,y=120,width=700,height=500,title='Unsloth drop probe')
 c.write_text(json.dumps(config,indent=2))
